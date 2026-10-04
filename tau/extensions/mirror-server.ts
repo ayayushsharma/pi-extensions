@@ -105,6 +105,9 @@ function tauDebug(...args: any[]) {
   if (TAU_DEBUG) tauLog(...args);
 }
 
+// Tau's own slash commands — never exposed to remote web clients.
+const MIRROR_OWN_COMMANDS = new Set(["tau", "taustart", "taustop", "qr"]);
+
 // Instance registry — tracks all running Tau servers
 function registerInstance(port: number, sessionFile: string, cwd: string) {
   fs.mkdirSync(INSTANCES_DIR, { recursive: true });
@@ -526,12 +529,16 @@ export default function (pi: ExtensionAPI) {
       switch (command.type) {
         // ─── Prompting ───
         case "prompt": {
+          // Messages starting with "/" are slash commands — expand them
+          // server-side instead of sending the literal text to the model.
+          const isSlashCmd = typeof command.message === "string"
+            && command.message.trimStart().startsWith("/");
           if (ctx && !ctx.isIdle()) {
             const behavior = command.streamingBehavior || "steer";
             if (behavior === "steer") {
-              pi.sendUserMessage(command.message, { deliverAs: "steer" });
+              pi.sendUserMessage(command.message, isSlashCmd ? { deliverAs: "steer", expandPromptTemplates: true } : { deliverAs: "steer" });
             } else {
-              pi.sendUserMessage(command.message, { deliverAs: "followUp" });
+              pi.sendUserMessage(command.message, isSlashCmd ? { deliverAs: "followUp", expandPromptTemplates: true } : { deliverAs: "followUp" });
             }
           } else {
             // Build content with optional images
@@ -563,9 +570,13 @@ export default function (pi: ExtensionAPI) {
               const hasImages = content.some((c: any) => c.type === "image");
               if (hasImages) {
                 pi.sendUserMessage(content);
+              } else if (isSlashCmd) {
+                pi.sendUserMessage(command.message, { expandPromptTemplates: true });
               } else {
                 pi.sendUserMessage(command.message);
               }
+            } else if (isSlashCmd) {
+              pi.sendUserMessage(command.message, { expandPromptTemplates: true });
             } else {
               pi.sendUserMessage(command.message);
             }
@@ -575,13 +586,17 @@ export default function (pi: ExtensionAPI) {
         }
 
         case "steer": {
-          pi.sendUserMessage(command.message, { deliverAs: "steer" });
+          const msg = command.message;
+          const slash = typeof msg === "string" && msg.trimStart().startsWith("/");
+          pi.sendUserMessage(msg, slash ? { deliverAs: "steer", expandPromptTemplates: true } : { deliverAs: "steer" });
           sendTo(ws, success("steer"));
           break;
         }
 
         case "follow_up": {
-          pi.sendUserMessage(command.message, { deliverAs: "followUp" });
+          const msg = command.message;
+          const slash = typeof msg === "string" && msg.trimStart().startsWith("/");
+          pi.sendUserMessage(msg, slash ? { deliverAs: "followUp", expandPromptTemplates: true } : { deliverAs: "followUp" });
           sendTo(ws, success("follow_up"));
           break;
         }
@@ -593,6 +608,20 @@ export default function (pi: ExtensionAPI) {
         }
 
         // ─── State ───
+        case "get_commands": {
+          try {
+            // Hide Tau's own commands — running them remotely is risky or
+            // pointless (e.g. /taustop would kill the server the web UI
+            // itself is connected through; /tau and /qr open a browser on
+            // the host machine). They remain available in the terminal TUI.
+            const cmds = pi.getCommands().filter((c: any) => !MIRROR_OWN_COMMANDS.has(c.name));
+            sendTo(ws, success("get_commands", { commands: cmds }));
+          } catch (e: any) {
+            sendTo(ws, error("get_commands", e.message || String(e)));
+          }
+          break;
+        }
+
         case "get_state": {
           if (!ctx) {
             sendTo(ws, error("get_state", "No context available"));

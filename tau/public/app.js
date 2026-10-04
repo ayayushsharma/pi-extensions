@@ -187,6 +187,8 @@ wsClient.addEventListener('connected', () => {
   updateConnectionStatus('connected');
   // Fetch model context window size for token % display
   setTimeout(fetchContextWindow, 1000);
+  // Warm the slash-command cache for palette search + input validation
+  fetchSlashCommands();
 
 });
 
@@ -653,6 +655,14 @@ function sendMessage() {
   const message = messageInput.value.trim();
   if (!message && pendingImages.length === 0) return;
 
+  // Guard against mistyped slash commands — Pi would otherwise treat
+  // them as literal text. Browse exact names via the command palette.
+  if (message.startsWith('/') && !isKnownSlashCommand(message)) {
+    const bad = message.split(/\s/)[0];
+    messageRenderer.renderError(`Unknown command ${bad} — open the command palette to browse available commands.`);
+    return;
+  }
+
   messageInput.value = '';
   messageInput.style.height = 'auto';
 
@@ -737,41 +747,173 @@ const commandPalette = document.getElementById('command-palette');
 const commandPaletteOverlay = document.getElementById('command-palette-overlay');
 const commandList = document.getElementById('command-list');
 
-const commands = [
+const commandSearch = document.getElementById('command-search');
+
+const localCommands = [
   { icon: '🗜️', label: 'Compact', desc: 'Compact context to save tokens', action: () => rpcCommand({ type: 'compact' }, 'Compacting...') },
   { icon: '📋', label: 'Export HTML', desc: 'Export session as HTML file', action: () => rpcExportHtml() },
   { icon: '📊', label: 'Session Stats', desc: 'Show session statistics', action: () => showSessionStats() },
   { icon: '⬇️', label: 'Expand All Tools', desc: 'Expand all tool cards', action: () => toolCardRenderer.expandAll() },
   { icon: '⬆️', label: 'Collapse All Tools', desc: 'Collapse all tool cards', action: () => toolCardRenderer.collapseAll() },
-
 ];
 
-function openCommandPalette() {
+// Slash commands from the Pi session (fetched via get_commands, cached here).
+// Used for palette search and for validating `/...` input before sending.
+let slashCommands = []; // [{ name, description, source }]
+let paletteSelected = 0;
+
+async function fetchSlashCommands() {
+  try {
+    const resp = await fetch('/api/rpc', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'get_commands' }),
+    });
+    const data = await resp.json();
+    if (data.success && Array.isArray(data.data?.commands)) {
+      slashCommands = data.data.commands;
+    }
+  } catch { /* keep stale cache — validation is best-effort */ }
+  return slashCommands;
+}
+
+function isKnownSlashCommand(message) {
+  const m = message.trimStart().match(/^\/(\S+)/);
+  if (!m) return true; // not a slash invocation — nothing to validate
+  if (slashCommands.length === 0) return true; // no data yet — let it through
+  const name = m[1].toLowerCase();
+  return slashCommands.some(c => c.name.toLowerCase() === name);
+}
+
+// Fuzzy match: all query chars must appear in order in text.
+// Scores prefix and word-boundary matches higher, penalizes gaps.
+// Returns -1 on no match.
+function fuzzyScore(query, text) {
+  query = query.toLowerCase();
+  text = text.toLowerCase();
+  if (!query) return 0;
+  let qi = 0, score = 0, lastMatch = -1;
+  for (let ti = 0; ti < text.length && qi < query.length; ti++) {
+    if (text[ti] === query[qi]) {
+      if (ti === 0 || text[ti - 1] === ' ' || text[ti - 1] === '/' || text[ti - 1] === '-') score += 3;
+      else if (lastMatch === ti - 1) score += 2; // consecutive bonus
+      else score += 1;
+      lastMatch = ti;
+      qi++;
+    } else if (lastMatch !== -1) {
+      score -= 0.05; // small gap penalty only after first match
+    }
+  }
+  return qi === query.length ? score : -1;
+}
+
+function pickSlashCommand(cmd) {
+  // Prefill the input as `/name ` and focus it so args can be added
+  // before sending — Enter fires it via slash expansion server-side.
+  closeCommandPalette();
+  messageInput.value = `/${cmd.name} `;
+  messageInput.dispatchEvent(new Event('input'));
+  messageInput.focus();
+}
+
+function renderPalette(filter = '') {
+  const q = filter.trim().toLowerCase();
+  const items = [];
+
+  for (const cmd of localCommands) {
+    if (!q || (`${cmd.label} ${cmd.desc}`.toLowerCase().includes(q))) {
+      items.push({ kind: 'local', sort: 0, cmd });
+    }
+  }
+
+  const stripped = q.startsWith('/') ? q.slice(1) : q;
+  for (const cmd of slashCommands) {
+    const haystack = `/${cmd.name} ${cmd.description || ''}`;
+    const s = fuzzyScore(stripped, haystack);
+    if (s >= 0) items.push({ kind: 'slash', sort: -s, cmd });
+  }
+  items.sort((a, b) => a.sort - b.sort);
+
   commandList.innerHTML = '';
-  commands.forEach(cmd => {
+  if (items.length === 0) {
+    commandList.innerHTML = '<div class="command-empty">No matching commands</div>';
+  }
+  const els = [];
+  items.forEach((item, i) => {
     const el = document.createElement('div');
     el.className = 'command-item';
-    el.innerHTML = `
-      <div class="command-icon">${cmd.icon}</div>
-      <div>
-        <div class="command-label">${cmd.label}</div>
-        <div class="command-desc">${cmd.desc}</div>
-      </div>
-    `;
-    el.addEventListener('click', () => {
-      closeCommandPalette();
-      cmd.action();
-    });
+    if (item.kind === 'local') {
+      el.innerHTML = `
+        <div class="command-icon">${item.cmd.icon}</div>
+        <div>
+          <div class="command-label">${item.cmd.label}</div>
+          <div class="command-desc">${item.cmd.desc}</div>
+        </div>
+      `;
+      el.addEventListener('click', () => { closeCommandPalette(); item.cmd.action(); });
+    } else {
+      el.innerHTML = `
+        <div class="command-icon">/</div>
+        <div>
+          <div class="command-label">/${item.cmd.name}</div>
+          <div class="command-desc">${escapeHtml(item.cmd.description || item.cmd.source || '')}</div>
+        </div>
+      `;
+      el.addEventListener('click', () => pickSlashCommand(item.cmd));
+    }
     commandList.appendChild(el);
+    els.push(el);
   });
+  paletteSelected = Math.min(paletteSelected, Math.max(0, els.length - 1));
+  highlightPalette(els);
+  return els;
+}
+
+function highlightPalette(els) {
+  els = els || [...commandList.querySelectorAll('.command-item')];
+  els.forEach((el, i) => el.classList.toggle('selected', i === paletteSelected));
+  els[paletteSelected]?.scrollIntoView({ block: 'nearest' });
+}
+
+async function openCommandPalette() {
   commandPalette.classList.remove('hidden');
   commandPaletteOverlay.classList.remove('hidden');
+  commandSearch.value = '';
+  paletteSelected = 0;
+  renderPalette('');
+  commandSearch.focus();
+  await fetchSlashCommands();
+  if (!commandPalette.classList.contains('hidden')) renderPalette(commandSearch.value);
 }
 
 function closeCommandPalette() {
   commandPalette.classList.add('hidden');
   commandPaletteOverlay.classList.add('hidden');
 }
+
+commandSearch.addEventListener('input', () => {
+  paletteSelected = 0;
+  renderPalette(commandSearch.value);
+});
+
+commandSearch.addEventListener('keydown', (e) => {
+  const els = [...commandList.querySelectorAll('.command-item')];
+  if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    paletteSelected = Math.min(paletteSelected + 1, els.length - 1);
+    highlightPalette(els);
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    paletteSelected = Math.max(paletteSelected - 1, 0);
+    highlightPalette(els);
+  } else if (e.key === 'Enter') {
+    e.preventDefault();
+    els[paletteSelected]?.click();
+  } else if (e.key === 'Escape') {
+    closeCommandPalette();
+    messageInput.focus();
+  }
+});
 
 commandBtn.addEventListener('click', openCommandPalette);
 commandPaletteOverlay.addEventListener('click', closeCommandPalette);

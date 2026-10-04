@@ -2747,6 +2747,37 @@ body.hide-thinking .thinking-block { display: none !important; }
   padding: 6px;
 }
 
+.command-search-wrap {
+  padding: 8px 10px 4px;
+}
+
+.command-search-wrap input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: var(--bg-glass);
+  color: var(--text-primary);
+  font-size: 13px;
+  outline: none;
+}
+
+.command-search-wrap input:focus {
+  border-color: var(--border-hover);
+}
+
+.command-item.selected {
+  background: var(--bg-glass-hover);
+}
+
+.command-empty {
+  padding: 16px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
 .command-item,
 .model-item {
   display: flex;

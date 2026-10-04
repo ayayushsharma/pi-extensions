@@ -44,6 +44,7 @@ const typingIndicator = document.getElementById('typing-indicator');
 
 const sessionCostEl = document.getElementById('session-cost');
 const tokenUsageEl = document.getElementById('token-usage');
+const contextSizeEl = document.getElementById('context-size');
 const scrollBottomBtn = document.getElementById('scroll-bottom-btn');
 const scrollBottomBadge = document.getElementById('scroll-bottom-badge');
 const messagesContainer = document.getElementById('messages');
@@ -85,11 +86,17 @@ fileSidebarToggle.addEventListener('click', () => {
   if (!isCollapsed && !fileBrowser.currentPath) {
     fileBrowser.load(); // Load session cwd
   }
+  // Only one slide-over at a time on mobile
+  if (isMobile() && !isCollapsed) {
+    sidebarEl.classList.add('collapsed');
+  }
+  refreshMobileOverlay();
   localStorage.setItem('tau-file-sidebar', isCollapsed ? 'closed' : 'open');
 });
 
 fileSidebarClose.addEventListener('click', () => {
   fileSidebar.classList.add('collapsed');
+  refreshMobileOverlay();
   localStorage.setItem('tau-file-sidebar', 'closed');
 });
 
@@ -114,8 +121,8 @@ document.getElementById('file-sidebar-finder').addEventListener('click', () => {
   }
 });
 
-// Restore file sidebar state
-if (localStorage.getItem('tau-file-sidebar') === 'open') {
+// Restore file sidebar state (desktop only — mobile starts as a slide-over)
+if (!isMobile() && localStorage.getItem('tau-file-sidebar') === 'open') {
   fileSidebar.classList.remove('collapsed');
   fileBrowser.load();
 }
@@ -478,6 +485,31 @@ messageInput.addEventListener('input', () => {
   messageInput.style.height = 'auto';
   messageInput.style.height = Math.min(messageInput.scrollHeight, 200) + 'px';
 });
+
+// Keep the message list clear of the overlay chrome: the input grows with
+// multi-line text, queued messages and image previews, and the header grows
+// with stacked info rows on mobile — measure both and expose the heights as
+// --input-height / --header-height (consumed by .messages padding and the
+// scroll-to-bottom button). Re-pin when already at the bottom.
+(function syncChromeHeights() {
+  const inputArea = document.querySelector('.input-area');
+  const headerEl = document.querySelector('.header');
+  if (!inputArea || typeof ResizeObserver === 'undefined') return;
+  const apply = () => {
+    const wasNearBottom =
+      messagesContainer.scrollHeight - messagesContainer.scrollTop - messagesContainer.clientHeight < 150;
+    document.documentElement.style.setProperty('--input-height', `${inputArea.offsetHeight}px`);
+    if (headerEl) {
+      document.documentElement.style.setProperty('--header-height', `${headerEl.offsetHeight}px`);
+    }
+    if (wasNearBottom) messagesContainer.scrollTop = messagesContainer.scrollHeight;
+  };
+  const ro = new ResizeObserver(apply);
+  ro.observe(inputArea);
+  if (headerEl) ro.observe(headerEl);
+  window.addEventListener('resize', apply);
+  apply();
+})();
 
 // ═══════════════════════════════════════
 // Attachments (images + file browser paths)
@@ -1163,9 +1195,20 @@ function updateSidebarToggleIcon() {
   sidebarToggle.textContent = '☰';
 }
 
+function refreshMobileOverlay() {
+  if (!isMobile()) return;
+  const anyOpen =
+    !sidebarEl.classList.contains('collapsed') || !fileSidebar.classList.contains('collapsed');
+  sidebarOverlay.classList.toggle('visible', anyOpen);
+}
+
 function toggleSidebar() {
   sidebarEl.classList.toggle('collapsed');
-  sidebarOverlay.classList.toggle('visible', !sidebarEl.classList.contains('collapsed') && isMobile());
+  // Only one slide-over at a time on mobile
+  if (isMobile() && !sidebarEl.classList.contains('collapsed')) {
+    fileSidebar.classList.add('collapsed');
+  }
+  refreshMobileOverlay();
   updateSidebarToggleIcon();
 }
 
@@ -1173,6 +1216,7 @@ sidebarToggle.addEventListener('click', toggleSidebar);
 
 sidebarOverlay.addEventListener('click', () => {
   sidebarEl.classList.add('collapsed');
+  fileSidebar.classList.add('collapsed');
   sidebarOverlay.classList.remove('visible');
   updateSidebarToggleIcon();
 });
@@ -1578,6 +1622,10 @@ function updateTokenUsage() {
     tokenUsageEl.textContent = pct === 0 ? '<1%' : `${pct}%`;
     tokenUsageEl.classList.add('visible');
     tokenUsageEl.classList.remove('warning', 'critical');
+    if (contextSizeEl) {
+      contextSizeEl.textContent = `${(lastInputTokens / 1000).toFixed(1)}k / ${(contextWindowSize / 1000).toFixed(0)}k`;
+      contextSizeEl.classList.add('visible');
+    }
     if (pct >= 80) {
       tokenUsageEl.classList.add('critical');
     } else if (pct >= 60) {
@@ -1594,6 +1642,9 @@ function updateTokenUsage() {
     tokenUsageEl.textContent = `${(lastInputTokens / 1000).toFixed(1)}k`;
     tokenUsageEl.classList.add('visible');
     tokenUsageEl.classList.remove('warning', 'critical');
+    if (contextSizeEl) contextSizeEl.classList.remove('visible');
+  } else if (contextSizeEl) {
+    contextSizeEl.classList.remove('visible');
   }
 }
 
@@ -1991,27 +2042,9 @@ if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
 // Initialize
 // ═══════════════════════════════════════
 
-// On mobile, move cost + token usage above input
+// On mobile, start with the sidebar hidden (header grid handles the rest)
 if (isMobile()) {
   sidebarEl.classList.add('collapsed');
-
-  const mobileBar = document.getElementById('mobile-model-bar');
-  const sessionCost = document.getElementById('session-cost');
-  const tokenUsage = document.getElementById('token-usage');
-  if (mobileBar && sessionCost && tokenUsage) {
-    mobileBar.appendChild(sessionCost);
-    mobileBar.appendChild(tokenUsage);
-  }
-
-  // Start collapsed
-  mobileBar.classList.add('collapsed');
-
-  // Toggle via chevron
-  const contextToggle = document.getElementById('mobile-context-toggle');
-  contextToggle.addEventListener('click', () => {
-    mobileBar.classList.toggle('collapsed');
-    contextToggle.classList.toggle('flipped', !mobileBar.classList.contains('collapsed'));
-  });
 }
 
 // Launcher

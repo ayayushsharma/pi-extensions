@@ -210,7 +210,6 @@ select:focus-visible {
   --accent-glow: rgba(5, 128, 196, 0.15);
   --accent-subtle: rgba(5, 128, 196, 0.06);
   --accent-text: #0470b0;
-  --header-pill-text: rgba(0, 0, 0, 0.55);
 
   --user-bubble: #2a96d6;
   --user-bubble-text: white;
@@ -258,7 +257,6 @@ select:focus-visible {
   --accent-glow: rgba(176, 106, 72, 0.15);
   --accent-subtle: rgba(176, 106, 72, 0.08);
   --accent-text: #a05e3e;
-  --header-pill-text: rgba(0, 0, 0, 0.65);
 
   --user-bubble: #b06a48;
   --user-bubble-text: white;
@@ -306,7 +304,6 @@ select:focus-visible {
   --accent-glow: rgba(106, 125, 90, 0.15);
   --accent-subtle: rgba(106, 125, 90, 0.08);
   --accent-text: #5a6d4a;
-  --header-pill-text: rgba(0, 0, 0, 0.65);
 
   --user-bubble: #6a7d5a;
   --user-bubble-text: white;
@@ -337,10 +334,17 @@ body {
   background: var(--bg-solid);
   color: var(--text-primary);
   line-height: 1.5;
-  overflow-x: hidden;
+  overflow: hidden;
+  overscroll-behavior: none;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   font-size: 15px;
+}
+
+html {
+  height: 100%;
+  overflow: hidden;
+  overscroll-behavior: none;
 }
 
 /* ═══════════════════════════════════════════════════════
@@ -352,6 +356,15 @@ body {
   height: 100vh;
   height: 100dvh;
   position: relative;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+:root {
+  /* Measured at runtime — keeps .messages clear of the overlay input */
+  --input-height: 100px;
+  /* Measured at runtime — keeps .messages clear of the overlay header */
+  --header-height: 68px;
 }
 
 
@@ -823,6 +836,8 @@ body {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  min-height: 0;
+  overflow: hidden;
   position: relative;
   z-index: 1;
 }
@@ -832,6 +847,7 @@ body {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 10px;
   padding: 8px 16px;
   background: var(--header-bg);
   backdrop-filter: blur(40px) saturate(1.5);
@@ -846,16 +862,43 @@ body {
   z-index: 10;
 }
 
-.header::before {
-  display: none;
+.header button,
+.header .model-dropdown,
+.header .header-sub,
+.header .header-tokens,
+.header .pill,
+.header .status {
+  -webkit-app-region: no-drag;
 }
 
-.header-left,
-.header-right {
+.model-dropdown-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+/* Thinking level + session cost */
+.header-sub {
   display: flex;
   align-items: center;
-  gap: 10px;
-  -webkit-app-region: no-drag;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* Token usage + context size (popover anchors here) */
+.header-tokens {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  margin-left: auto;
+}
+
+/* "12.3k / 200k" — mobile only, sits inline with the token pill */
+.context-size {
+  display: none;
 }
 
 .sidebar-toggle,
@@ -875,9 +918,15 @@ body {
 }
 
 .sidebar-toggle:hover,
-.settings-btn:hover {
+.settings-btn:hover,
+#file-sidebar-toggle:hover {
   color: var(--text-secondary);
   background: var(--bg-glass-hover);
+}
+
+/* File browser toggle — match the thinking tag / header meta colour */
+#file-sidebar-toggle {
+  color: var(--thinking-accent-text);
 }
 
 .sidebar-toggle:active,
@@ -905,7 +954,7 @@ body {
 
 /* Session cost pill */
 .session-cost {
-  color: var(--header-pill-text, var(--text-dim));
+  color: var(--thinking-accent-text);
   display: none;
 }
 
@@ -913,7 +962,7 @@ body {
 
 /* Token usage pill */
 .token-usage {
-  color: var(--header-pill-text, var(--text-dim));
+  color: var(--thinking-accent-text);
   display: none;
   transition: all 0.3s var(--ease);
   cursor: pointer;
@@ -1243,7 +1292,7 @@ body {
   align-items: center;
   gap: 6px;
   font-size: 11px;
-  color: var(--text-dim);
+  color: var(--thinking-accent-text);
 }
 
 .status-indicator {
@@ -1586,9 +1635,14 @@ body {
 
 .messages {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
-  padding: 68px 24px 100px;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
+  padding: var(--header-height, 68px) 24px calc(var(--input-height, 100px) + 16px + env(safe-area-inset-bottom));
+  scroll-padding-bottom: calc(var(--input-height, 100px) + 16px);
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -2275,21 +2329,8 @@ body.hide-thinking .thinking-block { display: none !important; }
    Input Area — floating glass field
    ═══════════════════════════════════════════════════════ */
 
-/* Mobile context bar above input */
-.mobile-context-toggle {
-  display: none;
-}
-
-.mobile-model-bar {
-  display: none;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  padding: 0 4px 8px;
-}
-
 .input-area {
-  padding: 10px 20px 12px;
+  padding: 10px 20px calc(12px + env(safe-area-inset-bottom));
   background: var(--header-bg);
   backdrop-filter: blur(40px) saturate(1.5);
   -webkit-backdrop-filter: blur(40px) saturate(1.5);
@@ -2869,7 +2910,7 @@ body.hide-thinking .thinking-block { display: none !important; }
 
 .scroll-bottom-btn {
   position: absolute;
-  bottom: 90px;
+  bottom: calc(var(--input-height, 100px) + 12px);
   right: 24px;
   width: 36px;
   height: 36px;
@@ -3178,6 +3219,21 @@ body.hide-thinking .thinking-block { display: none !important; }
   .message.assistant { max-width: 100%; width: 100%; flex-wrap: wrap; }
   .message.assistant .message-usage { width: 100%; }
 
+  /* Conversation is the only scroller — tighter gutters, clearance follows input height */
+  .messages {
+    padding: calc(var(--header-height, 60px) + 8px) 12px calc(var(--input-height, 100px) + 12px + env(safe-area-inset-bottom));
+    overscroll-behavior: contain;
+  }
+
+  .input-area {
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+
+  .scroll-bottom-btn {
+    right: 12px;
+  }
+
   .message-content {
     font-size: 15px;
     font-family: -apple-system, 'SF Pro Text', system-ui, sans-serif;
@@ -3187,33 +3243,122 @@ body.hide-thinking .thinking-block { display: none !important; }
     opacity: 0.4 !important;
   }
 
-  /* Hide context bar on mobile */
-  .mobile-context-toggle {
-    display: none !important;
-  }
-
-  .mobile-model-bar {
-    display: none !important;
-  }
-
-  /* Slim down header */
+  /* Mobile header: taller 3-row grid — info stack, files, settings */
   .header {
-    padding: 6px 12px;
-    min-height: 40px;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto auto;
+    grid-template-rows: repeat(3, auto);
+    column-gap: 10px;
+    row-gap: 3px;
+    align-items: center;
+    padding: 10px 12px;
+    min-height: 0;
   }
 
-  .header-left {
-    gap: 6px;
+  /* Slim nav column: sidebar toggle over connection dot */
+  #sidebar-toggle {
+    grid-column: 1;
+    grid-row: 1;
+    align-self: center;
   }
 
-  .header-right {
-    gap: 6px;
+  .status {
+    grid-column: 1;
+    grid-row: 2 / 4;
+    align-self: center;
+  }
+
+  .status-text {
+    display: none;
+  }
+
+  /* Info stack: model / thinking + cost / tokens + context size */
+  #model-dropdown {
+    grid-column: 2;
+    grid-row: 1;
+    min-width: 0;
+  }
+
+  .model-dropdown-btn {
+    max-width: 100%;
+    width: 100%;
+  }
+
+  .header-sub {
+    grid-column: 2;
+    grid-row: 2;
+    min-width: 0;
+  }
+
+  .header-tokens {
+    grid-column: 2;
+    grid-row: 3;
+    min-width: 0;
+    margin-left: 0;
+  }
+
+  #context-size.visible {
+    display: block;
+    background: none;
+    border: none;
+    padding: 0;
+    font-size: 11px;
+    color: var(--thinking-accent-text);
+  }
+
+  /* Context popover spans the screen width, below the taller header */
+  .context-viz {
+    position: fixed;
+    top: calc(var(--header-height, 68px) + 8px);
+    left: 12px;
+    right: 12px;
+    width: auto;
+  }
+
+  /* Files + settings get their own columns, vertically centred */
+  #file-sidebar-toggle {
+    display: flex !important;
+    grid-column: 3;
+    grid-row: 1 / 4;
+    align-self: center;
+  }
+
+  #settings-btn {
+    grid-column: 4;
+    grid-row: 1 / 4;
+    align-self: center;
+  }
+
+  /* Files return on mobile as a right slide-over (mirrors left sidebar) */
+  .file-sidebar {
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: 80% !important;
+    max-width: 320px;
+    min-width: 0;
+    z-index: 200;
+    box-shadow: -4px 0 24px rgba(0, 0, 0, 0.3);
+    border-left: none;
+    transform: translateX(0);
+    transition: transform 0.3s var(--ease);
+    margin-right: 0;
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .file-sidebar.collapsed {
+    margin-right: 0;
+    opacity: 1;
+    pointer-events: none;
+    transform: translateX(100%);
+    box-shadow: none;
   }
 
 
   .tool-card, .thinking-block { width: 100%; }
   .tool-args-preview { max-width: 140px; }
-  .file-sidebar, #file-sidebar-toggle { display: none !important; }
 
   /* iOS-style session list */
   .session-list {

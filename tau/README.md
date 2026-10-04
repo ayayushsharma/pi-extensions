@@ -102,6 +102,8 @@ Environment variables (set before starting Pi):
 | `TAU_DISABLED`    | `0`         | Set to `1` to disable Tau (it stays installed but won't start the server)    |
 | `TAU_USER`        | *(none)*    | HTTP Basic Auth username (both `TAU_USER` and `TAU_PASS` required to enable) |
 | `TAU_PASS`        | *(none)*    | HTTP Basic Auth password                                                     |
+| `TAU_LOG_FILE`    | `~/.pi/tau/tau.log` | File for Tau logs (never written to stdout, which would corrupt the TUI) |
+| `TAU_DEBUG`       | `0`         | Set to `1` for verbose file logging (connects, shutdown, auto-start skips)  |
 
 ### Authentication
 

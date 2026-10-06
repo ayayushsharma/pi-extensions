@@ -1,0 +1,21 @@
+{
+  "name": "pi-ctx-limit",
+  "version": "0.1.0",
+  "description": "Force early auto-compaction by capping the effective context window",
+  "keywords": [
+    "pi",
+    "pi-package"
+  ],
+  "author": "",
+  "license": "MIT",
+  "pi": {
+    "extensions": [
+      "./extensions/ctx-limit.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "dependencies": {}
+}

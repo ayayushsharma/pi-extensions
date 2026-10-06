@@ -1,0 +1,25 @@
+{
+  "name": "my-pi-extension",
+  "version": "0.1.0",
+  "description": "Describe what your Pi extension does in one sentence",
+  "keywords": [
+    "pi",
+    "pi-package"
+  ],
+  "author": "",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": ""
+  },
+  "pi": {
+    "extensions": [
+      "./extensions/hello.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "dependencies": {}
+}

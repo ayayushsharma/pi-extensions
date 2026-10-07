@@ -126,6 +126,8 @@ Or via environment variables: `TAU_USER=pi TAU_PASS=secret pi`
 
 Both HTTP and WebSocket connections are gated when enabled. The `/api/health` endpoint remains open for monitoring.
 
+> Stale login prompt: if the browser ever shows Tau but every action fails, its offline cache served the app without credentials (`fetch`/WebSocket 401s can't trigger the browser's login dialog — only a real page load can). Reload the page to get the login prompt again. While login is required Tau skips its offline service worker to keep this from recurring.
+
 ### Start / Stop
 
 Control Tau at runtime without uninstalling:

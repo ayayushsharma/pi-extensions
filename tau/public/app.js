@@ -12,6 +12,30 @@ import { themes, applyTheme, getCurrentTheme } from './themes.js';
 import { FileBrowser, getFileIcon } from './file-browser.js';
 import { Launcher } from './launcher.js';
 
+// ─── Basic Auth re-login recovery ───
+// fetch() and WebSocket 401s never trigger the browser's native login
+// dialog — only a top-level navigation does. If the cached app shell ever
+// loads without credentials (stale service worker, restored tab), API calls
+// fail with 401 and the app looks broken instead of prompting. Reloading
+// forces a real navigation, which brings the login prompt back.
+let tauAuthReloading = false;
+function tauNeedsLogin(res, url) {
+  const u = typeof url === 'string' ? url : url?.url || '';
+  if (res?.status === 401 && u.includes('/api/')) {
+    if (!tauAuthReloading) {
+      tauAuthReloading = true;
+      window.location.reload();
+    }
+    return true;
+  }
+  return false;
+}
+const tauRawFetch = window.fetch.bind(window);
+window.fetch = (url, opts) => tauRawFetch(url, opts).then((res) => {
+  tauNeedsLogin(res, url);
+  return res;
+});
+
 
 // Initialize components
 const wsUrl = (location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host + '/ws';
@@ -201,6 +225,11 @@ wsClient.addEventListener('connected', () => {
 
 wsClient.addEventListener('disconnected', () => {
   updateConnectionStatus('disconnected');
+  // A dead socket can't tell "server down" from "credentials lost" (an
+  // auth-rejected WS upgrade surfaces as an abnormal close). Probe an
+  // authenticated endpoint — the fetch wrapper reloads into the login
+  // prompt on 401, while network errors reject silently and keep retrying.
+  tauRawFetch('/api/sessions').then((res) => tauNeedsLogin(res, '/api/sessions')).catch(() => {});
 });
 
 wsClient.addEventListener('reconnectFailed', () => {
@@ -2129,10 +2158,24 @@ sidebar.loadSessions().then(() => {
 });
 initLauncher();
 
-// Register service worker for PWA
-if ('serviceWorker' in navigator) {
+// Service workers and HTTP Basic Auth don't mix: an installed worker can
+// serve the cached app shell without hitting the network, so the browser
+// never sees the 401 + WWW-Authenticate challenge that triggers its native
+// login dialog — APIs just fail. When auth is on, remove any stuck worker
+// and stay unregistered so logins prompt natively again.
+async function initServiceWorker() {
+  if (!('serviceWorker' in navigator)) return;
+  try {
+    const health = await tauRawFetch('/api/health').then((r) => r.json()).catch(() => null);
+    if (health?.authEnabled) {
+      const regs = await navigator.serviceWorker.getRegistrations();
+      await Promise.all(regs.map((r) => r.unregister()));
+      return;
+    }
+  } catch {}
   navigator.serviceWorker.register('/sw.js').catch(() => {});
 }
+initServiceWorker();
 
 // Dismiss mobile splash screen
 const splash = document.getElementById('mobile-splash');

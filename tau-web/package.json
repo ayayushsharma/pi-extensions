@@ -1,0 +1,28 @@
+{
+  "name": "tau-web",
+  "version": "0.1.0",
+  "description": "Unified Pi web UI: live TUI mirror plus headless sessions (tau copy, full web dialogs, Tau Basic auth)",
+  "keywords": [
+    "pi",
+    "pi-package",
+    "coding-agent",
+    "web-ui",
+    "mirror"
+  ],
+  "author": "deflating",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/deflating/tau.git"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions/mirror-server.ts"
+    ],
+    "image": "https://raw.githubusercontent.com/deflating/tau/main/docs/images/dark.png"
+  },
+  "dependencies": {
+    "ws": "^8.16.0",
+    "qrcode": "^1.5.0"
+  }
+}

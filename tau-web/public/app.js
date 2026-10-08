@@ -12,29 +12,68 @@ import { themes, applyTheme, getCurrentTheme } from './themes.js';
 import { FileBrowser, getFileIcon } from './file-browser.js';
 import { Launcher } from './launcher.js';
 
-// ─── Basic Auth re-login recovery ───
-// fetch() and WebSocket 401s never trigger the browser's native login
-// dialog — only a top-level navigation does. If the cached app shell ever
-// loads without credentials (stale service worker, restored tab), API calls
-// fail with 401 and the app looks broken instead of prompting. Reloading
-// forces a real navigation, which brings the login prompt back.
-let tauAuthReloading = false;
+// ─── Inline login (replaces the native browser login prompt) ───
+// The server mints an HttpOnly cookie session via POST /api/login, which the
+// browser then sends on fetches AND the WS handshake (which can't carry
+// custom headers). On any API 401 we show the overlay instead of reloading.
+// Creds live in memory + sessionStorage (per-tab; a fresh tab re-prompts).
+let tauBasicCreds = null;
+try { tauBasicCreds = sessionStorage.getItem('tau-basic') || null; } catch {}
+function tauSetCreds(basic) {
+  tauBasicCreds = basic;
+  try {
+    if (basic) sessionStorage.setItem('tau-basic', basic);
+    else sessionStorage.removeItem('tau-basic');
+  } catch {}
+}
+let tauLoginVisible = false;
+function tauShowLogin(hint) {
+  const overlay = document.getElementById('login-overlay');
+  if (!overlay || tauLoginVisible) return;
+  tauLoginVisible = true;
+  if (hint) {
+    const sub = document.getElementById('login-sub');
+    if (sub) sub.textContent = hint;
+  }
+  overlay.classList.remove('hidden');
+  setTimeout(() => document.getElementById('login-user')?.focus(), 50);
+}
+function tauHideLogin() {
+  tauLoginVisible = false;
+  document.getElementById('login-overlay')?.classList.add('hidden');
+  document.getElementById('login-error')?.classList.add('hidden');
+}
+async function tauRefreshAfterLogin() {
+  tauHideLogin();
+  wsClient.forceReconnect();
+  try { await sidebar.loadSessions(); } catch {}
+  try { await refreshUplinkList(); } catch {}
+  fetchSlashCommands();
+}
 function tauNeedsLogin(res, url) {
   const u = typeof url === 'string' ? url : url?.url || '';
   if (res?.status === 401 && u.includes('/api/')) {
-    if (!tauAuthReloading) {
-      tauAuthReloading = true;
-      window.location.reload();
-    }
+    tauSetCreds(null);
+    tauShowLogin();
     return true;
   }
   return false;
 }
 const tauRawFetch = window.fetch.bind(window);
-window.fetch = (url, opts) => tauRawFetch(url, opts).then((res) => {
-  tauNeedsLogin(res, url);
-  return res;
-});
+window.fetch = (url, opts) => {
+  opts = opts || {};
+  // Attach in-memory Basic creds so the login POST itself authenticates
+  // without ever invoking the browser's native prompt.
+  if (tauBasicCreds && typeof url === 'string' && url.includes('/api/')) {
+    opts.headers = { ...(opts.headers || {}), Authorization: `Basic ${tauBasicCreds}` };
+  }
+  return tauRawFetch(url, opts).then((res) => {
+    // The login/logout endpoints manage their own 401s — never loop on them.
+    if (typeof url === 'string' && (url.endsWith('/api/login') || url.endsWith('/api/logout'))) return res;
+    tauNeedsLogin(res, url);
+    return res;
+  });
+};
 
 
 // Initialize components
@@ -1273,6 +1312,13 @@ document.addEventListener('keydown', (e) => {
     e.preventDefault();
     messageInput.focus();
   }
+
+  // Ctrl/⌘+K — command palette from anywhere (Esc closes, as usual)
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+    e.preventDefault();
+    if (commandPalette.classList.contains('hidden')) openCommandPalette();
+    else closeCommandPalette();
+  }
 });
 
 function isInInput() {
@@ -1973,6 +2019,26 @@ async function openSettings() {
   buildThemeGrid();
   settingsPanel.classList.remove('hidden');
   settingsOverlay.classList.remove('hidden');
+  // Server section: version + uptime from /api/health (auth-exempt).
+  try {
+    const h = await tauRawFetch('/api/health').then((r) => r.json()).catch(() => null);
+    const sec = document.getElementById('settings-server-section');
+    if (h && sec) {
+      sec.style.display = '';
+      document.getElementById('server-version').textContent = h.version || '—';
+      document.getElementById('server-uptime').textContent = h.startedAt ? formatUptime(Date.now() - new Date(h.startedAt).getTime()) : '—';
+    }
+  } catch {}
+function formatUptime(ms) {
+  if (ms < 0) return '—';
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  if (h < 48) return `${h}h ${m % 60}m`;
+  return `${Math.floor(h / 24)}d ${h % 24}h`;
+}
 
   // Fetch current state for toggles
   try {
@@ -2058,6 +2124,46 @@ toggleAuth.addEventListener('click', async () => {
   const data = await rpcCommand({ type: 'set_auth', enabled: !isOn });
   if (data?.success) {
     toggleAuth.className = `settings-toggle${!isOn ? ' on' : ''}`;
+  }
+});
+// Log out this browser: clear the cookie session + cached creds, then prompt.
+document.getElementById('btn-logout')?.addEventListener('click', async () => {
+  try { await tauRawFetch('/api/logout', { method: 'POST' }); } catch {}
+  tauSetCreds(null);
+  try { wsClient.disconnect(); } catch {}
+  closeSettings();
+  tauShowLogin('You have been logged out.');
+});
+// Login form: verify via /api/login (cookie session), never the native prompt.
+document.getElementById('login-form')?.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const user = document.getElementById('login-user').value.trim();
+  const pass = document.getElementById('login-pass').value;
+  const errEl = document.getElementById('login-error');
+  const btn = document.getElementById('login-submit');
+  const card = document.querySelector('.login-card');
+  if (!user || !pass) return;
+  btn.disabled = true;
+  try {
+    const basic = btoa(`${user}:${pass}`);
+    const res = await tauRawFetch('/api/login', {
+      method: 'POST',
+      headers: { Authorization: `Basic ${basic}` },
+    });
+    if (res.ok) {
+      tauSetCreds(basic);
+      document.getElementById('login-pass').value = '';
+      await tauRefreshAfterLogin();
+    } else {
+      errEl?.classList.remove('hidden');
+      card?.classList.remove('shake');
+      void card?.offsetWidth;
+      card?.classList.add('shake');
+    }
+  } catch {
+    errEl?.classList.remove('hidden');
+  } finally {
+    btn.disabled = false;
   }
 });
 

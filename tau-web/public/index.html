@@ -92,6 +92,7 @@
           <p class="hint">Type a message below to start chatting with Pi, or select a session from the sidebar.</p>
           <div class="shortcuts-hint">
             <span>/ Focus input</span>
+            <span>Ctrl+K Commands</span>
             <span>Esc Abort</span>
           </div>
         </div>
@@ -198,6 +199,21 @@
           <span class="settings-label">Require login</span>
           <button class="settings-toggle" id="toggle-auth"></button>
         </div>
+        <div class="settings-row">
+          <span class="settings-label">This browser</span>
+          <button class="settings-value-btn" id="btn-logout">Log out</button>
+        </div>
+      </div>
+      <div class="settings-section" id="settings-server-section" style="display:none">
+        <div class="settings-section-title">Server</div>
+        <div class="settings-row">
+          <span class="settings-label">Version</span>
+          <span class="settings-value" id="server-version">—</span>
+        </div>
+        <div class="settings-row">
+          <span class="settings-label">Uptime</span>
+          <span class="settings-value" id="server-uptime">—</span>
+        </div>
       </div>
     </div>
   </div>
@@ -214,6 +230,19 @@
 
   <!-- Dialog Container -->
   <div id="dialog-container" class="hidden"></div>
+
+  <!-- Login Overlay (inline auth: replaces the native browser login prompt) -->
+  <div class="login-overlay hidden" id="login-overlay">
+    <form class="login-card" id="login-form" autocomplete="off">
+      <div class="login-icon"><img src="icons/tau-192.png" alt="τ" class="tau-icon-welcome"></div>
+      <div class="login-title">Log in to Tau</div>
+      <div class="login-sub" id="login-sub">This server requires authentication.</div>
+      <input type="text" id="login-user" class="login-input" placeholder="Username" autocomplete="username" />
+      <input type="password" id="login-pass" class="login-input" placeholder="Password" autocomplete="current-password" />
+      <div class="login-error hidden" id="login-error">Invalid username or password</div>
+      <button type="submit" class="login-submit" id="login-submit">Log in</button>
+    </form>
+  </div>
 
   <!-- Scripts -->
   <script type="module" src="app.js"></script>

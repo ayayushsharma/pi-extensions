@@ -41,6 +41,37 @@ TAU_MIRROR_PORT=8199 TAU_HOST=127.0.0.1 TAU_STATIC_DIR=$(pwd)/public pi -e .
 
 `TAU_DISABLED=1` disables the mirror server (headless children always run with it).
 
+## tau supersession
+
+tau-web replaces `tau` — never run both. The `tau` package is installed in
+`~/.pi/agent/settings.json` (`packages`), so it loads inside **every** pi
+process, including `pi -e ./tau-web` dev servers and headless children. Both
+read the same `TAU_MIRROR_PORT`; whichever starts second bumps +1 and serves
+stale old-code UI (no login, no version) from inside the same process. The
+server logs a `WARNING: sibling mirror` line when it detects this.
+
+Adopting tau-web: remove `"../../projects/work/pi-extensions/tau"` (or the
+installed `tau`) from settings `packages` and restart Pi. Headless children
+are unaffected (they run with `TAU_DISABLED=1`, which both packages honor).
+
+## Persistence (Termux:Boot)
+
+To survive reboots, start the canonical instance at boot. Example
+`~/.termux/boot/tau-web.sh` (Termux:Boot):
+
+```bash
+#!/data/data/com.termux/files/usr/bin/bash
+# Boot persistence for tau-web: loopback-only, auth from env.
+cd ~/projects/work/pi-extensions/tau-web
+sleep 90 | TAU_HOST=127.0.0.1 TAU_MIRROR_PORT=12045 \
+  TAU_USER=... TAU_PASS=... TAU_STATIC_DIR=$PWD/public \
+  exec pi -e $PWD --mode rpc >> ~/.tau-web-boot.log 2>&1
+```
+
+Keep `TAU_USER`/`TAU_PASS` in the script (mode `600`), never in the repo.
+Take the canonical port only when tau-web is verified; until then use a dev
+port (e.g. `8199`) and leave live tau untouched.
+
 ## Protocol (browser ↔ server, WS `/ws`)
 
 Unified envelope: every backend event arrives as `{type: "rpc_event", event, uplink?, port?}`.
@@ -56,6 +87,12 @@ Unified envelope: every backend event arrives as `{type: "rpc_event", event, upl
 | `extension_ui_response {id, …}` | answer a dialog; routed to uplink owner, headless child, or mirror waiter |
 | `ping` | `pong` |
 | legacy mirror commands | unchanged (`prompt`, `abort`, `get_commands`, `mirror_sync_request`, …) |
+
+HTTP auth endpoints: `POST /api/login` (Basic → HttpOnly `tau_auth` cookie,
+works for fetches **and** the WS handshake, which can't carry headers) and
+`POST /api/logout`. Any API 401 raises the inline login overlay — the native
+browser prompt is never used. Settings shows server version + uptime (from
+`/api/health`) and a Log-out button. `Ctrl/⌘+K` toggles the command palette.
 
 Prompt routing in the UI: attached uplink first (the TUI owns the run), then the
 mirror-live session, then the headless backend, then legacy direct send.

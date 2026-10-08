@@ -51,6 +51,33 @@ const AUTH_USER = TAU_SETTINGS.user;
 const AUTH_PASS = TAU_SETTINGS.pass;
 const AUTH_CONFIGURED = !!(AUTH_USER && AUTH_PASS);
 let authEnabled = AUTH_CONFIGURED && TAU_SETTINGS.authEnabled !== false;
+// ─── tau-web inline login: cookie sessions ───
+// Browsers can't set headers on a WS handshake, so the login form mints an
+// HttpOnly cookie session after verifying Basic credentials. Tokens live in
+// memory only: a server restart invalidates them and the UI re-prompts.
+const authTokens = new Set<string>();
+const AUTH_COOKIE = "tau_auth";
+let serverStartedAt = "";
+let tauWebVersion = "0.1.0";
+try { tauWebVersion = require("../package.json").version || tauWebVersion; } catch {}
+function mintAuthToken(): string {
+  try {
+    const t = require("node:crypto").randomBytes(32).toString("hex");
+    authTokens.add(t);
+    if (authTokens.size > 200) { const first = authTokens.values().next().value; if (first) authTokens.delete(first); }
+    return t;
+  } catch { return ""; }
+}
+function parseAuthCookie(req: http.IncomingMessage): string {
+  try {
+    const header = req.headers.cookie || "";
+    for (const part of header.split(";")) {
+      const [k, ...rest] = part.trim().split("=");
+      if (k === AUTH_COOKIE) return rest.join("=");
+    }
+  } catch {}
+  return "";
+}
 // @ts-ignore — __dirname is provided by jiti at runtime
 const STATIC_DIR = process.env.TAU_STATIC_DIR || findPublicDir();
 
@@ -226,14 +253,21 @@ function saveTauSetting(key: string, value: any) {
   } catch {}
 }
 
+function checkBasicCredentials(header: string | undefined): boolean {
+  if (!header?.startsWith("Basic ")) return false;
+  try {
+    const decoded = Buffer.from(header.slice(6), "base64").toString();
+    const colon = decoded.indexOf(":");
+    if (colon === -1) return false;
+    return decoded.slice(0, colon) === AUTH_USER && decoded.slice(colon + 1) === AUTH_PASS;
+  } catch { return false; }
+}
 function checkBasicAuth(req: http.IncomingMessage): boolean {
   if (!authEnabled) return true;
-  const header = req.headers.authorization;
-  if (!header?.startsWith("Basic ")) return false;
-  const decoded = Buffer.from(header.slice(6), "base64").toString();
-  const colon = decoded.indexOf(":");
-  if (colon === -1) return false;
-  return decoded.slice(0, colon) === AUTH_USER && decoded.slice(colon + 1) === AUTH_PASS;
+  if (checkBasicCredentials(req.headers.authorization)) return true;
+  // Inline-login cookie session (minted by POST /api/login, memory-only).
+  const token = parseAuthCookie(req);
+  return !!token && authTokens.has(token);
 }
 
 function sendAuthRequired(res: http.ServerResponse) {
@@ -1157,8 +1191,9 @@ export default function (pi: ExtensionAPI) {
   function serveStaticFile(req: http.IncomingMessage, res: http.ServerResponse) {
     let urlPath = req.url || "/";
 
-    // Auth gate — exempt /api/health for monitoring
-    if (authEnabled && urlPath !== "/api/health" && !checkBasicAuth(req)) {
+    // Auth gate — exempt /api/health (monitoring) and /api/login + /api/logout (the login flow itself)
+    const authExempt = urlPath === "/api/health" || urlPath === "/api/login" || urlPath === "/api/logout";
+    if (authEnabled && !authExempt && !checkBasicAuth(req)) {
       sendAuthRequired(res);
       return;
     }
@@ -1242,7 +1277,41 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
 
     if (urlPath === "/api/health") {
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ status: "ok", mode: "mirror", mirrorUrl, tailscaleUrl: tailscaleUrl || undefined, platform: process.platform, authEnabled }));
+      res.end(JSON.stringify({ status: "ok", mode: "mirror", mirrorUrl, tailscaleUrl: tailscaleUrl || undefined, platform: process.platform, authEnabled, startedAt: serverStartedAt || undefined, version: tauWebVersion }));
+      return;
+    }
+
+    // Inline login: verify Basic credentials, mint an HttpOnly cookie session.
+    // The browser sends the cookie on fetches AND the WS handshake (which
+    // can't carry custom headers), so this replaces the native login prompt.
+    if (urlPath === "/api/login" && req.method === "POST") {
+      if (!authEnabled || !AUTH_CONFIGURED) {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true, authRequired: false }));
+        return;
+      }
+      if (checkBasicCredentials(req.headers.authorization)) {
+        const token = mintAuthToken();
+        res.writeHead(200, {
+          "Content-Type": "application/json",
+          "Set-Cookie": `${AUTH_COOKIE}=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=2592000`,
+        });
+        res.end(JSON.stringify({ ok: true }));
+      } else {
+        res.writeHead(401, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: "Invalid username or password" }));
+      }
+      return;
+    }
+
+    if (urlPath === "/api/logout" && req.method === "POST") {
+      const token = parseAuthCookie(req);
+      if (token) authTokens.delete(token);
+      res.writeHead(200, {
+        "Content-Type": "application/json",
+        "Set-Cookie": `${AUTH_COOKIE}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0`,
+      });
+      res.end(JSON.stringify({ ok: true }));
       return;
     }
 
@@ -2050,8 +2119,24 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
 
       mirrorUrl = `http://${localIp}:${port}`;
       tailscaleUrl = tailscaleIp ? `http://${tailscaleIp}:${port}` : "";
+      serverStartedAt = new Date().toISOString();
       tauLog(`[Mirror] Tau mirror server running on ${mirrorUrl}${tailscaleUrl ? `  •  Tailscale: ${tailscaleUrl}` : ""}`);
       ctx.ui.setStatus("mirror", `Mirror: ${localIp}:${port}${tailscaleIp ? ` • TS: ${tailscaleIp}:${port}` : ""}`);
+
+      // Sibling check: the old `tau` package and `tau-web` must never run together.
+      // Both load in every pi process (installed packages + -e), both read the
+      // same TAU_MIRROR_PORT, and the loser bumps +1 — a ghost old-code mirror.
+      // Same PID + different port in the registry == in-process sibling.
+      // Sibling check now (catches the case where tau started first) and again
+      // after 5s (tau-web usually wins the race, tau registers moments later).
+      const warnSibling = () => {
+        try {
+          const sibling = getRunningInstances().find((i) => i.pid === process.pid && i.port !== port);
+          if (sibling) tauLog(`[Mirror] WARNING: sibling mirror already running in this process on :${sibling.port} (old tau package?). Run only ONE of tau / tau-web — remove the other from settings packages.`);
+        } catch {}
+      };
+      warnSibling();
+      setTimeout(warnSibling, 5000).unref?.();
 
       // Register this instance
       const sessionFile = ctx.sessionManager.getSessionFile() || "";

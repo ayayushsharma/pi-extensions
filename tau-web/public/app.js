@@ -82,6 +82,8 @@ const wsClient = new WebSocketClient(wsUrl);
 const state = new StateManager();
 const messageRenderer = new MessageRenderer(document.getElementById('messages'));
 const toolCardRenderer = new ToolCardRenderer(document.getElementById('messages'));
+// Shared sticky-scroll courtesy: tool cards defer to the message renderer.
+toolCardRenderer.shouldStick = () => !messageRenderer.userIsReading();
 const dialogHandler = new DialogHandler(document.getElementById('dialog-container'), wsClient);
 
 // Session sidebar

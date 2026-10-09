@@ -3636,6 +3636,18 @@ body.hide-thinking .thinking-block { display: none !important; }
   }
 }
 
+/* tau-web: coarse pointers (phones) — huge backdrop blurs over scrolling
+   content repaint every streamed chunk on weak mobile GPUs and read as
+   flicker/shimmer. Laptops keep the glass; phones get solid surfaces. */
+@media (pointer: coarse) {
+  .sidebar,
+  .header {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    background: var(--bg-solid);
+  }
+}
+
 /* High contrast mode */
 @media (prefers-contrast: more) {
   :root,

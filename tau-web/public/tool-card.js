@@ -319,12 +319,15 @@ export class ToolCardRenderer {
   }
 
   scrollToBottom() {
+    // Same courtesy as MessageRenderer: never yank a reading finger.
+    if (typeof this.shouldStick === 'function' && !this.shouldStick()) return;
     if (this.container) {
       const threshold = 100;
       const isNear =
         this.container.scrollHeight - this.container.scrollTop - this.container.clientHeight < threshold;
       if (isNear) {
         requestAnimationFrame(() => {
+          if (typeof this.shouldStick === 'function' && !this.shouldStick()) return;
           this.container.scrollTop = this.container.scrollHeight;
         });
       }

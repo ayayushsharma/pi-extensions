@@ -8,6 +8,17 @@ export class MessageRenderer {
   constructor(container) {
     this.container = container;
     this.isNearBottom = true;
+    // tau-web: sticky scroll. Programmatic per-chunk scrolls fight the user's
+    // finger (and the mobile URL bar collapsing shifts clientHeight, making
+    // near-bottom flap) — visible as flicker on phones. So a recent manual
+    // scroll suppresses autoscroll for a few seconds.
+    this.lastUserScroll = 0;
+    this.touchActive = false;
+    const markUserScroll = () => { this.lastUserScroll = Date.now(); };
+    this.container.addEventListener('wheel', markUserScroll, { passive: true });
+    this.container.addEventListener('touchstart', () => { this.touchActive = true; markUserScroll(); }, { passive: true });
+    this.container.addEventListener('touchmove', markUserScroll, { passive: true });
+    this.container.addEventListener('touchend', () => { this.touchActive = false; markUserScroll(); }, { passive: true });
 
     // Track scroll position for smart auto-scroll
     this.container.addEventListener('scroll', () => {
@@ -15,6 +26,9 @@ export class MessageRenderer {
       this.isNearBottom =
         this.container.scrollHeight - this.container.scrollTop - this.container.clientHeight < threshold;
     });
+  }
+  userIsReading() {
+    return this.touchActive || (Date.now() - this.lastUserScroll < 2500);
   }
 
   clear() {
@@ -273,8 +287,11 @@ export class MessageRenderer {
   }
 
   scrollToBottom() {
+    // Never yank the view out from under a reading finger (phone flicker).
+    if (this.userIsReading()) return;
     if (this.isNearBottom) {
       requestAnimationFrame(() => {
+        if (this.userIsReading()) return;
         this.container.scrollTop = this.container.scrollHeight;
       });
     }

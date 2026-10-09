@@ -882,7 +882,7 @@ html {
   will-change: opacity;
 }
 .session-banner.preview .sb-dot { background: #f0b429; }
-.session-banner.error .sb-dot { background: var(--error, #ef4444); animation: none; }
+.session-banner.error .sb-dot { background: var(--error, #ef4444); }
 .session-banner.detached .sb-dot { background: var(--tool-accent-text); animation: none; }
 .session-banner .sb-text {
   flex: 1;
@@ -1554,18 +1554,16 @@ html {
   border-radius: 50%;
   background: var(--text-dim);
   transition: all 0.4s var(--ease);
+  /* One long-running pulse on the base class: the state classes below only
+     change color, and a class swap that leaves animation-name alone does not
+     restart a running animation (no phone strobing on reconnect). */
+  animation: pulse 2s infinite;
+  will-change: opacity;
 }
 
 .status-indicator.connected {
   background: var(--success);
   box-shadow: 0 0 8px rgba(52, 211, 153, 0.5);
-  animation: connectPop 0.4s var(--spring);
-}
-
-@keyframes connectPop {
-  from { transform: scale(0); }
-  50% { transform: scale(1.5); }
-  to { transform: scale(1); }
 }
 
 .status-indicator.disconnected {
@@ -1575,8 +1573,6 @@ html {
 
 .status-indicator.streaming {
   background: var(--accent);
-  animation: pulse 1.5s infinite;
-  will-change: opacity;
   box-shadow: 0 0 12px var(--accent-glow);
 }
 
@@ -1584,8 +1580,6 @@ html {
    long silent summarize never reads as "stuck". */
 .status-indicator.compacting {
   background: var(--warning, #f0b429);
-  animation: pulse 1.5s infinite;
-  will-change: opacity;
   box-shadow: 0 0 12px rgba(240, 180, 41, 0.5);
 }
 
@@ -2259,13 +2253,21 @@ code {
   color: var(--accent-text);
 }
 
-/* Streaming cursor */
+/* Streaming cursor: sits inline right after the last streamed character and
+   keeps one blink animation for the whole message. The text child is rewritten
+   per delta but the animated pseudo-element belongs to this stable parent, so
+   the blink never restarts; will-change keeps it compositor-driven on phones. */
 .message-content.streaming::after {
   content: '▋';
   animation: blink 1s infinite;
+  will-change: opacity;
   margin-left: 1px;
   color: var(--accent);
 }
+
+/* Keep the streamed text inline so the ::after cursor follows the last
+   character instead of dropping onto its own line below the text block. */
+.streaming-text { display: inline; }
 
 @keyframes blink {
   0%, 50% { opacity: 1; }
@@ -2469,8 +2471,8 @@ body.hide-thinking .thinking-block { display: none !important; }
 
 .tool-status.pending { background: var(--bg-glass-strong); color: var(--text-dim); border: 1px solid var(--border); }
 .tool-status.pending::before { content: '○'; font-size: 8px; }
-.tool-status.streaming { background: var(--tool-accent); color: white; animation: pulse 1.5s infinite; }
-.tool-status.streaming::before { content: '●'; font-size: 7px; animation: pulse 1s infinite; }
+.tool-status.streaming { background: var(--tool-accent); color: white; animation: pulse 1.5s infinite; will-change: opacity; }
+.tool-status.streaming::before { content: '●'; font-size: 7px; animation: pulse 1s infinite; will-change: opacity; }
 .tool-status.complete { background: rgba(52, 211, 153, 0.1); color: var(--success); border: 1px solid rgba(52, 211, 153, 0.2); }
 .tool-status.complete::before { content: '✓'; font-size: 9px; font-weight: 700; }
 .tool-status.error { background: rgba(248, 113, 113, 0.1); color: var(--error); border: 1px solid rgba(248, 113, 113, 0.2); }

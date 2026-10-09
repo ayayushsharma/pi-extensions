@@ -315,7 +315,7 @@ function showNewMessageBadge() {
 // ═══════════════════════════════════════
 
 wsClient.addEventListener('connected', async () => {
-  updateConnectionStatus('connected');
+  pollConnectionStatus();
   // A reconnect wipes the streaming class; re-apply if a run is in flight.
   if (state.isStreaming) { lastUiStreaming = null; updateUI(); }
   // Fetch model context window size for token % display
@@ -444,7 +444,7 @@ wsClient.addEventListener('sessionEnded', (e) => {
 });
 
 wsClient.addEventListener('disconnected', () => {
-  updateConnectionStatus('disconnected');
+  pollConnectionStatus();
   // A dead socket can't tell "server down" from "credentials lost" (an
   // auth-rejected WS upgrade surfaces as an abnormal close). Probe an
   // authenticated endpoint — the fetch wrapper reloads into the login
@@ -453,7 +453,7 @@ wsClient.addEventListener('disconnected', () => {
 });
 
 wsClient.addEventListener('reconnectFailed', () => {
-  updateConnectionStatus('disconnected');
+  pollConnectionStatus();
   messageRenderer.renderError('Connection lost. Please refresh the page.');
 });
 
@@ -550,9 +550,8 @@ function compactionReasonText(reason) {
 // pulsing dot + "Compacting…" in the header, plus a transcript message.
 function setCompactingStatus(active, title) {
   isCompacting = active;
-  statusIndicator.classList.toggle('compacting', active);
+  renderStatusDot();
   if (active) {
-    statusIndicator.classList.remove('streaming');
     statusText.textContent = 'Compacting…';
     statusText.title = title || 'Summarizing the conversation context';
   } else {
@@ -760,14 +759,34 @@ function handleToolExecutionStart(event) {
 function handleToolExecutionUpdate(event) {
   if (activeStreamEpoch !== -1 && activeStreamEpoch !== bindingEpoch) return;
   const { toolCallId, partialResult } = event;
-  const output = formatToolOutput(partialResult);
+  // Tool output can stream dozens of times per second; formatting the full
+  // partial result and rewriting the card per event saturates the phone's main
+  // thread, which is what makes the pulsing "streaming" badge look like it
+  // flickers. Keep only the latest partial and flush once per frame instead.
+  pendingToolUpdates.set(toolCallId, partialResult);
+  if (!toolFlushRaf) toolFlushRaf = requestAnimationFrame(flushToolCardUpdates);
+}
 
-  state.updateToolExecution(toolCallId, {
-    status: 'streaming',
-    output,
-  });
-
-  toolCardRenderer.updateToolCard(state.getToolExecution(toolCallId));
+const pendingToolUpdates = new Map(); // toolCallId -> latest partialResult
+let toolFlushRaf = null;
+function flushToolCardUpdates() {
+  toolFlushRaf = null;
+  for (const [toolCallId, partialResult] of pendingToolUpdates) {
+    // The tool may have ended before this frame ran; finalize already wrote
+    // the final state and re-marking it streaming would restart the pulse.
+    const exec = state.getToolExecution(toolCallId);
+    if (!exec || exec.status === 'complete' || exec.status === 'error') continue;
+    state.updateToolExecution(toolCallId, {
+      status: 'streaming',
+      output: formatToolOutput(partialResult),
+    });
+    toolCardRenderer.updateToolCard(state.getToolExecution(toolCallId));
+  }
+  pendingToolUpdates.clear();
+}
+function cancelToolFlush() {
+  if (toolFlushRaf) { cancelAnimationFrame(toolFlushRaf); toolFlushRaf = null; }
+  pendingToolUpdates.clear();
 }
 
 function handleToolExecutionEnd(event) {
@@ -1801,6 +1820,7 @@ async function switchSession(sessionFile, session = null, project = null, opts =
     activeStreamEpoch = -1;
     // Clear any streaming state from previous session to prevent bleed
     cancelStreamFlush();
+    cancelToolFlush();
     currentStreamingElement = null;
     currentStreamingThinking = '';
     currentStreamingText = '';
@@ -2743,15 +2763,13 @@ function updateTokenUsage() {
     lastTokenRenderKey = key;
     tokenUsageEl.textContent = pct === 0 ? '<1%' : `${pct}%`;
     tokenUsageEl.classList.add('visible');
-    tokenUsageEl.classList.remove('warning', 'critical');
+    // Toggle with force: remove+add of the same class restarts its pulse
+    // animation on every percentage tick (visible phone flicker).
+    tokenUsageEl.classList.toggle('critical', pct >= 80);
+    tokenUsageEl.classList.toggle('warning', pct >= 60 && pct < 80);
     if (contextSizeEl) {
       contextSizeEl.textContent = `${(effective / 1000).toFixed(1)}k / ${(contextWindowSize / 1000).toFixed(0)}k`;
       contextSizeEl.classList.add('visible');
-    }
-    if (pct >= 80) {
-      tokenUsageEl.classList.add('critical');
-    } else if (pct >= 60) {
-      tokenUsageEl.classList.add('warning');
     }
     tokenUsageEl.title = `Context: ${(effective / 1000).toFixed(1)}k / ${(contextWindowSize / 1000).toFixed(0)}k tokens`;
     if (pct >= 80) {
@@ -2799,10 +2817,36 @@ async function fetchContextWindow() {
 }
 
 let tailscaleUrl = '';
+let wsConnected = false;
+let dotState = '';
+let lastConnStatus = null;
 
-function updateConnectionStatus(status) {
-  statusIndicator.className = `status-indicator ${status}`;
+// Dot color is derived once, here, and written only when the derived state
+// actually changes. The one pulse animation lives on the base
+// .status-indicator class, so swapping a color class never restarts it
+// (only animation-name changes do) — a flapping phone connection can no
+// longer strobe the dot or restart its pulse.
+function renderStatusDot() {
+  const next = !wsConnected
+    ? 'disconnected'
+    : isCompacting
+      ? 'compacting'
+      : state.isStreaming
+        ? 'streaming'
+        : 'connected';
+  if (next === dotState) return;
+  dotState = next;
+  statusIndicator.className = `status-indicator ${next}`;
+}
 
+function idleStatusText() {
+  return wsConnected ? (tailscaleUrl ? 'Connected • TS' : 'Connected') : 'Disconnected';
+}
+
+function applyConnectionUi(status) {
+  if (status === lastConnStatus) return;
+  lastConnStatus = status;
+  renderStatusDot();
   if (status === 'connected') {
     statusText.textContent = tailscaleUrl ? 'Connected • TS' : 'Connected';
     statusText.title = tailscaleUrl || '';
@@ -2816,10 +2860,24 @@ function updateConnectionStatus(status) {
         }
       }).catch(() => {});
     }
-  } else if (status === 'disconnected') {
+  } else {
     statusText.textContent = 'Disconnected';
+    statusText.title = '';
   }
 }
+
+// Plain poll of the socket's own state — the single source of truth for the
+// dot color and connection text. Socket events only trigger a tick here, they
+// never write the class themselves. The periodic tick also catches transitions
+// the events miss and guarantees the color settles without socket traffic.
+function pollConnectionStatus() {
+  const ws = wsClient.ws;
+  if (!ws || ws.readyState === WebSocket.CONNECTING) return; // keep gray "Connecting..."
+  const up = ws.readyState === WebSocket.OPEN;
+  wsConnected = up;
+  applyConnectionUi(up ? 'connected' : 'disconnected');
+}
+setInterval(pollConnectionStatus, 3000);
 
 function updateUI() {
   const isStreaming = state.isStreaming;
@@ -2827,17 +2885,12 @@ function updateUI() {
   if (isStreaming === lastUiStreaming) return;
   lastUiStreaming = isStreaming;
 
+  // Dot color follows the derived state. Its pulse lives on the base class,
+  // so this swap never restarts the animation.
+  renderStatusDot();
   // While compacting, the pill belongs to the compaction state.
   if (!isCompacting) {
-    if (isStreaming) {
-      statusIndicator.classList.add('streaming');
-      statusIndicator.classList.remove('connected');
-      statusText.textContent = 'Working...';
-    } else {
-      statusIndicator.classList.remove('streaming');
-      statusIndicator.classList.add('connected');
-      statusText.textContent = 'Connected';
-    }
+    statusText.textContent = isStreaming ? 'Working...' : idleStatusText();
   }
 
   messageInput.disabled = false;

@@ -2,6 +2,10 @@
  * Tool Card - Renders and updates tool execution cards (collapsible)
  */
 
+// .tool-output element -> last full string written. Lets streaming updates
+// append only the delta instead of re-writing (and re-laying-out) the block.
+const lastOutput = new WeakMap();
+
 export class ToolCardRenderer {
   constructor(container) {
     this.container = container;
@@ -9,6 +13,11 @@ export class ToolCardRenderer {
   }
 
   createToolCard(toolExecution) {
+    // A repeated start event must not recreate the card: rebuilding it would
+    // restart the streaming badge's pulse and orphan the old card in the DOM.
+    const existing = this.toolCards.get(toolExecution.toolCallId);
+    if (existing) return existing;
+
     const { toolCallId, toolName, args, status } = toolExecution;
 
     const card = document.createElement('div');
@@ -81,8 +90,17 @@ export class ToolCardRenderer {
     // Update output — textContent write only on change (avoids layout churn).
     const outputElement = card.querySelector('.tool-output');
     if (outputElement && toolExecution.output) {
-      if (outputElement.textContent !== toolExecution.output) {
-        outputElement.textContent = toolExecution.output;
+      const next = toolExecution.output;
+      const prev = lastOutput.get(outputElement) || '';
+      if (next !== prev) {
+        // Streaming output almost always grows by appending; append just the
+        // delta so the whole block isn't re-laid-out every frame on phones.
+        if (prev && next.startsWith(prev)) {
+          outputElement.appendChild(document.createTextNode(next.slice(prev.length)));
+        } else {
+          outputElement.textContent = next;
+        }
+        lastOutput.set(outputElement, next);
         this.scrollToBottom();
       }
     }
@@ -105,6 +123,7 @@ export class ToolCardRenderer {
     if (outputElement && result) {
       const output = this.formatResult(result);
       outputElement.textContent = output;
+      lastOutput.set(outputElement, output);
     }
 
     // Collapse completed cards (less noise)
@@ -238,7 +257,9 @@ export class ToolCardRenderer {
 
     const outputElement = card.querySelector('.tool-output');
     if (outputElement && result) {
-      outputElement.textContent = this.formatResult(result);
+      const out = this.formatResult(result);
+      outputElement.textContent = out;
+      lastOutput.set(outputElement, out);
     }
   }
 

@@ -47,6 +47,7 @@ async function tauRefreshAfterLogin() {
   tauHideLogin();
   wsClient.forceReconnect();
   try { await sidebar.loadSessions(); } catch {}
+  try { updateMirrorLiveIndicator(); } catch {}
   try { await refreshUplinkList(); } catch {}
   fetchSlashCommands();
 }
@@ -119,6 +120,11 @@ let currentStreamingElement = null;
 let currentStreamingText = '';
 let sessionTotalCost = 0;
 let lastInputTokens = 0;
+// tau-web: per-message usage reports make the context pill strobe during tool
+// loops. Peak holds the high-water mark within a run; compaction/session
+// switch resets it. lastTokenRenderKey skips no-op DOM writes.
+let contextPeakTokens = 0;
+let lastTokenRenderKey = '';
 let contextWindowSize = 0;  // fetched from model info
 let originalTitle = document.title;
 let hasFocus = true;
@@ -308,17 +314,17 @@ wsClient.addEventListener('rpcResponse', (e) => {
 });
 wsClient.addEventListener('uplinkAttached', (e) => {
   uplinkActive = { port: e.detail.port, pid: e.detail.pid };
-  renderLiveSection(liveInstances);
+  syncUplinkControls();
   messageRenderer.renderSystemMessage(`Attached to live session on :${e.detail.port} — prompts now drive the TUI.`);
 });
 wsClient.addEventListener('uplinkDetached', () => {
   uplinkActive = null;
-  renderLiveSection(liveInstances);
+  syncUplinkControls();
 });
 wsClient.addEventListener('uplinkDead', (e) => {
   const was = uplinkActive;
   uplinkActive = null;
-  renderLiveSection(liveInstances);
+  syncUplinkControls();
   // Never silent (ADR-007): surface the drop and offer headless-continue on the same file.
   messageRenderer.renderError(`Live uplink to :${e.detail.port} dropped. The TUI may have exited.`);
   if (e.detail.headlessContinue && was) offerHeadlessContinue(e.detail);
@@ -423,8 +429,9 @@ function handleCompactionEnd(event) {
     indicator.innerHTML = `✓ Context compacted${summary}`;
     indicator.classList.add('compaction-done');
   }
-  // Reset token tracking — next message will update
+  // Reset token tracking — next message will update with the compacted size
   lastInputTokens = 0;
+  resetContextPeak();
   updateTokenUsage();
   hideCompactButton();
 }
@@ -1388,8 +1395,7 @@ sidebarOverlay.addEventListener('click', () => {
 
 const newSessionBtn = document.getElementById('new-session-btn');
 newSessionBtn.addEventListener('click', () => {
-  sessionTotalCost = 0;
-  lastInputTokens = 0;
+  resetTokenTracking();
   updateCostDisplay();
   updateTokenUsage();
   state.reset();
@@ -1409,7 +1415,7 @@ refreshSessionsBtn.addEventListener('click', () => {
   refreshSessionsBtn.classList.add('spinning');
   sidebar.loadSessions().then(() => {
     setTimeout(() => refreshSessionsBtn.classList.remove('spinning'), 600);
-    if (isMirrorMode) updateMirrorLiveIndicator();
+    updateMirrorLiveIndicator();
   });
 });
 
@@ -1458,8 +1464,7 @@ sessionSearchInput.addEventListener('input', () => {
 });
 
 async function newSession() {
-  sessionTotalCost = 0;
-  lastInputTokens = 0;
+  resetTokenTracking();
   updateCostDisplay();
   updateTokenUsage();
   await switchSession(null);
@@ -1473,8 +1478,7 @@ async function newSession() {
 
 async function handleSessionSelect(session, project) {
   sidebar.setActive(session.filePath);
-  sessionTotalCost = 0;
-  lastInputTokens = 0;
+  resetTokenTracking();
   updateCostDisplay();
   updateTokenUsage();
   await switchSession(session.filePath, session, project);
@@ -1614,8 +1618,7 @@ function handleMirrorSync(data) {
 
   // Clear and render message history
   messageRenderer.clear();
-  sessionTotalCost = 0;
-  lastInputTokens = 0;
+  resetTokenTracking();
 
   if (data.entries && data.entries.length > 0) {
     renderSessionHistory(data.entries);
@@ -1673,27 +1676,40 @@ function updateMirrorLiveIndicator() {
     const inst = f && byFile.get(f);
     let btn = el.querySelector(':scope > .session-title-row > .live-attach-btn');
     if (inst && !inst.local) {
+      // Shared state: same port = same backend, whichever section attached.
+      const attached = !!(uplinkActive && uplinkActive.port === inst.port);
       if (!btn) {
         btn = document.createElement('button');
         btn.className = 'live-attach-btn';
-        btn.textContent = 'Attach';
-        btn.title = `Drive the live session on :${inst.port}`;
-        btn.dataset.port = String(inst.port);
-        btn.dataset.pid = String(inst.pid);
         btn.addEventListener('click', (e) => {
           e.stopPropagation();
-          attachUplink(Number(e.currentTarget.dataset.port), Number(e.currentTarget.dataset.pid));
+          const port = Number(e.currentTarget.dataset.port);
+          const pid = Number(e.currentTarget.dataset.pid);
+          // Dispatch on current state so one listener serves both actions.
+          if (uplinkActive && uplinkActive.port === port) detachUplink();
+          else attachUplink(port, pid);
         });
         const row = el.querySelector('.session-title-row');
         if (row) row.appendChild(btn);
-      } else {
-        btn.dataset.port = String(inst.port);
-        btn.dataset.pid = String(inst.pid);
       }
+      btn.dataset.port = String(inst.port);
+      btn.dataset.pid = String(inst.pid);
+      const label = attached ? 'Detach' : 'Attach';
+      if (btn.textContent !== label) btn.textContent = label;
+      btn.classList.toggle('attached', attached);
+      btn.title = attached
+        ? `Stop driving the live session on :${inst.port}`
+        : `Drive the live session on :${inst.port}`;
     } else if (btn) {
       btn.remove();
     }
   });
+}
+
+// One place to refresh every attach-state affordance (Live section + sidebar).
+function syncUplinkControls() {
+  renderLiveSection(liveInstances);
+  updateMirrorLiveIndicator();
 }
 
 // ═══════════════════════════════════════
@@ -1740,7 +1756,7 @@ function detachUplink() {
   if (!uplinkActive) return;
   wsClient.send({ type: 'uplink_detach' });
   uplinkActive = null;
-  renderLiveSection(liveInstances);
+  syncUplinkControls();
 }
 function offerHeadlessContinue(detail) {
   // Uplink died (TUI exited?): offer to continue the same file headless.
@@ -1955,6 +1971,19 @@ function showTypingIndicator(show) {
   typingIndicator.classList.toggle('hidden', !show);
 }
 
+// Reset the context-% high-water mark (compaction, session switch, reload).
+function resetContextPeak() {
+  contextPeakTokens = 0;
+  lastTokenRenderKey = '';
+}
+
+// Full per-session reset: cost + token tracking + peak.
+function resetTokenTracking() {
+  sessionTotalCost = 0;
+  lastInputTokens = 0;
+  resetContextPeak();
+}
+
 function updateCostDisplay() {
   if (sessionTotalCost > 0) {
     sessionCostEl.textContent = `$${sessionTotalCost.toFixed(4)} (sub)`;
@@ -1966,12 +1995,20 @@ function updateCostDisplay() {
 
 function updateTokenUsage() {
   if (lastInputTokens > 0 && contextWindowSize > 0) {
-    const pct = Math.round((lastInputTokens / contextWindowSize) * 100);
+    // Monotonic within a run: the displayed value only ever ticks up between
+    // real compactions. Per-message usage in tool loops would otherwise make
+    // the pill strobe between per-message values.
+    const effective = Math.max(lastInputTokens, contextPeakTokens);
+    contextPeakTokens = effective;
+    const pct = Math.round((effective / contextWindowSize) * 100);
+    const key = `pct:${pct}:${Math.round(effective / 100)}`;
+    if (key === lastTokenRenderKey) return;
+    lastTokenRenderKey = key;
     tokenUsageEl.textContent = pct === 0 ? '<1%' : `${pct}%`;
     tokenUsageEl.classList.add('visible');
     tokenUsageEl.classList.remove('warning', 'critical');
     if (contextSizeEl) {
-      contextSizeEl.textContent = `${(lastInputTokens / 1000).toFixed(1)}k / ${(contextWindowSize / 1000).toFixed(0)}k`;
+      contextSizeEl.textContent = `${(effective / 1000).toFixed(1)}k / ${(contextWindowSize / 1000).toFixed(0)}k`;
       contextSizeEl.classList.add('visible');
     }
     if (pct >= 80) {
@@ -1979,7 +2016,7 @@ function updateTokenUsage() {
     } else if (pct >= 60) {
       tokenUsageEl.classList.add('warning');
     }
-    tokenUsageEl.title = `Context: ${(lastInputTokens / 1000).toFixed(1)}k / ${(contextWindowSize / 1000).toFixed(0)}k tokens`;
+    tokenUsageEl.title = `Context: ${(effective / 1000).toFixed(1)}k / ${(contextWindowSize / 1000).toFixed(0)}k tokens`;
     if (pct >= 80) {
       showCompactButton();
     } else {
@@ -1987,6 +2024,9 @@ function updateTokenUsage() {
     }
   } else if (lastInputTokens > 0) {
     // No context window info yet, just show raw tokens
+    const key = `raw:${Math.round(lastInputTokens / 100)}`;
+    if (key === lastTokenRenderKey) return;
+    lastTokenRenderKey = key;
     tokenUsageEl.textContent = `${(lastInputTokens / 1000).toFixed(1)}k`;
     tokenUsageEl.classList.add('visible');
     tokenUsageEl.classList.remove('warning', 'critical');
@@ -2536,7 +2576,7 @@ document.querySelector('.mode-link:first-child')?.addEventListener('click', () =
 wsClient.connect();
 messageRenderer.renderWelcome();
 sidebar.loadSessions().then(() => {
-  if (isMirrorMode) updateMirrorLiveIndicator();
+  updateMirrorLiveIndicator();
 });
 initLauncher();
 

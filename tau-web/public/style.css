@@ -842,6 +842,11 @@ html {
 .session-title-row .live-attach-btn:active {
   transform: scale(0.96);
 }
+.session-title-row .live-attach-btn.attached {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
 .live-port {
   font-size: 11px;
   opacity: 0.6;

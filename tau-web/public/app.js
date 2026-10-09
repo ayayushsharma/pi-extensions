@@ -279,6 +279,8 @@ function showNewMessageBadge() {
 
 wsClient.addEventListener('connected', () => {
   updateConnectionStatus('connected');
+  // A reconnect wipes the streaming class; re-apply if a run is in flight.
+  if (state.isStreaming) { lastUiStreaming = null; updateUI(); }
   // Fetch model context window size for token % display
   setTimeout(fetchContextWindow, 1000);
   // Warm the slash-command cache for palette search + input validation
@@ -425,19 +427,35 @@ function handleCompactionEnd(event) {
   hideCompactButton();
 }
 
+// Anti-flicker: backends may emit agent_end/agent_start around every assistant
+// message inside one run (tool loops). Clearing the streaming chrome on each
+// boundary strobes the status pill, typing bubble and abort/send buttons.
+// So agent_end arms a short settle timer; an intervening agent_start cancels
+// it and the UI never visibly drops. Session switches cancel it too.
+let streamSettleTimer = null;
+let lastUiStreaming = null;
+function cancelStreamSettle() {
+  if (streamSettleTimer) { clearTimeout(streamSettleTimer); streamSettleTimer = null; }
+}
 function handleAgentStart() {
   activeStreamEpoch = bindingEpoch;
+  cancelStreamSettle();
   state.setStreaming(true);
   showTypingIndicator(true);
   updateUI();
 }
 
 function handleAgentEnd() {
-  state.setStreaming(false);
-  showTypingIndicator(false);
   currentStreamingElement = null;
   currentStreamingText = '';
-  updateUI();
+  // Hold the streaming chrome briefly to bridge message-boundary gaps.
+  cancelStreamSettle();
+  streamSettleTimer = setTimeout(() => {
+    streamSettleTimer = null;
+    state.setStreaming(false);
+    showTypingIndicator(false);
+    updateUI();
+  }, 1200);
 
   // Notify via tab title if unfocused
   if (!hasFocus) {
@@ -1470,6 +1488,10 @@ async function switchSession(sessionFile, session = null, project = null) {
   try {
     // New binding epoch — in-flight stream events from the old session are dropped.
     bindingEpoch++;
+    cancelStreamSettle();
+    state.setStreaming(false);
+    showTypingIndicator(false);
+    updateUI();
     activeStreamEpoch = -1;
     // Clear any streaming state from previous session to prevent bleed
     currentStreamingElement = null;
@@ -1560,6 +1582,10 @@ async function switchSession(sessionFile, session = null, project = null) {
 function handleMirrorSync(data) {
   console.log('[Mirror] Received state snapshot:', data.entries?.length, 'entries');
   bindingEpoch++; // fresh binding; drop anything in flight from before
+  cancelStreamSettle();
+  state.setStreaming(false);
+  showTypingIndicator(false);
+  updateUI();
   activeStreamEpoch = -1;
   isMirrorMode = true;
 
@@ -1674,10 +1700,19 @@ function renderLiveSection(instances) {
   if (!host) return;
   const others = (instances || []).filter((i) => i.pid !== undefined);
   if (others.length === 0 && !uplinkActive) {
-    host.innerHTML = '';
-    host.style.display = 'none';
+    // Signature-guarded clear: rebuilding innerHTML restarts dot pulses.
+    if (host.dataset.sig !== 'empty') {
+      host.innerHTML = '';
+      host.style.display = 'none';
+      host.dataset.sig = 'empty';
+    }
     return;
   }
+  // Skip rebuilds when nothing changed — the 5s poll must not restart
+  // the green-dot pulse animations (perceived as flicker).
+  const sig = others.map((i) => `${i.port}:${i.pid}:${(uplinkActive && uplinkActive.port === i.port) ? 1 : 0}:${i.sessionFile || ''}`).join('|');
+  if (host.dataset.sig === sig) return;
+  host.dataset.sig = sig;
   host.style.display = '';
   const rows = others.map((i) => {
     const attached = uplinkActive && uplinkActive.port === i.port;
@@ -1945,6 +1980,9 @@ function updateConnectionStatus(status) {
 
 function updateUI() {
   const isStreaming = state.isStreaming;
+  // No-op when nothing changed: rewriting classes/text restarts CSS pulses.
+  if (isStreaming === lastUiStreaming) return;
+  lastUiStreaming = isStreaming;
 
   if (isStreaming) {
     statusIndicator.classList.add('streaming');

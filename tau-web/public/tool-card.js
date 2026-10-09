@@ -62,11 +62,12 @@ export class ToolCardRenderer {
       card = this.createToolCard(toolExecution);
     }
 
-    // Update status
+    // Update status — write only on change so the streaming pulse never restarts.
     const statusElement = card.querySelector('.tool-status');
     if (statusElement) {
-      statusElement.className = `tool-status ${toolExecution.status}`;
-      statusElement.textContent = toolExecution.status;
+      const cls = `tool-status ${toolExecution.status}`;
+      if (statusElement.className !== cls) statusElement.className = cls;
+      if (statusElement.textContent !== toolExecution.status) statusElement.textContent = toolExecution.status;
     }
 
     // Auto-expand when streaming
@@ -77,11 +78,13 @@ export class ToolCardRenderer {
       if (chevron) chevron.classList.add('expanded');
     }
 
-    // Update output
+    // Update output — textContent write only on change (avoids layout churn).
     const outputElement = card.querySelector('.tool-output');
     if (outputElement && toolExecution.output) {
-      outputElement.textContent = toolExecution.output;
-      this.scrollToBottom();
+      if (outputElement.textContent !== toolExecution.output) {
+        outputElement.textContent = toolExecution.output;
+        this.scrollToBottom();
+      }
     }
   }
 

@@ -169,21 +169,16 @@ export class MessageRenderer {
   updateStreamingMessage(messageElement, content) {
     const contentDiv = messageElement.querySelector('.message-content');
     if (contentDiv) {
-      // Keep any thinking block, update only the text part
-      const thinkingBlock = contentDiv.querySelector('.streaming-thinking');
-      const escaped = this.escapeHtml(content);
-      if (thinkingBlock) {
-        // Remove everything after the thinking block and re-add text
-        let textNode = contentDiv.querySelector('.streaming-text');
-        if (!textNode) {
-          textNode = document.createElement('div');
-          textNode.className = 'streaming-text';
-          contentDiv.appendChild(textNode);
-        }
-        textNode.innerHTML = escaped;
-      } else {
-        contentDiv.innerHTML = escaped;
+      // Always write into a dedicated text node. Rewriting the whole
+      // contentDiv per chunk churns layout and disturbs the ::after cursor.
+      let textNode = contentDiv.querySelector('.streaming-text');
+      if (!textNode) {
+        textNode = document.createElement('div');
+        textNode.className = 'streaming-text';
+        contentDiv.appendChild(textNode);
       }
+      const escaped = this.escapeHtml(content);
+      if (textNode.innerHTML !== escaped) textNode.innerHTML = escaped;
       this.scrollToBottom();
     }
   }

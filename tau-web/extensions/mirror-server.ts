@@ -503,10 +503,41 @@ export default function (pi: ExtensionAPI) {
     "turn_start", "turn_end",
     "message_start", "message_update", "message_end",
     "tool_execution_start", "tool_execution_update", "tool_execution_end",
-    "auto_compaction_start", "auto_compaction_end",
+    "session_before_compact", "session_compact", "session_compact_failed",
     "auto_retry_start", "auto_retry_end",
     "model_select",
   ] as const;
+
+  // Pi's extension-level compaction events arrive as session_before_compact /
+  // session_compact / session_compact_failed; the web client renders the
+  // normalized compaction_start / compaction_end pair. (The old
+  // "auto_compaction_*" names are not pi events and never fired, which is why
+  // a compacting TUI looked stuck in the browser.)
+  function normalizeForwardedEvent(eventType: string, event: any): any {
+    if (eventType === "session_before_compact") {
+      return { type: "compaction_start", reason: event?.reason, willRetry: event?.willRetry };
+    }
+    if (eventType === "session_compact") {
+      return {
+        type: "compaction_end",
+        reason: event?.reason,
+        aborted: false,
+        willRetry: event?.willRetry,
+        summary: event?.compactionEntry?.summary,
+        tokensBefore: event?.compactionEntry?.tokensBefore,
+      };
+    }
+    if (eventType === "session_compact_failed") {
+      return {
+        type: "compaction_end",
+        reason: event?.reason,
+        aborted: event?.aborted,
+        willRetry: event?.willRetry,
+        errorMessage: event?.errorMessage,
+      };
+    }
+    return { type: eventType, ...event };
+  }
 
   for (const eventType of eventTypes) {
     pi.on(eventType as any, async (event: any, ctx: ExtensionContext) => {
@@ -514,7 +545,7 @@ export default function (pi: ExtensionAPI) {
 
       // Forward event to all connected browser clients
       // Wrap in { type: "event", event: ... } to match the existing frontend protocol
-      broadcast({ type: "event", event: { type: eventType, ...event } });
+      broadcast({ type: "event", event: normalizeForwardedEvent(eventType, event) });
     });
   }
 
@@ -1131,15 +1162,17 @@ export default function (pi: ExtensionAPI) {
 
         case "compact": {
           if (ctx) {
-            // Broadcast compaction start to all clients
-            broadcast({ type: "auto_compaction_start" });
+            // Announce the manual compaction on the same envelope as forwarded
+            // events; the real session_compact / session_compact_failed
+            // subscriptions deliver the end (and cover auto-compaction).
+            broadcast({ type: "event", event: { type: "compaction_start", reason: "manual", willRetry: false } });
             ctx.compact({
               customInstructions: command.customInstructions,
               onComplete: (result: any) => {
-                broadcast({ type: "auto_compaction_end", summary: result?.summary });
+                broadcast({ type: "event", event: { type: "compaction_end", reason: "manual", aborted: false, willRetry: false, summary: result?.summary } });
               },
               onError: (err: any) => {
-                broadcast({ type: "auto_compaction_end", summary: `Error: ${err.message}` });
+                broadcast({ type: "event", event: { type: "compaction_end", reason: "manual", aborted: false, willRetry: false, errorMessage: err?.message || String(err) } });
               },
             });
           }

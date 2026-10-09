@@ -439,9 +439,11 @@ function handleRPCEvent(event) {
     case 'tool_execution_end':
       handleToolExecutionEnd(event);
       break;
+    case 'compaction_start':
     case 'auto_compaction_start':
-      handleCompactionStart();
+      handleCompactionStart(event);
       break;
+    case 'compaction_end':
     case 'auto_compaction_end':
       handleCompactionEnd(event);
       break;
@@ -465,20 +467,61 @@ function handleRPCEvent(event) {
   }
 }
 
-function handleCompactionStart() {
-  const el = document.createElement('div');
-  el.className = 'system-message compaction-message';
-  el.id = 'compaction-indicator';
-  el.innerHTML = '<span class="compaction-spinner">⟳</span> Compacting context…';
-  messagesContainer.appendChild(el);
+let isCompacting = false;
+
+function compactionReasonText(reason) {
+  if (reason === 'threshold') return 'context limit reached';
+  if (reason === 'overflow') return 'context overflow — recovering';
+  if (reason === 'manual') return 'manual';
+  return '';
+}
+
+// Compaction can run for a while (summary request + retries) with no stream
+// output, which used to read as "stuck". Give it a first-class state: amber
+// pulsing dot + "Compacting…" in the header, plus a transcript message.
+function setCompactingStatus(active, title) {
+  isCompacting = active;
+  statusIndicator.classList.toggle('compacting', active);
+  if (active) {
+    statusIndicator.classList.remove('streaming');
+    statusText.textContent = 'Compacting…';
+    statusText.title = title || 'Summarizing the conversation context';
+  } else {
+    statusText.title = '';
+    // Force updateUI() to re-apply the streaming/idle chrome.
+    lastUiStreaming = null;
+    updateUI();
+  }
+}
+
+function handleCompactionStart(event) {
+  const reason = compactionReasonText(event?.reason);
+  setCompactingStatus(true, reason || 'Summarizing the conversation context');
+  let el = document.getElementById('compaction-indicator');
+  if (!el) {
+    el = document.createElement('div');
+    el.className = 'system-message compaction-message';
+    el.id = 'compaction-indicator';
+    messagesContainer.appendChild(el);
+  }
+  el.classList.remove('compaction-done');
+  el.innerHTML = `<span class="compaction-spinner">⟳</span> Compacting context${reason ? ` — ${escapeHtml(reason)}` : ''}…`;
   scrollToBottom();
 }
 
 function handleCompactionEnd(event) {
+  setCompactingStatus(false);
   const indicator = document.getElementById('compaction-indicator');
   if (indicator) {
-    const summary = event.summary ? ` — ${event.summary}` : '';
-    indicator.innerHTML = `✓ Context compacted${summary}`;
+    const error = event?.errorMessage || event?.error;
+    const summary = event?.summary || event?.result?.summary;
+    if (event?.aborted) {
+      indicator.innerHTML = '⊘ Compaction cancelled';
+    } else if (error) {
+      indicator.innerHTML = `⚠ Compaction failed — ${escapeHtml(String(error))}`;
+    } else {
+      indicator.innerHTML = `✓ Context compacted${summary ? ` — ${escapeHtml(String(summary))}` : ''}${event?.willRetry ? ' · retrying' : ''}`;
+    }
     indicator.classList.add('compaction-done');
   }
   // Reset token tracking — next message will update with the compacted size
@@ -2491,14 +2534,17 @@ function updateUI() {
   if (isStreaming === lastUiStreaming) return;
   lastUiStreaming = isStreaming;
 
-  if (isStreaming) {
-    statusIndicator.classList.add('streaming');
-    statusIndicator.classList.remove('connected');
-    statusText.textContent = 'Working...';
-  } else {
-    statusIndicator.classList.remove('streaming');
-    statusIndicator.classList.add('connected');
-    statusText.textContent = 'Connected';
+  // While compacting, the pill belongs to the compaction state.
+  if (!isCompacting) {
+    if (isStreaming) {
+      statusIndicator.classList.add('streaming');
+      statusIndicator.classList.remove('connected');
+      statusText.textContent = 'Working...';
+    } else {
+      statusIndicator.classList.remove('streaming');
+      statusIndicator.classList.add('connected');
+      statusText.textContent = 'Connected';
+    }
   }
 
   messageInput.disabled = false;

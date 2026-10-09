@@ -16,7 +16,11 @@ windowed history render, Live section with preview-then-attach (ADR-009), prompt
 routing (uplink → mirror-live → headless → direct). The header follows the
 attached backend: model, thinking level, session cost and effective context
 window come from the live session (not the web server), and model/thinking can
-be changed from the web UI while driving. Harness: **ALL PASS**
+be changed from the web UI while driving. Compaction (manual, threshold and
+overflow) is a first-class UI state: an amber **Compacting…** pill plus an inline
+transcript message that resolves to the summary, a cancellation, or the failure —
+headless sessions are covered by tau-web itself; attached live TUIs forward it once
+the TUI runs the patched `tau` extension. Harness: **ALL PASS**
 (health, authed WS, ping/pong, `uplink_list` discovery of live tau, `start_session`
 + headless `HEADLESS-OK` round-trip, uplink attach/detach + live `mirror_sync`).
 

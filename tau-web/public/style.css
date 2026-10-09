@@ -1580,6 +1580,15 @@ html {
   box-shadow: 0 0 12px var(--accent-glow);
 }
 
+/* Compaction owns the pill while pi summarizes: amber, still pulsing, so a
+   long silent summarize never reads as "stuck". */
+.status-indicator.compacting {
+  background: var(--warning, #f0b429);
+  animation: pulse 1.5s infinite;
+  will-change: opacity;
+  box-shadow: 0 0 12px rgba(240, 180, 41, 0.5);
+}
+
 @keyframes pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.3; }

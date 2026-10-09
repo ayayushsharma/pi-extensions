@@ -11,6 +11,7 @@ import { SessionSidebar } from './session-sidebar.js';
 import { themes, applyTheme, getCurrentTheme } from './themes.js';
 import { FileBrowser, getFileIcon } from './file-browser.js';
 import { Launcher } from './launcher.js';
+import { SpeechController } from './tts.js';
 
 // ─── Inline login (replaces the native browser login prompt) ───
 // The server mints an HttpOnly cookie session via POST /api/login, which the
@@ -47,6 +48,7 @@ async function tauRefreshAfterLogin() {
   tauHideLogin();
   wsClient.forceReconnect();
   try { await sidebar.loadSessions(); } catch {}
+  try { renderCurrentSessionCard(); } catch {}
   try { updateMirrorLiveIndicator(); } catch {}
   try { await refreshUplinkList(); } catch {}
   fetchSlashCommands();
@@ -114,6 +116,36 @@ const contextSizeEl = document.getElementById('context-size');
 const scrollBottomBtn = document.getElementById('scroll-bottom-btn');
 const scrollBottomBadge = document.getElementById('scroll-bottom-badge');
 const messagesContainer = document.getElementById('messages');
+
+// ─── Speech (text-to-speech) ───
+// Browser-native speechSynthesis: on-device voices, no API key, works offline
+// and over plain HTTP (see tts.js for the engine rationale and quirks).
+const speech = new SpeechController();
+document.body.classList.toggle('no-tts', !speech.supported);
+messageRenderer.onSpeak = (messageEl) => {
+  if (speech.isSpeakingFor(messageEl)) speech.stop();
+  else speech.speak(messageEl._speakText || '', { element: messageEl });
+};
+speech.addEventListener('start', (e) => setSpeakButtonState(e.detail.element, true));
+speech.addEventListener('end', (e) => setSpeakButtonState(e.detail.element, false));
+speech.addEventListener('error', (e) => flashStatus(e.detail.message));
+speech.addEventListener('voiceschanged', () => populateVoiceSelect());
+speech.addEventListener('settings', () => syncVoiceControls());
+function setSpeakButtonState(messageEl, speaking) {
+  const btn = messageEl?.querySelector?.('.message-speak-btn');
+  if (btn) btn.classList.toggle('speaking', speaking);
+}
+// Transient status text that reverts to the connection state (never "Connected"
+// while offline, and never left stranded by a newer flash).
+let statusFlashTimer = null;
+function flashStatus(message, ms = 3000) {
+  statusText.textContent = message;
+  if (statusFlashTimer) clearTimeout(statusFlashTimer);
+  statusFlashTimer = setTimeout(() => {
+    statusFlashTimer = null;
+    if (lastConnStatus !== null) statusText.textContent = idleStatusText();
+  }, ms);
+}
 
 // State tracking
 let currentStreamingElement = null;
@@ -606,6 +638,7 @@ function handleCompactionEnd(event) {
 // it and the UI never visibly drops. Session switches cancel it too.
 let streamSettleTimer = null;
 let lastUiStreaming = null;
+let pendingAutoRead = null; // { el, text } — last finalized assistant reply with text
 function cancelStreamSettle() {
   if (streamSettleTimer) { clearTimeout(streamSettleTimer); streamSettleTimer = null; }
 }
@@ -615,6 +648,9 @@ function handleAgentStart() {
   state.setStreaming(true);
   showTypingIndicator(true);
   updateUI();
+  // A new run makes the previous reply stale — never read over it.
+  pendingAutoRead = null;
+  speech.stop();
 }
 
 function handleAgentEnd() {
@@ -628,6 +664,12 @@ function handleAgentEnd() {
     state.setStreaming(false);
     showTypingIndicator(false);
     updateUI();
+    // Auto-read the reply once the run has actually settled (tool loops emit
+    // agent_end between messages; reading each one would overlap the next).
+    if (speech.settings.autoRead && pendingAutoRead) {
+      speech.speak(pendingAutoRead.text, { element: pendingAutoRead.el });
+    }
+    pendingAutoRead = null;
   }, 1200);
 
   // Notify via tab title if unfocused
@@ -726,7 +768,9 @@ function handleMessageEnd(message) {
     const usage = message?.usage || null;
     // Pass thinking + the final message so finalize renders the real block
     // order (thinking-only messages used to duplicate thinking into the body).
-    messageRenderer.finalizeStreamingMessage(currentStreamingElement, usage, currentStreamingThinking, message);
+    const finalizedEl = currentStreamingElement;
+    messageRenderer.finalizeStreamingMessage(finalizedEl, usage, currentStreamingThinking, message);
+    if (finalizedEl._speakText) pendingAutoRead = { el: finalizedEl, text: finalizedEl._speakText };
     currentStreamingElement = null;
     currentStreamingThinking = '';
 
@@ -1613,6 +1657,8 @@ thinkingBtn.addEventListener('click', async () => {
 document.addEventListener('keydown', (e) => {
   // Escape — Abort streaming, or close sidebar on mobile
   if (e.key === 'Escape') {
+    // Escape always stops read-aloud, then falls through to the usual handling.
+    if (speech.speaking) speech.stop();
     // Close palettes/panels first
     if (!settingsPanel.classList.contains('hidden')) {
       closeSettings();
@@ -1693,11 +1739,22 @@ sidebarOverlay.addEventListener('click', () => {
   updateSidebarToggleIcon();
 });
 
+// Explicit close button in the sidebar header (works on desktop too: collapses
+// the pane; the header hamburger brings it back).
+document.getElementById('sidebar-close-btn')?.addEventListener('click', () => {
+  sidebarEl.classList.add('collapsed');
+  fileSidebar.classList.add('collapsed');
+  sidebarOverlay.classList.remove('visible');
+  updateSidebarToggleIcon();
+});
+
 
 
 const newSessionBtn = document.getElementById('new-session-btn');
 newSessionBtn.addEventListener('click', () => {
   updateSessionHash(null);
+  speech.stop();
+  pendingAutoRead = null;
   resetTokenTracking();
   updateCostDisplay();
   updateTokenUsage();
@@ -1821,6 +1878,8 @@ async function switchSession(sessionFile, session = null, project = null, opts =
     // Clear any streaming state from previous session to prevent bleed
     cancelStreamFlush();
     cancelToolFlush();
+    speech.stop();
+    pendingAutoRead = null;
     currentStreamingElement = null;
     currentStreamingThinking = '';
     currentStreamingText = '';
@@ -1993,6 +2052,61 @@ function liveInstanceLabel(i) {
   return liveSessionName(i.sessionFile)
     || (i.cwd ? i.cwd.split('/').filter(Boolean).pop() : '')
     || (i.sessionFile ? i.sessionFile.split('/').pop() : `:${i.port}`);
+}
+
+// ─── Current session card (left pane) ───
+// One always-visible answer to "which session is this pane on, and where does
+// it live?" — used especially after detaching, when the frozen view no longer
+// says anything about the session it froze on.
+function currentConnectionInfo() {
+  const activeFile = sidebar.activeSessionFile || mirrorActiveSessionFile || null;
+  if (uplinkAttachPending) {
+    const port = uplinkPreview?.port || uplinkLastDetached?.port;
+    return { state: 'preview', label: `Attaching${port ? ` · :${port}` : ''}…` };
+  }
+  if (uplinkActive) return { state: 'live', label: `Driving · :${uplinkActive.port}` };
+  if (uplinkPreview) return { state: 'preview', label: `Preview · :${uplinkPreview.port}` };
+  if (uplinkLastDetached?.sessionFile && sessionKeyOf(uplinkLastDetached.sessionFile) === sessionKeyOf(activeFile)) {
+    return { state: 'detached', label: `Detached · :${uplinkLastDetached.port}` };
+  }
+  const boundKey = headlessBinding?.sessionFile ? sessionKeyOf(headlessBinding.sessionFile) : null;
+  if (headlessSessionKey && boundKey && boundKey === sessionKeyOf(activeFile)) {
+    return { state: 'headless', label: 'Headless backend' };
+  }
+  if (viewingActiveSession) return { state: 'server', label: 'This server' };
+  if (activeFile) return { state: 'headless', label: 'Headless backend' };
+  return { state: 'none', label: 'No session' };
+}
+
+let currentSessionSig = null;
+function renderCurrentSessionCard() {
+  const nameEl = document.getElementById('cs-name');
+  if (!nameEl) return;
+  const activeFile = sidebar.activeSessionFile || mirrorActiveSessionFile || null;
+  const found = findSidebarSession(activeFile);
+  const inst = (liveInstances || []).find((i) => activeFile && sessionKeyOf(i.sessionFile) === sessionKeyOf(activeFile));
+  let name = found?.session?.name || found?.session?.firstMessage || liveSessionName(activeFile) || '';
+  if (!name && activeFile) name = activeFile.split('/').pop().replace(/\.jsonl$/, '');
+  if (!name) name = 'New session';
+  const dir = found?.project?.path || inst?.cwd || '';
+  const info = currentConnectionInfo();
+  const sig = `${info.state}|${info.label}|${name}|${dir}`;
+  if (sig === currentSessionSig) return;
+  currentSessionSig = sig;
+  const dot = document.getElementById('cs-dot');
+  const stateEl = document.getElementById('cs-state');
+  const dirEl = document.getElementById('cs-dir');
+  if (dot) dot.className = `cs-dot ${info.state}`;
+  if (stateEl) stateEl.textContent = info.label;
+  nameEl.textContent = name;
+  nameEl.title = activeFile || name;
+  if (dirEl) {
+    dirEl.textContent = dir;
+    dirEl.title = dir;
+    dirEl.style.display = dir ? '' : 'none';
+  }
+  // Keep the LIVE list's "viewing" marker in sync with the selection.
+  renderLiveSection(liveInstances);
 }
 function liveByFileMap() {
   const m = new Map();
@@ -2216,39 +2330,48 @@ async function ensureSessionsLoaded() {
 function renderSessionBanner() {
   const el = document.getElementById('session-banner');
   if (!el) return;
+  // The sidebar card answers "which session am I on" — keep it in step with
+  // every banner-state change (attach, detach, drop, error).
+  renderCurrentSessionCard();
   const mainEl = document.querySelector('.main');
   const esc = (s) => escapeHtml(String(s ?? ''));
+  const nameOf = (file) => liveSessionName(file) || (file ? file.split('/').pop().replace(/\.jsonl$/, '') : '');
   let cls = '';
   let html = '';
   if (uplinkAttachError) {
     const target = uplinkPreview || uplinkLastDetached;
+    const errName = nameOf(target?.sessionFile) || nameOf(uplinkTargetSessionFile);
     cls = 'error';
     html = `<span class="sb-dot"></span>
-      <span class="sb-text"><strong>Attach failed</strong><span class="sb-hint">${esc(uplinkAttachError)}</span></span>
+      <span class="sb-text"><strong>Attach failed${errName ? ` — ${esc(errName)}` : ''}</strong><span class="sb-hint">${esc(uplinkAttachError)}</span></span>
       ${target ? `<button class="sb-btn" data-action="retry" data-port="${target.port}" data-pid="${target.pid}">Retry</button>` : ''}
       ${(target?.sessionFile || uplinkTargetSessionFile) ? `<button class="sb-btn" data-action="headless">Continue headless</button>` : ''}
       <button class="sb-btn" data-action="dismiss">×</button>`;
   } else if (uplinkActive) {
+    const driveName = nameOf(uplinkTargetSessionFile);
     cls = 'driving';
     html = `<span class="sb-dot"></span>
-      <span class="sb-text"><strong>Live · driving :${uplinkActive.port}</strong><span class="sb-hint">TUI is also attached — typing in both places may race</span></span>
+      <span class="sb-text"><strong>Driving${driveName ? ` “${esc(driveName)}”` : ' live TUI'} · :${uplinkActive.port}</strong><span class="sb-hint">TUI is also attached — typing in both places may race</span></span>
       <button class="sb-btn" data-action="detach">Detach</button>`;
   } else if (uplinkAttachPending) {
     const target = uplinkPreview || uplinkLastDetached;
+    const pendName = nameOf(target?.sessionFile) || nameOf(uplinkTargetSessionFile);
     cls = 'preview';
     html = `<span class="sb-dot"></span>
-      <span class="sb-text"><strong>Attaching to :${target?.port ?? '…'}…</strong></span>`;
+      <span class="sb-text"><strong>Attaching${pendName ? ` to “${esc(pendName)}”` : ''}${target?.port ? ` · :${target.port}` : ''}…</strong></span>`;
   } else if (uplinkPreview) {
     const last = uplinkPreview.lastActive ? ` · last active ${timeAgo(uplinkPreview.lastActive)}` : '';
+    const prevName = nameOf(uplinkPreview.sessionFile) || nameOf(uplinkTargetSessionFile);
     cls = 'preview';
     html = `<span class="sb-dot"></span>
-      <span class="sb-text"><strong>Previewing live session on :${uplinkPreview.port}</strong><span class="sb-hint">Read-only until you attach${esc(last)}</span></span>
+      <span class="sb-text"><strong>Previewing${prevName ? ` “${esc(prevName)}”` : ' live session'} · :${uplinkPreview.port}</strong><span class="sb-hint">Read-only until you attach${esc(last)}</span></span>
       <button class="sb-btn primary" data-action="attach">Attach &amp; Drive</button>
       <button class="sb-btn" data-action="cancel">Cancel</button>`;
   } else if (uplinkLastDetached) {
+    const detName = nameOf(uplinkLastDetached.sessionFile) || nameOf(uplinkTargetSessionFile);
     cls = 'detached';
     html = `<span class="sb-dot"></span>
-      <span class="sb-text"><strong>Detached from :${uplinkLastDetached.port}</strong><span class="sb-hint">View is frozen; the TUI keeps running</span></span>
+      <span class="sb-text"><strong>Detached${detName ? ` from “${esc(detName)}”` : ''} · :${uplinkLastDetached.port}</strong><span class="sb-hint">View is frozen; the TUI keeps running</span></span>
       <button class="sb-btn primary" data-action="retry" data-port="${uplinkLastDetached.port}" data-pid="${uplinkLastDetached.pid}">Attach again</button>
       <button class="sb-btn" data-action="dismiss">×</button>`;
   }
@@ -2409,23 +2532,25 @@ function renderLiveSection(instances) {
   }
   // Skip rebuilds when nothing changed — the 5s poll must not restart
   // the green-dot pulse animations (perceived as flicker).
-  const sig = others.map((i) => `${i.port}:${i.pid}:${(uplinkActive && uplinkActive.port === i.port) ? 1 : 0}:${(uplinkPreview && uplinkPreview.port === i.port) ? 1 : 0}:${i.sessionFile || ''}:${liveInstanceLabel(i)}`).join('|');
+  const activeKey = sessionKeyOf(sidebar.activeSessionFile || mirrorActiveSessionFile);
+  const sig = others.map((i) => `${i.port}:${i.pid}:${(uplinkActive && uplinkActive.port === i.port) ? 1 : 0}:${(uplinkPreview && uplinkPreview.port === i.port) ? 1 : 0}:${i.sessionFile || ''}:${liveInstanceLabel(i)}:${(activeKey && sessionKeyOf(i.sessionFile) === activeKey) ? 1 : 0}`).join('|');
   if (host.dataset.sig === sig) return;
   host.dataset.sig = sig;
   host.style.display = '';
   const rows = others.map((i) => {
     const attached = uplinkActive && uplinkActive.port === i.port;
     const previewing = uplinkPreview && uplinkPreview.port === i.port;
+    const viewing = !!activeKey && !!i.sessionFile && sessionKeyOf(i.sessionFile) === activeKey;
     const label = liveInstanceLabel(i);
-    const sub = i.cwd ? `${escapeHtml(i.cwd.split('/').filter(Boolean).pop() || '')} · :${i.port}` : `:${i.port}`;
+    const sub = `${viewing ? 'viewing · ' : ''}${i.cwd ? `${escapeHtml(i.cwd.split('/').filter(Boolean).pop() || '')} · :${i.port}` : `:${i.port}`}`;
     const action = i.local
-      ? `<span class="live-tag" title="Runs inside this web server's own process — nothing to attach to">this server</span>`
+      ? `<span class="live-tag" title="The web server's own Pi process (rpc mode) — the browser already talks to it directly; Attach is only for separate live TUI sessions">this server</span>`
       : attached
         ? `<button class="live-btn" data-action="detach" data-port="${i.port}">Detach</button>`
         : previewing
           ? `<button class="live-btn" data-action="cancelpreview">Cancel</button>`
           : `<button class="live-btn" data-action="attach" data-port="${i.port}" data-pid="${i.pid}" data-file="${escapeHtml(i.sessionFile || '')}" data-started="${escapeHtml(i.startedAt || '')}">Attach</button>`;
-    return `<div class="live-row${attached ? ' attached' : ''}">
+    return `<div class="live-row${attached ? ' attached' : ''}${viewing ? ' viewing' : ''}">
       <span class="live-dot"></span>
       <span class="live-text">
         <span class="live-label" title="${escapeHtml(i.sessionFile || '')}">${escapeHtml(label)}</span>
@@ -2457,6 +2582,7 @@ async function pollInstances() {
       liveInstances = data.instances || [];
       updateMirrorLiveIndicator();
       renderLiveSection(liveInstances);
+      renderCurrentSessionCard();
     }
   } catch {}
   return liveInstances;
@@ -2468,6 +2594,9 @@ pollInstances();
 
 // Enable/disable input based on whether we're viewing the live session
 function updateMirrorInputState() {
+  // Cheap + signature-guarded: the sidebar card must reflect preview/detach
+  // transitions, which all funnel through here.
+  renderCurrentSessionCard();
   const inputArea = document.querySelector('.input-area');
   // Preview: read-only until the user confirms the attach. Detached: the frozen
   // view of a live session is read-only too (the TUI keeps running without us).
@@ -2954,6 +3083,11 @@ function buildThemeGrid() {
 
 async function openSettings() {
   buildThemeGrid();
+  // Voice section: hidden where the browser has no speechSynthesis.
+  const voiceSection = document.getElementById('settings-voice-section');
+  if (voiceSection) voiceSection.style.display = speech.supported ? '' : 'none';
+  populateVoiceSelect();
+  syncVoiceControls();
   settingsPanel.classList.remove('hidden');
   settingsOverlay.classList.remove('hidden');
   // Server section: version + uptime from /api/health (auth-exempt).
@@ -3031,6 +3165,62 @@ toggleAutoCompact.addEventListener('click', async () => {
   toggleAutoCompact.className = `settings-toggle${isOn ? '' : ' on'}`;
   await rpcCommand({ type: 'set_auto_compaction', enabled: !isOn });
 });
+
+// ─── Voice settings (text-to-speech) ───
+const toggleAutoRead = document.getElementById('toggle-auto-read');
+const ttsVoiceSelect = document.getElementById('tts-voice-select');
+const ttsRate = document.getElementById('tts-rate');
+const ttsRateValue = document.getElementById('tts-rate-value');
+const btnTtsTest = document.getElementById('btn-tts-test');
+
+function populateVoiceSelect() {
+  if (!ttsVoiceSelect) return;
+  const current = speech.settings.voiceURI;
+  ttsVoiceSelect.innerHTML = '';
+  const auto = document.createElement('option');
+  auto.value = '';
+  auto.textContent = 'Automatic (best available)';
+  ttsVoiceSelect.appendChild(auto);
+  for (const v of speech.getVoices()) {
+    const opt = document.createElement('option');
+    opt.value = v.voiceURI || v.name;
+    opt.textContent = `${v.name} (${v.lang})${v.localService ? '' : ' · network'}`;
+    ttsVoiceSelect.appendChild(opt);
+  }
+  ttsVoiceSelect.value = current;
+  if (ttsVoiceSelect.value !== current) ttsVoiceSelect.value = '';
+}
+
+function syncVoiceControls() {
+  if (toggleAutoRead) toggleAutoRead.className = `settings-toggle${speech.settings.autoRead ? ' on' : ''}`;
+  if (ttsRate) ttsRate.value = String(speech.settings.rate);
+  if (ttsRateValue) ttsRateValue.textContent = `${Number(speech.settings.rate).toFixed(2)}×`;
+  if (ttsVoiceSelect) ttsVoiceSelect.value = speech.settings.voiceURI || '';
+}
+
+if (toggleAutoRead) {
+  toggleAutoRead.addEventListener('click', () => {
+    const on = !speech.settings.autoRead;
+    speech.setSettings({ autoRead: on });
+    if (!on) speech.stop();
+  });
+}
+if (ttsVoiceSelect) {
+  ttsVoiceSelect.addEventListener('change', () => {
+    speech.setSettings({ voiceURI: ttsVoiceSelect.value });
+    speech.speak('This is the selected voice.');
+  });
+}
+if (ttsRate) {
+  ttsRate.addEventListener('input', () => {
+    speech.setSettings({ rate: Number(ttsRate.value) });
+  });
+}
+if (btnTtsTest) {
+  btnTtsTest.addEventListener('click', () => {
+    speech.speak('Tau is ready. This is how I will read replies aloud.');
+  });
+}
 
 // Thinking level cycle (settings panel button)
 btnThinkingLevel.addEventListener('click', async () => {
@@ -3337,10 +3527,12 @@ function addLauncherNav() {
 
   const launcherLink = document.createElement('span');
   launcherLink.className = 'mode-link mode-link-launcher';
-  launcherLink.title = 'Projects';
+  launcherLink.title = 'Projects — click again to return to chat';
   launcherLink.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>';
   launcherLink.addEventListener('click', () => {
-    showLauncher();
+    // Toggle: the link is now the only nav item, so it must also lead back.
+    if (launcherEl.classList.contains('hidden')) showLauncher();
+    else hideLauncher();
   });
   modeToggle.appendChild(launcherLink);
 }
@@ -3365,18 +3557,13 @@ function hideLauncher() {
 
   // Update nav state
   document.querySelectorAll('.mode-link').forEach(l => l.classList.remove('active'));
-  document.querySelector('.mode-link:first-child')?.classList.add('active');
 }
-
-// Make the tau icon in sidebar switch back to chat
-document.querySelector('.mode-link:first-child')?.addEventListener('click', () => {
-  hideLauncher();
-});
 
 wsClient.connect();
 messageRenderer.renderWelcome();
 sidebar.loadSessions().then(() => {
   updateMirrorLiveIndicator();
+  renderCurrentSessionCard();
 });
 initLauncher();
 

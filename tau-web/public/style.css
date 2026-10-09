@@ -411,6 +411,11 @@ html {
   -webkit-app-region: no-drag;
 }
 
+/* No nav links yet (Projects not loaded) — don't show an empty pill */
+.mode-toggle:empty {
+  display: none;
+}
+
 .mode-link {
   display: flex;
   align-items: center;
@@ -422,12 +427,6 @@ html {
   font-size: 13px;
   color: var(--text-dim);
   transition: all var(--duration) var(--ease);
-}
-
-.tau-icon {
-  width: 24px;
-  height: 24px;
-  border-radius: var(--radius-sm);
 }
 
 .tau-icon-welcome {
@@ -768,6 +767,72 @@ html {
   opacity: 0.5;
   pointer-events: none;
 }
+/* Current session card — name + project directory + connection state */
+.current-session {
+  padding: 8px 12px 10px;
+  border-bottom: 1px solid var(--border, #e5e0d8);
+}
+.cs-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+.cs-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-dim);
+  flex-shrink: 0;
+}
+.cs-dot.server { background: var(--accent); }
+.cs-dot.live {
+  background: var(--success);
+  box-shadow: 0 0 6px rgba(52, 211, 153, 0.5);
+  animation: pulse 2s infinite;
+  will-change: opacity;
+}
+.cs-dot.preview {
+  background: var(--warning);
+  animation: pulse 2s infinite;
+  will-change: opacity;
+}
+.cs-dot.detached {
+  background: var(--error);
+  animation: pulse 2s infinite;
+  will-change: opacity;
+}
+.cs-dot.headless { background: var(--accent); }
+.cs-state {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cs-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cs-dir {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  /* LTR path, tail-first: the most specific directory stays visible. */
+  direction: rtl;
+  text-align: left;
+}
+
 .live-section {
   padding: 6px 8px;
   border-bottom: 1px solid var(--border, #e5e0d8);
@@ -788,6 +853,9 @@ html {
 }
 .live-row.attached {
   background: rgba(52, 211, 153, 0.12);
+}
+.live-row.viewing {
+  box-shadow: inset 2px 0 0 var(--accent);
 }
 .live-dot {
   width: 7px;
@@ -1729,6 +1797,38 @@ html {
 .settings-value-btn:hover {
   background: var(--bg-glass-hover);
   border-color: var(--border-hover);
+}
+
+.settings-select {
+  max-width: 180px;
+  padding: 4px 6px;
+  background: var(--bg-glass);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.settings-range-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings-range {
+  width: 110px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.settings-range-value {
+  font-size: 11px;
+  font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
+  color: var(--text-dim);
+  min-width: 40px;
+  text-align: right;
 }
 
 .settings-input {
@@ -3300,6 +3400,32 @@ body.hide-thinking .thinking-block { display: none !important; }
   font-size: 12px;
 }
 
+/* Read-aloud button — same rail as copy, always visible while speaking */
+.message-speak-btn {
+  opacity: 0;
+  align-self: flex-start;
+  margin-top: 4px;
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  padding: 4px 6px;
+  font-family: inherit;
+  transition: all 0.15s var(--ease);
+  flex-shrink: 0;
+}
+
+.message:hover .message-speak-btn { opacity: 1; }
+.message-speak-btn:hover { color: var(--text-primary); }
+.message-speak-btn:active { transform: scale(0.9); }
+.message-speak-btn.speaking {
+  opacity: 1;
+  color: var(--accent-text);
+  animation: pulse 1.5s infinite;
+  will-change: opacity;
+}
+body.no-tts .message-speak-btn { display: none; }
+
 /* Error / system messages */
 .error-message {
   background: rgba(248, 113, 113, 0.06);
@@ -3543,6 +3669,10 @@ body.hide-thinking .thinking-block { display: none !important; }
   }
 
   .message-copy-btn {
+    opacity: 0.4 !important;
+  }
+
+  .message-speak-btn {
     opacity: 0.4 !important;
   }
 

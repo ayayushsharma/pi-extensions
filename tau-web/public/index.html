@@ -22,14 +22,22 @@
     <!-- Left Sidebar -->
     <div class="sidebar" id="sidebar">
       <div class="sidebar-header">
-        <div class="mode-toggle" id="mode-toggle">
-          <span class="mode-link active" title="Chat"><img src="icons/tau-192.png" alt="τ" class="tau-icon"></span>
-        </div>
+        <div class="mode-toggle" id="mode-toggle"></div>
         <input type="text" id="session-search-input" class="sidebar-search-input" placeholder="Search..." autocomplete="off" />
         <div class="sidebar-actions">
           <button class="icon-btn" id="new-session-btn" title="New session" aria-label="New session"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></button>
           <button class="icon-btn" id="refresh-sessions-btn" title="Refresh sessions" aria-label="Refresh sessions"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></svg></button>
+          <button class="icon-btn sidebar-close-btn" id="sidebar-close-btn" title="Close sidebar" aria-label="Close sidebar"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
         </div>
+      </div>
+      <!-- Currently connected session: name + project directory + state -->
+      <div class="current-session" id="current-session">
+        <div class="cs-top">
+          <span class="cs-dot" id="cs-dot"></span>
+          <span class="cs-state" id="cs-state">No session</span>
+        </div>
+        <div class="cs-name" id="cs-name">New session</div>
+        <div class="cs-dir" id="cs-dir"></div>
       </div>
       <div class="live-section" id="live-section" style="display:none"></div>
       <div class="session-list" id="session-list">
@@ -194,6 +202,28 @@
         <div class="settings-row">
           <span class="settings-label">Show thinking</span>
           <button class="settings-toggle on" id="toggle-show-thinking"></button>
+        </div>
+      </div>
+      <div class="settings-section" id="settings-voice-section">
+        <div class="settings-section-title">Voice</div>
+        <div class="settings-row">
+          <span class="settings-label">Read replies aloud</span>
+          <button class="settings-toggle" id="toggle-auto-read"></button>
+        </div>
+        <div class="settings-row">
+          <span class="settings-label">Voice</span>
+          <select class="settings-select" id="tts-voice-select" aria-label="Speech voice"></select>
+        </div>
+        <div class="settings-row">
+          <span class="settings-label">Speed</span>
+          <span class="settings-range-wrap">
+            <input type="range" class="settings-range" id="tts-rate" min="0.5" max="2" step="0.05" value="1" aria-label="Speech rate" />
+            <span class="settings-range-value" id="tts-rate-value">1.00×</span>
+          </span>
+        </div>
+        <div class="settings-row">
+          <span class="settings-label">Preview</span>
+          <button class="settings-value-btn" id="btn-tts-test">Speak sample</button>
         </div>
       </div>
       <div class="settings-section" id="settings-auth-section" style="display:none">

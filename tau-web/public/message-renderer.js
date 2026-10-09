@@ -8,6 +8,9 @@ export class MessageRenderer {
   constructor(container) {
     this.container = container;
     this.isNearBottom = true;
+    // Set by app.js: called with (messageEl, buttonEl) when a speak button is
+    // tapped. Keeping the callback here means the renderer owns no speech state.
+    this.onSpeak = null;
     // tau-web: sticky scroll. Programmatic per-chunk scrolls fight the user's
     // finger (and the mobile URL bar collapsing shifts clientHeight, making
     // near-bottom flap) — visible as flicker on phones. So a recent manual
@@ -139,6 +142,10 @@ export class MessageRenderer {
 
     if (!isStreaming) {
       this._setupCopyBtn(div);
+      const speakText = typeof message.content === 'string'
+        ? message.content
+        : (message.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('\n');
+      this._addSpeakBtn(div, speakText);
     }
     this.container.appendChild(div);
     if (!isStreaming) this._renderMath(div);
@@ -199,6 +206,10 @@ export class MessageRenderer {
 
   finalizeStreamingMessage(messageElement, usage = null, thinking = '', message = null) {
     const contentDiv = messageElement.querySelector('.message-content');
+    // Capture the streamed text before the content div is rewritten: it is the
+    // fallback when the final payload has no text blocks (synthetic end).
+    const streamingText = contentDiv?.querySelector('.streaming-text');
+    const streamedRaw = streamingText ? streamingText.textContent : '';
     if (contentDiv) {
       contentDiv.classList.remove('streaming');
       // Prefer the authoritative final message content: it carries the real
@@ -207,8 +218,6 @@ export class MessageRenderer {
       // streaming thinking block — duplicating thinking into the body text.
       let html = '';
       const blocks = Array.isArray(message?.content) ? message.content : null;
-      const streamingText = contentDiv.querySelector('.streaming-text');
-      const streamedRaw = streamingText ? streamingText.textContent : '';
       if (blocks) {
         let sawThinking = false;
         let sawText = false;
@@ -236,13 +245,20 @@ export class MessageRenderer {
       this._renderMath(contentDiv);
     }
 
-    // Add copy button after streaming finishes
+    // Add copy + speak buttons after streaming finishes
     if (!messageElement.querySelector('.message-copy-btn')) {
       const btn = document.createElement('button');
       btn.className = 'message-copy-btn';
       btn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
       messageElement.appendChild(btn);
       this._setupCopyBtn(messageElement);
+    }
+    if (!messageElement.querySelector('.message-speak-btn')) {
+      const blocks = Array.isArray(message?.content) ? message.content : null;
+      const text = blocks
+        ? blocks.filter((b) => b.type === 'text').map((b) => b.text).join('\n')
+        : streamedRaw;
+      this._addSpeakBtn(messageElement, text);
     }
 
     // Add usage info if available
@@ -298,6 +314,21 @@ export class MessageRenderer {
         }, 1500);
       });
     });
+  }
+
+  // Add a read-aloud button to a finalized assistant message. The raw text is
+  // kept on the element (a DOM property, not an attribute) so the speech
+  // controller can read the source markdown rather than the rendered DOM.
+  _addSpeakBtn(messageEl, text) {
+    if (!text || !String(text).trim()) return;
+    messageEl._speakText = String(text);
+    const btn = document.createElement('button');
+    btn.className = 'message-speak-btn';
+    btn.title = 'Read aloud';
+    btn.setAttribute('aria-label', 'Read message aloud');
+    btn.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4z"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>';
+    btn.addEventListener('click', () => this.onSpeak?.(messageEl, btn));
+    messageEl.appendChild(btn);
   }
 
   escapeHtml(text) {

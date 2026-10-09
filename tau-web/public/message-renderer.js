@@ -207,10 +207,14 @@ export class MessageRenderer {
       // streaming thinking block — duplicating thinking into the body text.
       let html = '';
       const blocks = Array.isArray(message?.content) ? message.content : null;
+      const streamingText = contentDiv.querySelector('.streaming-text');
+      const streamedRaw = streamingText ? streamingText.textContent : '';
       if (blocks) {
         let sawThinking = false;
+        let sawText = false;
         for (const block of blocks) {
-          if (block.type === 'text') {
+          if (block.type === 'text' && block.text) {
+            sawText = true;
             html += renderMarkdown(block.text);
           } else if (block.type === 'thinking' && block.thinking) {
             sawThinking = true;
@@ -218,13 +222,14 @@ export class MessageRenderer {
           }
         }
         if (!sawThinking && thinking) html = this.renderThinkingBlock(thinking) + html;
+        // The final payload should carry every text block; if it somehow
+        // doesn't, keep what was streamed instead of dropping it.
+        if (!sawText && streamedRaw) html += renderMarkdown(streamedRaw);
       } else {
-        // No final message payload (e.g. synthetic end): use the streamed nodes,
-        // text only — never the whole content div.
-        const streamingText = contentDiv.querySelector('.streaming-text');
-        const rawText = streamingText ? streamingText.textContent : '';
+        // No final message payload (e.g. synthetic end): use the streamed text
+        // only — never the whole content div (it includes the thinking block).
         if (thinking) html += this.renderThinkingBlock(thinking);
-        html += renderMarkdown(rawText);
+        html += renderMarkdown(streamedRaw);
       }
       contentDiv.innerHTML = html;
       // Render math after markdown is applied

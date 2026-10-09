@@ -573,8 +573,9 @@ function handleMessageEnd(message) {
   if (currentStreamingElement) {
     // Pass usage info for cost display
     const usage = message?.usage || null;
-    // Pass thinking content so finalize can render the thinking block
-    messageRenderer.finalizeStreamingMessage(currentStreamingElement, usage, currentStreamingThinking);
+    // Pass thinking + the final message so finalize renders the real block
+    // order (thinking-only messages used to duplicate thinking into the body).
+    messageRenderer.finalizeStreamingMessage(currentStreamingElement, usage, currentStreamingThinking, message);
     currentStreamingElement = null;
     currentStreamingThinking = '';
 

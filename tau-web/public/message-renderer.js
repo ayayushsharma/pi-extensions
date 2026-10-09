@@ -197,20 +197,35 @@ export class MessageRenderer {
     }
   }
 
-  finalizeStreamingMessage(messageElement, usage = null, thinking = '') {
+  finalizeStreamingMessage(messageElement, usage = null, thinking = '', message = null) {
     const contentDiv = messageElement.querySelector('.message-content');
     if (contentDiv) {
       contentDiv.classList.remove('streaming');
-      // Get the raw text (exclude thinking block text)
-      const streamingText = contentDiv.querySelector('.streaming-text');
-      const rawText = streamingText ? streamingText.textContent : contentDiv.textContent;
-      
-      // Rebuild with thinking block (if any) + markdown text
+      // Prefer the authoritative final message content: it carries the real
+      // block order (thinking → text → thinking). The old fallback used
+      // contentDiv.textContent when no text streamed, which INCLUDED the
+      // streaming thinking block — duplicating thinking into the body text.
       let html = '';
-      if (thinking) {
-        html += this.renderThinkingBlock(thinking);
+      const blocks = Array.isArray(message?.content) ? message.content : null;
+      if (blocks) {
+        let sawThinking = false;
+        for (const block of blocks) {
+          if (block.type === 'text') {
+            html += renderMarkdown(block.text);
+          } else if (block.type === 'thinking' && block.thinking) {
+            sawThinking = true;
+            html += this.renderThinkingBlock(block.thinking);
+          }
+        }
+        if (!sawThinking && thinking) html = this.renderThinkingBlock(thinking) + html;
+      } else {
+        // No final message payload (e.g. synthetic end): use the streamed nodes,
+        // text only — never the whole content div.
+        const streamingText = contentDiv.querySelector('.streaming-text');
+        const rawText = streamingText ? streamingText.textContent : '';
+        if (thinking) html += this.renderThinkingBlock(thinking);
+        html += renderMarkdown(rawText);
       }
-      html += renderMarkdown(rawText);
       contentDiv.innerHTML = html;
       // Render math after markdown is applied
       this._renderMath(contentDiv);

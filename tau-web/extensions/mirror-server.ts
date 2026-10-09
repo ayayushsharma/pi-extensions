@@ -806,12 +806,17 @@ export default function (pi: ExtensionAPI) {
           }
           case "rpc_command": {
             // Route to uplink when attached (live TUI owns the run), else headless.
+            // Inject the browser's request id so the backend's response resolves
+            // the browser's pending control command (set_model, cycle_thinking…).
+            const inner = command.command && typeof command.command === "object"
+              ? { ...command.command, id: command.id }
+              : command.command;
             const up = uplinks.get(ws);
             if (up && !up.dead) {
-              try { (up.upstream as any).send(JSON.stringify(command.command || command)); } catch {}
+              try { (up.upstream as any).send(JSON.stringify(inner)); } catch {}
               return;
             }
-            const r = headless.command(ws, command.command || command);
+            const r = headless.command(ws, inner);
             if (!r.ok) sendTo(ws, { type: "error", message: r.error || "no active session" });
             return;
           }
@@ -829,7 +834,12 @@ export default function (pi: ExtensionAPI) {
           case "uplink_command": {
             const up = uplinks.get(ws);
             if (!up || up.dead) { sendTo(ws, { type: "error", message: "uplink not attached" }); return; }
-            try { (up.upstream as any).send(JSON.stringify(command.command)); } catch {}
+            // Same id injection as rpc_command: the upstream stamps its response
+            // with this id so the browser can match it to the pending command.
+            const inner = command.command && typeof command.command === "object"
+              ? { ...command.command, id: command.id }
+              : command.command;
+            try { (up.upstream as any).send(JSON.stringify(inner)); } catch {}
             return;
           }
           case "extension_ui_response": {

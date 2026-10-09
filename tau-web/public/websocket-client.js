@@ -130,7 +130,9 @@ export class WebSocketClient extends EventTarget {
         // else flows through the normal rpcEvent path so one UI speaks both dialects.
         const inner = message.event;
         if (inner && inner.type === 'response') {
-          this.dispatchEvent(new CustomEvent('rpcResponse', { detail: { id: message.id, response: inner, uplink: !!message.uplink, port: message.port } }));
+          // Uplinked/headless responses are forwarded without an envelope id —
+          // the id is on the inner response (injected by the server).
+          this.dispatchEvent(new CustomEvent('rpcResponse', { detail: { id: message.id ?? inner.id, response: inner, uplink: !!message.uplink, port: message.port } }));
         } else {
           // CustomEvent init ignores unknown fields: stamp the uplink marker on
           // the event object itself so handleRPCEvent can see its origin.

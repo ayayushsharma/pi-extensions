@@ -13,7 +13,10 @@ below. See `docs/adr/` for the accepted decisions.
 Implemented end to end and harness-verified (P0–P2 core): headless bridge,
 uplink proxy, unified `{type: rpc_event}` envelope, epoch-guarded streaming,
 windowed history render, Live section with preview-then-attach (ADR-009), prompt
-routing (uplink → mirror-live → headless → direct). Harness: **ALL PASS**
+routing (uplink → mirror-live → headless → direct). The header follows the
+attached backend: model, thinking level, session cost and effective context
+window come from the live session (not the web server), and model/thinking can
+be changed from the web UI while driving. Harness: **ALL PASS**
 (health, authed WS, ping/pong, `uplink_list` discovery of live tau, `start_session`
 + headless `HEADLESS-OK` round-trip, uplink attach/detach + live `mirror_sync`).
 

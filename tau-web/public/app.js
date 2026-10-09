@@ -154,6 +154,16 @@ let uplinkAttachPending = false;
 let uplinkAttachError = null; // string while an attach attempt failed
 let uplinkTargetSessionFile = null; // session file of the current/last attach target
 let serverOwnSessionFile = null; // the web server's own session (non-uplink mirror syncs)
+// Effective context usage from the rendered snapshot (pi's own numbers, incl.
+// any ctx-limit cap). While set, the static model registry must not overwrite
+// the context window in the header.
+let uplinkContextUsage = null;
+// True while the browser view is bound to a live TUI (attached, previewing, or
+// frozen after detach). The web server's own pi state must not overwrite the
+// model/thinking/cost/context of the session the user is actually viewing.
+function uplinkOwnsView() {
+  return !!(uplinkActive || uplinkPreview || uplinkLastDetached);
+}
 let rpcSeq = 0;
 const pendingRpc = new Map(); // id -> { resolve, command } for start_session / uplink_list acks
 function sendRpc(command) {
@@ -314,7 +324,7 @@ wsClient.addEventListener('connected', () => {
 wsClient.addEventListener('rpcResponse', (e) => {
   const { id, response } = e.detail;
   const pend = id ? pendingRpc.get(id) : null;
-  if (pend) { pendingRpc.delete(id); try { pend.resolve(response?.data || response); } catch {} }
+  if (pend) { pendingRpc.delete(id); try { pend.resolve(response || {}); } catch {} }
   if (response?.command === 'start_session' && response?.success) {
     headlessSessionKey = response?.data?.sessionKey || 'bound';
   } else if (response?.command === 'uplink_list' && response?.success) {
@@ -1159,23 +1169,56 @@ commandPaletteOverlay.addEventListener('click', closeCommandPalette);
 async function rpcCommand(cmd, statusMsg) {
   try {
     if (statusMsg) statusText.textContent = statusMsg;
-    const resp = await fetch('/api/rpc', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(cmd),
-    });
-    const data = await resp.json();
-    if (data.success) {
+    // Control commands must follow the bound backend: attached live TUI first,
+    // then a bound headless session, then the web server's own pi process.
+    // Server-level settings (auth toggle) belong to the web server process,
+    // not to the attached session's backend.
+    const serverLevel = cmd && (cmd.type === 'get_auth' || cmd.type === 'set_auth');
+    let data;
+    if (serverLevel) {
+      const resp = await fetch('/api/rpc', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(cmd),
+      });
+      data = await resp.json();
+    } else if (uplinkActive) {
+      data = await sendRpc({ type: 'uplink_command', command: cmd });
+    } else if (isMirrorMode && viewingActiveSession) {
+      // The web server's own session lives in the same pi process as /api/rpc.
+      const resp = await fetch('/api/rpc', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(cmd),
+      });
+      data = await resp.json();
+    } else if (headlessSessionKey) {
+      data = await sendRpc({ type: 'rpc_command', command: cmd });
+    } else {
+      const resp = await fetch('/api/rpc', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(cmd),
+      });
+      data = await resp.json();
+    }
+    if (data?.timeout) {
+      statusText.textContent = 'Timed out';
+      setTimeout(() => { statusText.textContent = 'Connected'; }, 3000);
+      return { success: false, error: 'timeout' };
+    }
+    if (data?.success) {
       statusText.textContent = 'Done';
       setTimeout(() => { statusText.textContent = 'Connected'; }, 2000);
     } else {
-      statusText.textContent = data.error || 'Failed';
+      statusText.textContent = data?.error || 'Failed';
       setTimeout(() => { statusText.textContent = 'Connected'; }, 3000);
     }
     return data;
   } catch (e) {
     statusText.textContent = 'Error';
     setTimeout(() => { statusText.textContent = 'Connected'; }, 3000);
+    return { success: false, error: String(e) };
   }
 }
 
@@ -1216,6 +1259,14 @@ function updateThinkingBtn() {
   thinkingBtn.textContent = currentThinkingLevel;
   thinkingBtn.classList.toggle('off', currentThinkingLevel === 'off');
 }
+// pi's canonical thinking levels. Older tau builds cycle a 5-level subset
+// (off..high), which would skip xhigh/max on an attached session — so cycle
+// the full list here and send the explicit level instead.
+const THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
+function nextThinkingLevel(current) {
+  const i = THINKING_LEVELS.indexOf(current);
+  return THINKING_LEVELS[(i + 1) % THINKING_LEVELS.length];
+}
 let currentModelId = '';
 let availableModels = [];
 let currentThinkingLevel = 'off';
@@ -1232,17 +1283,21 @@ async function fetchModelInfo() {
     if (modelsData.success && modelsData.data?.models) {
       availableModels = modelsData.data.models;
     }
-    if (stateData.success && stateData.data?.model) {
+    // The server's own state is authoritative only when no live-TUI view owns
+    // the screen — otherwise the uplink snapshot / session entries supply the
+    // model, thinking level, cost and context for the session being viewed.
+    if (stateData.success && stateData.data?.model && !uplinkOwnsView()) {
       currentModelId = stateData.data.model.id || '';
       updateModelLabel();
-
+    }
+    if (currentModelId && !uplinkContextUsage) {
       const model = availableModels.find(m => m.id === currentModelId);
       if (model?.contextWindow) {
         contextWindowSize = model.contextWindow;
         updateTokenUsage();
       }
     }
-    if (stateData.success && stateData.data?.thinkingLevel) {
+    if (stateData.success && stateData.data?.thinkingLevel && !uplinkOwnsView()) {
       currentThinkingLevel = stateData.data.thinkingLevel;
       updateThinkingBtn();
     }
@@ -1257,6 +1312,13 @@ function updateModelLabel() {
 }
 
 function toggleModelDropdown() {
+  // Preview is read-only: the uplink isn't wired yet, so a model switch here
+  // would hit the wrong backend. Attach & Drive first.
+  if (uplinkPreview) {
+    statusText.textContent = 'Attach & Drive to change the model';
+    setTimeout(() => { statusText.textContent = 'Connected'; }, 2500);
+    return;
+  }
   const isOpen = !modelDropdownMenu.classList.contains('hidden');
   if (isOpen) {
     closeModelDropdown();
@@ -1296,8 +1358,9 @@ function openModelDropdown() {
       el.addEventListener('click', async () => {
         closeModelDropdown();
         const display = m.id.replace(/^claude-/, '').replace(/-\d{8}$/, '');
-        await rpcCommand({ type: 'set_model', provider: m.provider, modelId: m.id }, `Switching to ${display}...`);
-        currentModelId = m.id;
+        const resp = await rpcCommand({ type: 'set_model', provider: m.provider, modelId: m.id }, `Switching to ${display}...`);
+        if (resp && resp.success === false) return; // keep the previous label on failure
+        currentModelId = resp?.data?.id || m.id;
         updateModelLabel();
         if (m.contextWindow) {
           contextWindowSize = m.contextWindow;
@@ -1340,11 +1403,16 @@ document.addEventListener('click', (e) => {
 
 // Thinking level button — cycles through levels
 thinkingBtn.addEventListener('click', async () => {
-  const data = await rpcCommand({ type: 'cycle_thinking_level' }, 'Cycling thinking...');
-  if (data?.success && data.data?.level) {
-    currentThinkingLevel = data.data.level;
-    updateThinkingBtn();
+  if (uplinkPreview) {
+    statusText.textContent = 'Attach & Drive to change thinking level';
+    setTimeout(() => { statusText.textContent = 'Connected'; }, 2500);
+    return;
   }
+  const next = nextThinkingLevel(currentThinkingLevel);
+  const data = await rpcCommand({ type: 'set_thinking_level', level: next }, `Thinking: ${next}...`);
+  if (data?.success === false) return; // keep the previous level on failure
+  currentThinkingLevel = next;
+  updateThinkingBtn();
 });
 
 // ═══════════════════════════════════════
@@ -1556,6 +1624,10 @@ async function switchSession(sessionFile, session = null, project = null, opts =
     state.reset();
     messageRenderer.clear();
     toolCardRenderer.clear();
+    // Fresh accounting per session: preview/cancel paths bypass the explicit
+    // resets in handleSessionSelect, and the peak must not bleed across views.
+    resetTokenTracking();
+    uplinkContextUsage = null;
 
     if (sessionFile && session) {
       messageRenderer.renderSystemMessage('Loading session...');
@@ -1627,7 +1699,7 @@ function handleMirrorSync(data, fromUplink = false) {
   console.log('[Mirror] Received state snapshot:', data.entries?.length, 'entries', fromUplink ? '(uplink)' : '');
   // While previewing/driving/frozen on a live session, snapshots about the web
   // server's OWN session must not clobber the view the user is looking at.
-  if (!fromUplink && (uplinkActive || uplinkPreview || uplinkLastDetached) && data.sessionFile !== uplinkTargetSessionFile) {
+  if (!fromUplink && uplinkOwnsView() && data.sessionFile !== uplinkTargetSessionFile) {
     isMirrorMode = true;
     serverOwnSessionFile = data.sessionFile || serverOwnSessionFile;
     return;
@@ -1669,6 +1741,14 @@ function handleMirrorSync(data, fromUplink = false) {
     renderSessionHistory(data.entries);
   } else {
     messageRenderer.renderWelcome();
+  }
+
+  // Authoritative context usage for the attached session (pi's own estimate),
+  // overrides the last assistant message's token count from the entries.
+  uplinkContextUsage = data.contextUsage || null;
+  if (data.contextUsage && typeof data.contextUsage === 'object') {
+    if (data.contextUsage.contextWindow) contextWindowSize = data.contextUsage.contextWindow;
+    if (Number.isFinite(data.contextUsage.tokens)) lastInputTokens = data.contextUsage.tokens;
   }
 
   updateCostDisplay();
@@ -1791,13 +1871,13 @@ function bindHeadless(cwd, sessionFile) {
   if (cwd) payload.cwd = cwd;
   if (sessionFile) payload.sessionFile = sessionFile;
   sendRpc(payload).then((data) => {
-    if (data && !data.timeout) headlessSessionKey = data.sessionKey || 'bound';
+    if (data && !data.timeout) headlessSessionKey = data?.data?.sessionKey || 'bound';
   });
 }
 async function refreshUplinkList() {
   try {
     const data = await sendRpc({ type: 'uplink_list' });
-    if (data && !data.timeout) renderLiveSection(data.instances || []);
+    if (data && !data.timeout) renderLiveSection(data?.data?.instances || []);
   } catch {}
 }
 // ─── Preview-then-attach (tau-web) ───
@@ -1891,6 +1971,7 @@ async function previewAttach(port, pid, sessionFile, lastActive) {
     syncUplinkControls();
   }
   uplinkAttachError = null;
+  uplinkLastDetached = null; // a new preview supersedes any frozen-detached view
   uplinkTargetSessionFile = sessionFile || null;
   const found = findSidebarSession(sessionFile);
   uplinkPreview = {
@@ -1926,6 +2007,9 @@ function cancelPreview() {
   const returnTo = uplinkPreview?.returnTo;
   uplinkPreview = null;
   uplinkAttachError = null;
+  // Returning to the previous view also ends any frozen-detached state, so the
+  // server's own snapshot may own the header again (model/thinking/context).
+  uplinkLastDetached = null;
   renderSessionBanner();
   // Return to whatever was open before the preview.
   const found = returnTo?.filePath ? findSidebarSession(returnTo.filePath) : null;
@@ -2114,6 +2198,30 @@ function updateMirrorInputState() {
 // ═══════════════════════════════════════
 
 function renderSessionHistory(entries) {
+  // Full-session accounting + last known model/thinking, independent of the
+  // rendered window: an attached/history session must show its own model,
+  // thinking level, cost and context — not the web server's own state.
+  let histCost = 0;
+  let histTokens = 0;
+  let histUsage = null;
+  let histModel = null;
+  let histThinking = null;
+  for (const entry of entries) {
+    if (entry.type === 'model_change') {
+      if (entry.modelId) histModel = entry.modelId;
+    } else if (entry.type === 'thinking_level_change') {
+      if (entry.thinkingLevel) histThinking = entry.thinkingLevel;
+    } else if (entry.type === 'message' && entry.message?.role === 'assistant') {
+      const usage = entry.message.usage;
+      if (usage?.cost?.total) histCost += usage.cost.total;
+      if (Number.isFinite(usage?.input)) { histTokens = usage.input + (usage.cacheRead || 0); histUsage = usage; }
+    }
+  }
+  if (histModel && histModel !== currentModelId) { currentModelId = histModel; updateModelLabel(); }
+  if (histThinking && histThinking !== currentThinkingLevel) { currentThinkingLevel = histThinking; updateThinkingBtn(); }
+  sessionTotalCost = histCost;
+  if (histTokens) { lastInputTokens = histTokens; lastUsage = histUsage; }
+
   // Window the render: full history stays on disk, the DOM only holds the tail.
   const total = entries.length;
   const visible = total > VISIBLE_MESSAGE_WINDOW ? entries.slice(total - VISIBLE_MESSAGE_WINDOW) : entries;
@@ -2172,15 +2280,6 @@ function renderSessionHistory(entries) {
           false,
           true
         );
-
-        // Track cost and tokens from history
-        if (msg.usage?.cost?.total) {
-          sessionTotalCost += msg.usage.cost.total;
-        }
-        if (msg.usage?.input) {
-          lastInputTokens = msg.usage.input + (msg.usage.cacheRead || 0);
-          lastUsage = msg.usage;
-        }
       }
 
       // Show tool calls as compact history cards
@@ -2456,10 +2555,12 @@ function formatUptime(ms) {
       const s = data.data;
       // Auto-compaction toggle
       toggleAutoCompact.className = `settings-toggle${s.autoCompactionEnabled ? ' on' : ''}`;
-      // Thinking level
-      btnThinkingLevel.textContent = s.thinkingLevel || 'off';
-      currentThinkingLevel = s.thinkingLevel || 'off';
-      updateThinkingBtn();
+      // Thinking level — only when no live-TUI view owns the header state.
+      if (!uplinkOwnsView()) {
+        btnThinkingLevel.textContent = s.thinkingLevel || 'off';
+        currentThinkingLevel = s.thinkingLevel || 'off';
+        updateThinkingBtn();
+      }
       // Session name
       inputSessionName.value = s.sessionName || '';
     }
@@ -2499,12 +2600,17 @@ toggleAutoCompact.addEventListener('click', async () => {
 
 // Thinking level cycle (settings panel button)
 btnThinkingLevel.addEventListener('click', async () => {
-  const data = await rpcCommand({ type: 'cycle_thinking_level' });
-  if (data?.success && data.data?.level) {
-    btnThinkingLevel.textContent = data.data.level;
-    currentThinkingLevel = data.data.level;
-    updateThinkingBtn();
+  if (uplinkPreview) {
+    statusText.textContent = 'Attach & Drive to change thinking level';
+    setTimeout(() => { statusText.textContent = 'Connected'; }, 2500);
+    return;
   }
+  const next = nextThinkingLevel(currentThinkingLevel);
+  const data = await rpcCommand({ type: 'set_thinking_level', level: next });
+  if (data?.success === false) return;
+  currentThinkingLevel = next;
+  btnThinkingLevel.textContent = next;
+  updateThinkingBtn();
 });
 
 // Show thinking toggle (local pref)

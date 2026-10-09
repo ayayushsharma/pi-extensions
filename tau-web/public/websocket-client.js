@@ -132,7 +132,10 @@ export class WebSocketClient extends EventTarget {
         if (inner && inner.type === 'response') {
           this.dispatchEvent(new CustomEvent('rpcResponse', { detail: { id: message.id, response: inner, uplink: !!message.uplink, port: message.port } }));
         } else {
-          this.dispatchEvent(new CustomEvent('rpcEvent', { detail: inner, uplink: !!message.uplink, port: message.port }));
+          // CustomEvent init ignores unknown fields: stamp the uplink marker on
+          // the event object itself so handleRPCEvent can see its origin.
+          if (inner && message.uplink) { inner.uplink = true; inner.uplinkPort = message.port; }
+          this.dispatchEvent(new CustomEvent('rpcEvent', { detail: inner }));
         }
         break;
       }

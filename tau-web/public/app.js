@@ -145,6 +145,15 @@ let headlessSessionKey = null; // acked by start_session response; null = headle
 let headlessBinding = null; // { cwd, sessionFile } — rejoin target persisted per browser
 try { headlessBinding = JSON.parse(localStorage.getItem('tau-web-binding') || 'null'); } catch {}
 let uplinkActive = null; // { port, pid } while attached to a live TUI via uplink proxy
+// tau-web preview-then-attach: attaching is two-phase. Picking Attach loads the
+// session history read-only with a confirm banner; only "Attach & Drive" wires
+// the uplink. uplinkLastDetached powers the "Attach again" affordance.
+let uplinkPreview = null; // { port, pid, sessionFile, returnTo } while previewing
+let uplinkLastDetached = null; // { port, pid, sessionFile } after a detach
+let uplinkAttachPending = false;
+let uplinkAttachError = null; // string while an attach attempt failed
+let uplinkTargetSessionFile = null; // session file of the current/last attach target
+let serverOwnSessionFile = null; // the web server's own session (non-uplink mirror syncs)
 let rpcSeq = 0;
 const pendingRpc = new Map(); // id -> { resolve, command } for start_session / uplink_list acks
 function sendRpc(command) {
@@ -314,16 +323,37 @@ wsClient.addEventListener('rpcResponse', (e) => {
 });
 wsClient.addEventListener('uplinkAttached', (e) => {
   uplinkActive = { port: e.detail.port, pid: e.detail.pid };
+  uplinkPreview = null;
+  uplinkLastDetached = null;
+  uplinkAttachPending = false;
+  uplinkAttachError = null;
+  viewingActiveSession = true; // the uplinked TUI's session is now the live view
+  updateMirrorInputState();
+  renderSessionBanner();
   syncUplinkControls();
   messageRenderer.renderSystemMessage(`Attached to live session on :${e.detail.port} — prompts now drive the TUI.`);
 });
 wsClient.addEventListener('uplinkDetached', () => {
+  const prev = uplinkActive;
   uplinkActive = null;
+  uplinkPreview = null;
+  uplinkAttachPending = false;
+  if (prev) uplinkLastDetached = { port: prev.port, pid: prev.pid, sessionFile: uplinkTargetSessionFile };
+  viewingActiveSession = false; // frozen view: routing stays on the bound backend
+  if (serverOwnSessionFile) mirrorActiveSessionFile = serverOwnSessionFile;
+  updateMirrorInputState();
+  renderSessionBanner();
   syncUplinkControls();
 });
 wsClient.addEventListener('uplinkDead', (e) => {
   const was = uplinkActive;
   uplinkActive = null;
+  uplinkAttachPending = false;
+  uplinkAttachError = `Live uplink to :${e.detail.port} dropped — the TUI may have exited.`;
+  if (was) uplinkLastDetached = { port: was.port, pid: was.pid, sessionFile: uplinkTargetSessionFile };
+  viewingActiveSession = false;
+  if (serverOwnSessionFile) mirrorActiveSessionFile = serverOwnSessionFile;
+  renderSessionBanner();
   syncUplinkControls();
   // Never silent (ADR-007): surface the drop and offer headless-continue on the same file.
   messageRenderer.renderError(`Live uplink to :${e.detail.port} dropped. The TUI may have exited.`);
@@ -353,12 +383,20 @@ wsClient.addEventListener('rpcEvent', (e) => {
 });
 
 wsClient.addEventListener('serverError', (e) => {
-  messageRenderer.renderError(e.detail.message);
+  const msg = e.detail?.message || 'Unknown server error';
+  // While previewing/driving, attach failures belong in the banner, not only
+  // buried in the transcript.
+  if (uplinkAttachPending || uplinkPreview) {
+    uplinkAttachPending = false;
+    uplinkAttachError = msg;
+    renderSessionBanner();
+  }
+  messageRenderer.renderError(msg);
 });
 
 // Mirror mode: receive full state snapshot on connect
 wsClient.addEventListener('mirrorSync', (e) => {
-  handleMirrorSync(e.detail);
+  handleMirrorSync(e.detail, false);
 });
 
 // ═══════════════════════════════════════
@@ -409,6 +447,10 @@ function handleRPCEvent(event) {
         const activeItem = document.querySelector('.session-item.active .session-title');
         if (activeItem) activeItem.textContent = event.name;
       }
+      break;
+    case 'mirror_sync':
+      // Uplinked TUI state (attach flow): the live view replaces the preview.
+      if (event.uplink) handleMirrorSync(event, true);
       break;
   }
 }
@@ -1478,6 +1520,12 @@ async function newSession() {
 
 async function handleSessionSelect(session, project) {
   sidebar.setActive(session.filePath);
+  // Navigating away from a detached live session clears its frozen banner.
+  if (uplinkLastDetached && !uplinkActive && !uplinkPreview && uplinkLastDetached.sessionFile !== session.filePath) {
+    uplinkLastDetached = null;
+    uplinkAttachError = null;
+    renderSessionBanner();
+  }
   resetTokenTracking();
   updateCostDisplay();
   updateTokenUsage();
@@ -1490,7 +1538,7 @@ async function handleSessionSelect(session, project) {
   }
 }
 
-async function switchSession(sessionFile, session = null, project = null) {
+async function switchSession(sessionFile, session = null, project = null, opts = {}) {
   try {
     // New binding epoch — in-flight stream events from the old session are dropped.
     bindingEpoch++;
@@ -1525,8 +1573,9 @@ async function switchSession(sessionFile, session = null, project = null) {
           messageRenderer.clear();
           renderSessionHistory(data.entries || []);
           // Bind the headless backend to this file so prompts have a runner
-          // even when no live TUI owns the session.
-          bindHeadless(project?.path || null, file);
+          // even when no live TUI owns the session. Previews stay read-only
+          // and don't move the headless backend.
+          if (!opts.preview) bindHeadless(project?.path || null, file);
         } catch (e) {
           console.error('[App] History fetch error:', e);
         }
@@ -1537,26 +1586,13 @@ async function switchSession(sessionFile, session = null, project = null) {
       messageRenderer.renderWelcome();
     }
 
-    // In mirror mode, check if this session is live on any instance
+    // In mirror mode, check if this is the active session on the current
+    // instance. tau-web never re-points the browser WS at another instance
+    // (legacy tau did) — driving another TUI goes through the uplink proxy so
+    // the unified envelope + auth stay intact.
     if (isMirrorMode) {
-      // Check if this session is live on a different instance
-      const otherInstance = liveInstances.find(i => i.sessionFile === sessionFile && i.port !== new URL(wsClient.url).port * 1);
-      if (otherInstance) {
-        // Reconnect to the other instance
-        const protocol = document.location.protocol === 'https:' ? 'wss:' : 'ws:'
-        const newUrl = `${protocol}//${location.hostname}:${otherInstance.port}/ws`;
-        console.log(`[App] Switching to instance on port ${otherInstance.port}`);
-        wsClient.disconnect();
-        wsClient.url = newUrl;
-        wsClient.forceReconnect();
-        mirrorActiveSessionFile = sessionFile;
-        viewingActiveSession = true;
-        updateMirrorInputState();
-        return;
-      }
-
-      // Check if this is the active session on the current instance
       viewingActiveSession = sessionFile === mirrorActiveSessionFile;
+      if (uplinkPreview) viewingActiveSession = false; // preview is read-only
       updateMirrorInputState();
 
       if (viewingActiveSession) {
@@ -1579,14 +1615,22 @@ async function switchSession(sessionFile, session = null, project = null) {
     console.error('[App] Failed to switch session:', error);
     messageRenderer.renderError('Failed to switch session');
   }
+  updateMirrorInputState();
 }
 
 // ═══════════════════════════════════════
 // Mirror mode sync
 // ═══════════════════════════════════════
 
-function handleMirrorSync(data) {
-  console.log('[Mirror] Received state snapshot:', data.entries?.length, 'entries');
+function handleMirrorSync(data, fromUplink = false) {
+  console.log('[Mirror] Received state snapshot:', data.entries?.length, 'entries', fromUplink ? '(uplink)' : '');
+  // While previewing/driving/frozen on a live session, snapshots about the web
+  // server's OWN session must not clobber the view the user is looking at.
+  if (!fromUplink && (uplinkActive || uplinkPreview || uplinkLastDetached) && data.sessionFile !== uplinkTargetSessionFile) {
+    isMirrorMode = true;
+    serverOwnSessionFile = data.sessionFile || serverOwnSessionFile;
+    return;
+  }
   bindingEpoch++; // fresh binding; drop anything in flight from before
   cancelStreamSettle();
   state.setStreaming(false);
@@ -1678,6 +1722,7 @@ function updateMirrorLiveIndicator() {
     if (inst && !inst.local) {
       // Shared state: same port = same backend, whichever section attached.
       const attached = !!(uplinkActive && uplinkActive.port === inst.port);
+      const previewing = !!(uplinkPreview && uplinkPreview.port === inst.port);
       if (!btn) {
         btn = document.createElement('button');
         btn.className = 'live-attach-btn';
@@ -1685,21 +1730,26 @@ function updateMirrorLiveIndicator() {
           e.stopPropagation();
           const port = Number(e.currentTarget.dataset.port);
           const pid = Number(e.currentTarget.dataset.pid);
-          // Dispatch on current state so one listener serves both actions.
+          // Dispatch on current state so one listener serves all actions.
           if (uplinkActive && uplinkActive.port === port) detachUplink();
-          else attachUplink(port, pid);
+          else if (uplinkPreview && uplinkPreview.port === port) cancelPreview();
+          else previewAttach(port, pid, e.currentTarget.dataset.file || null, e.currentTarget.dataset.started || null);
         });
         const row = el.querySelector('.session-title-row');
         if (row) row.appendChild(btn);
       }
       btn.dataset.port = String(inst.port);
       btn.dataset.pid = String(inst.pid);
-      const label = attached ? 'Detach' : 'Attach';
+      btn.dataset.file = inst.sessionFile || '';
+      btn.dataset.started = inst.startedAt || '';
+      const label = attached ? 'Detach' : previewing ? 'Cancel' : 'Attach';
       if (btn.textContent !== label) btn.textContent = label;
       btn.classList.toggle('attached', attached);
       btn.title = attached
         ? `Stop driving the live session on :${inst.port}`
-        : `Drive the live session on :${inst.port}`;
+        : previewing
+          ? 'Cancel the preview'
+          : `Preview and drive the live session on :${inst.port}`;
     } else if (btn) {
       btn.remove();
     }
@@ -1749,15 +1799,189 @@ async function refreshUplinkList() {
     if (data && !data.timeout) renderLiveSection(data.instances || []);
   } catch {}
 }
-async function attachUplink(port, pid) {
+// ─── Preview-then-attach (tau-web) ───
+// Attaching is two-phase: picking a live session loads its history read-only
+// with a confirm banner; only "Attach & Drive" wires the uplink.
+
+function timeAgo(ts) {
+  if (!ts) return '';
+  const s = Math.floor((Date.now() - ts) / 1000);
+  if (s < 5) return 'just now';
+  if (s < 60) return `${s}s ago`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.floor(h / 24)}d ago`;
+}
+
+function toMs(ts) {
+  if (!ts) return null;
+  if (typeof ts === 'number') return ts;
+  const parsed = Date.parse(ts);
+  return Number.isNaN(parsed) ? null : parsed;
+}
+
+function findSidebarSession(filePath) {
+  if (!filePath) return null;
+  const tail = filePath.split('/').pop();
+  for (const p of sidebar.projects || []) {
+    for (const s of p.sessions || []) {
+      if (s.filePath === filePath || (s.filePath || '').split('/').pop() === tail) return { session: s, project: p };
+    }
+  }
+  return null;
+}
+
+// One banner, five states: error / driving / pending / preview / detached.
+function renderSessionBanner() {
+  const el = document.getElementById('session-banner');
+  if (!el) return;
+  const mainEl = document.querySelector('.main');
+  const esc = (s) => escapeHtml(String(s ?? ''));
+  let cls = '';
+  let html = '';
+  if (uplinkAttachError) {
+    const target = uplinkPreview || uplinkLastDetached;
+    cls = 'error';
+    html = `<span class="sb-dot"></span>
+      <span class="sb-text"><strong>Attach failed</strong><span class="sb-hint">${esc(uplinkAttachError)}</span></span>
+      ${target ? `<button class="sb-btn" data-action="retry" data-port="${target.port}" data-pid="${target.pid}">Retry</button>` : ''}
+      ${(target?.sessionFile || uplinkTargetSessionFile) ? `<button class="sb-btn" data-action="headless">Continue headless</button>` : ''}
+      <button class="sb-btn" data-action="dismiss">×</button>`;
+  } else if (uplinkActive) {
+    cls = 'driving';
+    html = `<span class="sb-dot"></span>
+      <span class="sb-text"><strong>Live · driving :${uplinkActive.port}</strong><span class="sb-hint">TUI is also attached — typing in both places may race</span></span>
+      <button class="sb-btn" data-action="detach">Detach</button>`;
+  } else if (uplinkAttachPending) {
+    const target = uplinkPreview || uplinkLastDetached;
+    cls = 'preview';
+    html = `<span class="sb-dot"></span>
+      <span class="sb-text"><strong>Attaching to :${target?.port ?? '…'}…</strong></span>`;
+  } else if (uplinkPreview) {
+    const last = uplinkPreview.lastActive ? ` · last active ${timeAgo(uplinkPreview.lastActive)}` : '';
+    cls = 'preview';
+    html = `<span class="sb-dot"></span>
+      <span class="sb-text"><strong>Previewing live session on :${uplinkPreview.port}</strong><span class="sb-hint">Read-only until you attach${esc(last)}</span></span>
+      <button class="sb-btn primary" data-action="attach">Attach &amp; Drive</button>
+      <button class="sb-btn" data-action="cancel">Cancel</button>`;
+  } else if (uplinkLastDetached) {
+    cls = 'detached';
+    html = `<span class="sb-dot"></span>
+      <span class="sb-text"><strong>Detached from :${uplinkLastDetached.port}</strong><span class="sb-hint">View is frozen; the TUI keeps running</span></span>
+      <button class="sb-btn primary" data-action="retry" data-port="${uplinkLastDetached.port}" data-pid="${uplinkLastDetached.pid}">Attach again</button>
+      <button class="sb-btn" data-action="dismiss">×</button>`;
+  }
+  el.className = `session-banner${cls ? ` ${cls}` : ''}${html ? '' : ' hidden'}`;
+  el.innerHTML = html;
+  mainEl?.classList.toggle('has-banner', !!html);
+}
+
+async function previewAttach(port, pid, sessionFile, lastActive) {
+  if (uplinkActive && uplinkActive.port === port) return; // already driving it
+  if (uplinkAttachPending) return;
+  // Switching targets: drop local "driving" state; the server detaches the old
+  // uplink when the new attach arrives.
+  if (uplinkActive && uplinkActive.port !== port) {
+    wsClient.send({ type: 'uplink_detach' });
+    uplinkActive = null;
+    uplinkLastDetached = null;
+    syncUplinkControls();
+  }
+  uplinkAttachError = null;
+  uplinkTargetSessionFile = sessionFile || null;
+  const found = findSidebarSession(sessionFile);
+  uplinkPreview = {
+    port,
+    pid,
+    sessionFile: sessionFile || null,
+    lastActive: toMs(lastActive) || toMs(found?.session?.timestamp),
+    returnTo: uplinkPreview?.returnTo || { filePath: sidebar.activeSessionFile || null },
+  };
+  renderSessionBanner();
+  updateMirrorInputState();
+
+  // Phase 1: history read-only. Prefer the sidebar's session object (it has
+  // dirName/file); otherwise derive both from the absolute path.
+  let session = found?.session || null;
+  let project = found?.project || null;
+  if (!session && sessionFile) {
+    const parts = sessionFile.split('/');
+    const file = parts.pop();
+    const dirName = parts.pop();
+    if (file && dirName) { session = { file, filePath: sessionFile }; project = { dirName }; }
+  }
+  if (session && project && sidebar.activeSessionFile !== sessionFile) {
+    sidebar.setActive(sessionFile);
+    await switchSession(sessionFile, session, project, { preview: true });
+  } else if (!session || !project) {
+    messageRenderer.renderSystemMessage('History unavailable for this session — you can still attach.');
+  }
+  renderSessionBanner();
+}
+
+function cancelPreview() {
+  const returnTo = uplinkPreview?.returnTo;
+  uplinkPreview = null;
+  uplinkAttachError = null;
+  renderSessionBanner();
+  // Return to whatever was open before the preview.
+  const found = returnTo?.filePath ? findSidebarSession(returnTo.filePath) : null;
+  if (found) {
+    sidebar.setActive(returnTo.filePath);
+    switchSession(returnTo.filePath, found.session, found.project);
+  } else if (isMirrorMode && mirrorActiveSessionFile) {
+    const mf = findSidebarSession(mirrorActiveSessionFile);
+    if (mf) { sidebar.setActive(mirrorActiveSessionFile); switchSession(mirrorActiveSessionFile, mf.session, mf.project); }
+    else messageRenderer.renderWelcome();
+  } else {
+    messageRenderer.renderWelcome();
+  }
+  updateMirrorInputState();
+}
+
+async function attachUplink(port, pid, sessionFile) {
+  if (!Number.isInteger(port) || !Number.isInteger(pid)) return;
+  uplinkTargetSessionFile = sessionFile || uplinkPreview?.sessionFile || uplinkLastDetached?.sessionFile || uplinkTargetSessionFile;
+  uplinkAttachPending = true;
+  uplinkAttachError = null;
+  renderSessionBanner();
   wsClient.send({ type: 'uplink_attach', port, pid });
 }
+
 function detachUplink() {
   if (!uplinkActive) return;
+  const prev = uplinkActive;
   wsClient.send({ type: 'uplink_detach' });
   uplinkActive = null;
+  uplinkPreview = null;
+  uplinkAttachPending = false;
+  uplinkLastDetached = { port: prev.port, pid: prev.pid, sessionFile: uplinkTargetSessionFile };
+  viewingActiveSession = false;
+  if (serverOwnSessionFile) mirrorActiveSessionFile = serverOwnSessionFile;
+  renderSessionBanner();
+  updateMirrorInputState();
   syncUplinkControls();
 }
+
+document.getElementById('session-banner')?.addEventListener('click', (e) => {
+  const btn = e.target.closest('.sb-btn');
+  if (!btn) return;
+  const action = btn.dataset.action;
+  if (action === 'attach') attachUplink(uplinkPreview?.port, uplinkPreview?.pid);
+  else if (action === 'retry') attachUplink(Number(btn.dataset.port), Number(btn.dataset.pid));
+  else if (action === 'detach') detachUplink();
+  else if (action === 'cancel') cancelPreview();
+  else if (action === 'dismiss') { uplinkAttachError = null; uplinkLastDetached = null; renderSessionBanner(); updateMirrorInputState(); }
+  else if (action === 'headless') {
+    uplinkAttachError = null;
+    uplinkPreview = null;
+    renderSessionBanner();
+    bindHeadless(null, uplinkTargetSessionFile);
+    messageRenderer.renderSystemMessage('Continuing headless — prompts now run in a background backend.');
+  }
+});
 function offerHeadlessContinue(detail) {
   // Uplink died (TUI exited?): offer to continue the same file headless.
   const el = document.createElement('div');
@@ -1786,19 +2010,22 @@ function renderLiveSection(instances) {
   }
   // Skip rebuilds when nothing changed — the 5s poll must not restart
   // the green-dot pulse animations (perceived as flicker).
-  const sig = others.map((i) => `${i.port}:${i.pid}:${(uplinkActive && uplinkActive.port === i.port) ? 1 : 0}:${i.sessionFile || ''}:${liveInstanceLabel(i)}`).join('|');
+  const sig = others.map((i) => `${i.port}:${i.pid}:${(uplinkActive && uplinkActive.port === i.port) ? 1 : 0}:${(uplinkPreview && uplinkPreview.port === i.port) ? 1 : 0}:${i.sessionFile || ''}:${liveInstanceLabel(i)}`).join('|');
   if (host.dataset.sig === sig) return;
   host.dataset.sig = sig;
   host.style.display = '';
   const rows = others.map((i) => {
     const attached = uplinkActive && uplinkActive.port === i.port;
+    const previewing = uplinkPreview && uplinkPreview.port === i.port;
     const label = liveInstanceLabel(i);
     const sub = i.cwd ? `${escapeHtml(i.cwd.split('/').filter(Boolean).pop() || '')} · :${i.port}` : `:${i.port}`;
     const action = i.local
       ? `<span class="live-tag" title="Runs inside this web server's own process — nothing to attach to">this server</span>`
       : attached
         ? `<button class="live-btn" data-action="detach" data-port="${i.port}">Detach</button>`
-        : `<button class="live-btn" data-action="attach" data-port="${i.port}" data-pid="${i.pid}">Attach</button>`;
+        : previewing
+          ? `<button class="live-btn" data-action="cancelpreview">Cancel</button>`
+          : `<button class="live-btn" data-action="attach" data-port="${i.port}" data-pid="${i.pid}" data-file="${escapeHtml(i.sessionFile || '')}" data-started="${escapeHtml(i.startedAt || '')}">Attach</button>`;
     return `<div class="live-row${attached ? ' attached' : ''}">
       <span class="live-dot"></span>
       <span class="live-text">
@@ -1811,8 +2038,14 @@ function renderLiveSection(instances) {
   host.innerHTML = `<div class="live-header">LIVE</div>${rows}`;
   host.querySelectorAll('.live-btn').forEach((btn) => {
     btn.addEventListener('click', () => {
-      if (btn.dataset.action === 'attach') attachUplink(Number(btn.dataset.port), Number(btn.dataset.pid));
-      else detachUplink();
+      if (btn.dataset.action === 'attach') {
+        // Two-phase: preview the session first, confirm to drive.
+        previewAttach(Number(btn.dataset.port), Number(btn.dataset.pid), btn.dataset.file || null, btn.dataset.started || null);
+      } else if (btn.dataset.action === 'cancelpreview') {
+        cancelPreview();
+      } else {
+        detachUplink();
+      }
     });
   });
 }
@@ -1835,17 +2068,43 @@ pollInstances();
 
 // Enable/disable input based on whether we're viewing the live session
 function updateMirrorInputState() {
+  const inputArea = document.querySelector('.input-area');
+  // Preview: read-only until the user confirms the attach. Detached: the frozen
+  // view of a live session is read-only too (the TUI keeps running without us).
+  const frozenDetached = uplinkLastDetached && !uplinkActive
+    && sidebar.activeSessionFile === uplinkLastDetached.sessionFile;
+  if (uplinkPreview) {
+    messageInput.disabled = true;
+    messageInput.placeholder = 'Previewing live session — attach to drive';
+    inputArea?.classList.add('mirror-readonly');
+    return;
+  }
+  if (frozenDetached) {
+    messageInput.disabled = true;
+    messageInput.placeholder = 'Detached — view is frozen';
+    inputArea?.classList.add('mirror-readonly');
+    return;
+  }
   if (!isMirrorMode) return;
 
-  const inputArea = document.querySelector('.input-area');
   if (viewingActiveSession) {
     messageInput.disabled = false;
     messageInput.placeholder = 'Message...';
     inputArea?.classList.remove('mirror-readonly');
-  } else {
+    return;
+  }
+  // A history session is read-only only while a live TUI owns it — attaching
+  // (or detaching) drives that session. Anything else can be continued headless.
+  const activeFile = sidebar.activeSessionFile;
+  const ownedByTui = activeFile && liveInstances.some((i) => !i.local && i.sessionFile === activeFile);
+  if (ownedByTui) {
     messageInput.disabled = true;
-    messageInput.placeholder = 'Viewing historical session (read-only)';
+    messageInput.placeholder = 'Owned by a live TUI — attach to drive';
     inputArea?.classList.add('mirror-readonly');
+  } else {
+    messageInput.disabled = false;
+    messageInput.placeholder = 'Message...';
+    inputArea?.classList.remove('mirror-readonly');
   }
 }
 

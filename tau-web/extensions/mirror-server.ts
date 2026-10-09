@@ -714,19 +714,29 @@ export default function (pi: ExtensionAPI) {
     const creds = readTauCreds();
     const auth = creds.user ? `Basic ${Buffer.from(`${creds.user}:${creds.pass}`).toString("base64")}` : undefined;
     const upstream = new WebSocket(`ws://127.0.0.1:${port}/ws`, { headers: auth ? { Authorization: auth } : undefined } as any);
-    const entry = { upstream, port, pid, failures: 0, dead: false };
+    const entry = { upstream, port, pid, failures: 0, dead: false, sawSync: false, syncTimer: null as any };
     uplinks.set(browserWs, entry);
     let opened = false;
     upstream.on("open", () => {
       opened = true;
       entry.failures = 0;
       sendTo(browserWs, { type: "uplink_attached", port, pid });
-      try { (upstream as any).send(JSON.stringify({ type: "mirror_sync_request" })); } catch {}
+      // Mirror targets (tau) push an initial snapshot on connect. Only ask
+      // explicitly if none arrives shortly — the second snapshot would make the
+      // UI re-render the whole history twice back-to-back (visible flash).
+      entry.syncTimer = setTimeout(() => {
+        if (entry.dead || entry.sawSync) return;
+        try { (upstream as any).send(JSON.stringify({ type: "mirror_sync_request" })); } catch {}
+      }, 600);
     });
     upstream.on("message", (data) => {
       if (entry.dead) return;
       try {
         const msg = JSON.parse(data.toString());
+        if (msg.type === "mirror_sync") {
+          entry.sawSync = true;
+          if (entry.syncTimer) { clearTimeout(entry.syncTimer); entry.syncTimer = null; }
+        }
         if (msg.type === "event") {
           // Re-wrap to the unified envelope (ADR-004).
           sendTo(browserWs, { type: "rpc_event", event: msg.event, uplink: true, port });
@@ -765,6 +775,7 @@ export default function (pi: ExtensionAPI) {
     const e = uplinks.get(browserWs);
     if (!e) return;
     e.dead = true;
+    if (e.syncTimer) { clearTimeout(e.syncTimer); e.syncTimer = null; }
     try { e.upstream.close(); } catch {}
     uplinks.delete(browserWs);
   }

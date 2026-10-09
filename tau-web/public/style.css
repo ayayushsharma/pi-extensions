@@ -834,14 +834,15 @@ html {
 .session-title-row .live-attach-btn {
   margin-left: auto;
   flex-shrink: 0;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
-  padding: 2px 8px;
+  padding: 4px 10px;
   border-radius: 6px;
   border: 1px solid var(--border, #e5e0d8);
   background: transparent;
   color: var(--accent-text);
   cursor: pointer;
+  white-space: nowrap;
 }
 .session-title-row .live-attach-btn:active {
   transform: scale(0.96);
@@ -914,13 +915,25 @@ html {
   opacity: 0.6;
   font-variant-numeric: tabular-nums;
 }
+/* tau-web: sidebar LIVE rows — Attach/Detach/Cancel. Base size is compact for
+   desktop; the mobile block grows it to a finger-sized target. */
 .live-btn {
-  font-size: 11px;
-  padding: 3px 8px;
-  border-radius: 5px;
+  flex-shrink: 0;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 6px;
   border: 1px solid var(--border, #ddd);
   background: transparent;
+  color: var(--accent-text);
   cursor: pointer;
+  white-space: nowrap;
+}
+.live-btn:hover {
+  border-color: var(--accent);
+}
+.live-btn:active {
+  transform: scale(0.96);
 }
 .link-btn {
   background: none;
@@ -3755,6 +3768,49 @@ body.hide-thinking .thinking-block { display: none !important; }
   .command-item {
     padding: 12px 14px;
     min-height: 44px;
+  }
+
+  /* Attach/Detach/Cancel in the sidebar LIVE section: finger-sized target,
+     larger label than the desktop compact pill. */
+  .live-header {
+    font-size: 12px;
+    padding: 4px 4px 8px;
+  }
+
+  .live-row {
+    padding: 8px 6px;
+    gap: 8px;
+  }
+
+  .live-label {
+    font-size: 14px;
+  }
+
+  .live-sub {
+    font-size: 12px;
+  }
+
+  .live-btn {
+    min-height: 40px;
+    padding: 8px 14px;
+    font-size: 13px;
+    border-radius: 8px;
+  }
+
+  /* Inline Attach on session rows: full-width-safe, still tappable */
+  .session-title-row .live-attach-btn {
+    min-height: 36px;
+    padding: 6px 12px;
+    font-size: 12px;
+    border-radius: 8px;
+  }
+
+  /* The banner's Attach & Drive / Detach buttons use the same flow */
+  .session-banner .sb-btn {
+    min-height: 40px;
+    padding: 8px 14px;
+    font-size: 13px;
+    border-radius: 8px;
   }
 }
 

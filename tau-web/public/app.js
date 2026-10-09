@@ -1625,14 +1625,72 @@ function handleMirrorSync(data) {
   updateTokenUsage();
 }
 
-// Mark all live sessions in the sidebar with a green dot
+// Session file -> display name, joined from the sidebar's session list.
+function liveSessionName(file) {
+  if (!file) return '';
+  try {
+    for (const p of sidebar.projects || []) {
+      for (const s of p.sessions || []) {
+        if (s.filePath === file) return s.name || s.firstMessage || '';
+      }
+    }
+    // Fallback: match on the file tail (relative vs absolute path forms).
+    const tail = file.split('/').pop();
+    for (const p of sidebar.projects || []) {
+      for (const s of p.sessions || []) {
+        if ((s.filePath || '').split('/').pop() === tail) return s.name || s.firstMessage || '';
+      }
+    }
+  } catch {}
+  return '';
+}
+function liveInstanceLabel(i) {
+  // Prefer the session name; fall back to project dir, then the file tail.
+  return liveSessionName(i.sessionFile)
+    || (i.cwd ? i.cwd.split('/').filter(Boolean).pop() : '')
+    || (i.sessionFile ? i.sessionFile.split('/').pop() : `:${i.port}`);
+}
+function liveByFileMap() {
+  const m = new Map();
+  for (const i of liveInstances) {
+    if (i.sessionFile && !i.local && !m.has(i.sessionFile)) m.set(i.sessionFile, i);
+  }
+  return m;
+}
+// Mark all live sessions in the sidebar with a green dot + inline Attach.
+// Clicking an item still only views history; Attach is what drives the TUI.
 function updateMirrorLiveIndicator() {
   const liveFiles = new Set(liveInstances.map(i => i.sessionFile));
   // Also include the current mirror session
   if (mirrorActiveSessionFile) liveFiles.add(mirrorActiveSessionFile);
+  const byFile = liveByFileMap();
 
   document.querySelectorAll('.session-item').forEach(el => {
-    el.classList.toggle('mirror-live', liveFiles.has(el.dataset.filePath));
+    const f = el.dataset.filePath;
+    el.classList.toggle('mirror-live', liveFiles.has(f));
+    const inst = f && byFile.get(f);
+    let btn = el.querySelector(':scope > .session-title-row > .live-attach-btn');
+    if (inst && !inst.local) {
+      if (!btn) {
+        btn = document.createElement('button');
+        btn.className = 'live-attach-btn';
+        btn.textContent = 'Attach';
+        btn.title = `Drive the live session on :${inst.port}`;
+        btn.dataset.port = String(inst.port);
+        btn.dataset.pid = String(inst.pid);
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          attachUplink(Number(e.currentTarget.dataset.port), Number(e.currentTarget.dataset.pid));
+        });
+        const row = el.querySelector('.session-title-row');
+        if (row) row.appendChild(btn);
+      } else {
+        btn.dataset.port = String(inst.port);
+        btn.dataset.pid = String(inst.pid);
+      }
+    } else if (btn) {
+      btn.remove();
+    }
   });
 }
 
@@ -1710,20 +1768,26 @@ function renderLiveSection(instances) {
   }
   // Skip rebuilds when nothing changed — the 5s poll must not restart
   // the green-dot pulse animations (perceived as flicker).
-  const sig = others.map((i) => `${i.port}:${i.pid}:${(uplinkActive && uplinkActive.port === i.port) ? 1 : 0}:${i.sessionFile || ''}`).join('|');
+  const sig = others.map((i) => `${i.port}:${i.pid}:${(uplinkActive && uplinkActive.port === i.port) ? 1 : 0}:${i.sessionFile || ''}:${liveInstanceLabel(i)}`).join('|');
   if (host.dataset.sig === sig) return;
   host.dataset.sig = sig;
   host.style.display = '';
   const rows = others.map((i) => {
     const attached = uplinkActive && uplinkActive.port === i.port;
-    const label = i.sessionFile ? i.sessionFile.split('/').pop() : `:${i.port}`;
+    const label = liveInstanceLabel(i);
+    const sub = i.cwd ? `${escapeHtml(i.cwd.split('/').filter(Boolean).pop() || '')} · :${i.port}` : `:${i.port}`;
+    const action = i.local
+      ? `<span class="live-tag" title="Runs inside this web server's own process — nothing to attach to">this server</span>`
+      : attached
+        ? `<button class="live-btn" data-action="detach" data-port="${i.port}">Detach</button>`
+        : `<button class="live-btn" data-action="attach" data-port="${i.port}" data-pid="${i.pid}">Attach</button>`;
     return `<div class="live-row${attached ? ' attached' : ''}">
       <span class="live-dot"></span>
-      <span class="live-label" title="${escapeHtml(i.sessionFile || '')}">${escapeHtml(label)}</span>
-      <span class="live-port">:${i.port}</span>
-      ${attached
-        ? `<button class="live-btn" data-action="detach" data-port="${i.port}">Detach</button>`
-        : `<button class="live-btn" data-action="attach" data-port="${i.port}" data-pid="${i.pid}">Attach</button>`}
+      <span class="live-text">
+        <span class="live-label" title="${escapeHtml(i.sessionFile || '')}">${escapeHtml(label)}</span>
+        <span class="live-sub">${sub}</span>
+      </span>
+      ${action}
     </div>`;
   }).join('');
   host.innerHTML = `<div class="live-header">LIVE</div>${rows}`;

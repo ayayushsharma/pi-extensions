@@ -673,6 +673,8 @@ export default function (pi: ExtensionAPI) {
   function verifyUplinkTarget(port: number, pid: number): { ok: boolean; error?: string } {
     // L1: fingerprint + proc check + loopback-only.
     if (!Number.isInteger(port) || port < 1 || port > 65535) return { ok: false, error: "bad port" };
+    // Never proxy our own process (self-loop) or its in-process ghost.
+    if (pid === process.pid) return { ok: false, error: "cannot attach to own server process" };
     let info: any = null;
     try {
       const f = path.join(INSTANCES_DIR, `${pid}.json`);
@@ -1349,7 +1351,10 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
 
     if (urlPath === "/api/instances") {
       res.writeHead(200, { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" });
-      res.end(JSON.stringify({ instances: getRunningInstances() }));
+      // Flag in-process instances (the old-tau ghost rides along in every pi
+      // process): the UI tags them `local` and offers no Attach for them.
+      const list = getRunningInstances().map((i) => ({ ...i, local: i.pid === process.pid }));
+      res.end(JSON.stringify({ instances: list }));
       return;
     }
 

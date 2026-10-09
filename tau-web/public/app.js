@@ -131,7 +131,11 @@ let hasFocus = true;
 let unreadCount = 0;
 let isScrolledUp = false;
 let hasNewWhileScrolled = false;
-let lastSentMessage = null; // Track to avoid duplicate rendering in mirror mode
+// Locally shown user messages awaiting the backend echo ({ text, queued }).
+// FIFO-matched in handleMessageStart so a message is never rendered twice and
+// a queued bubble can be dropped exactly when the backend delivers it.
+let pendingEchoes = [];
+const pendingPrompts = new Map(); // prompt id -> { text } (rejection surfacing)
 let lastUsage = null; // Full usage object for context visualiser
 let mirrorActiveSessionFile = null; // The live session file path from the TUI
 let viewingActiveSession = true; // Whether we're viewing the live session or a historical one
@@ -141,6 +145,12 @@ let liveInstances = []; // All running Tau instances [{port, sessionFile, cwd}]
 let bindingEpoch = 0; // bumped on every session switch; stale stream events are dropped
 let activeStreamEpoch = -1; // epoch captured when the current stream started
 const VISIBLE_MESSAGE_WINDOW = 60; // render only the tail; full history stays on disk
+// ─── URL session routing (per-tab sessions) ───
+// The hash carries only the session file's basename (timestamp + uuid) — never
+// a filesystem path, which would leak system details when the URL is shared.
+let restoreInFlight = false;
+let suppressHashWrite = false;
+let urlRestorePending = !!parseSessionHash()?.key; // suppresses the first server snapshot race
 let headlessSessionKey = null; // acked by start_session response; null = headless not bound
 let headlessBinding = null; // { cwd, sessionFile } — rejoin target persisted per browser
 try { headlessBinding = JSON.parse(localStorage.getItem('tau-web-binding') || 'null'); } catch {}
@@ -304,7 +314,7 @@ function showNewMessageBadge() {
 // WebSocket event handlers
 // ═══════════════════════════════════════
 
-wsClient.addEventListener('connected', () => {
+wsClient.addEventListener('connected', async () => {
   updateConnectionStatus('connected');
   // A reconnect wipes the streaming class; re-apply if a run is in flight.
   if (state.isStreaming) { lastUiStreaming = null; updateUI(); }
@@ -312,12 +322,53 @@ wsClient.addEventListener('connected', () => {
   setTimeout(fetchContextWindow, 1000);
   // Warm the slash-command cache for palette search + input validation
   fetchSlashCommands();
-  // (Re)bind the headless backend: rejoin the stored session or start fresh.
-  // One WS = one backend (server keys by connection); a second browser tab or
-  // window gets its own backend, so phone + laptop stay independent.
-  bindHeadless(headlessBinding?.cwd || null, headlessBinding?.sessionFile || null);
+  // (Re)bind the headless backend. A session pinned in the URL wins over the
+  // stored binding (per-tab sessions): resume it headless unless a live TUI
+  // owns it — resuming there would put two writers on one session file.
+  const pinned = parseSessionHash();
+  await pollInstances();
+  const pinnedLive = pinned?.key
+    ? liveInstances.find((i) => !i.local && sessionKeyOf(i.sessionFile) === pinned.key)
+    : null;
+  if (pinned?.key) {
+    await ensureSessionsLoaded();
+    const found = findSidebarSession(pinned.key);
+    bindHeadless(found?.project?.path || null, pinnedLive ? null : pinned.key);
+  } else {
+    bindHeadless(headlessBinding?.cwd || null, headlessBinding?.sessionFile || null);
+  }
+  // The server detaches uplinks on WS close; re-attach to the same TUI.
+  if (uplinkActive) attachUplink(uplinkActive.port, uplinkActive.pid, uplinkTargetSessionFile);
   // Refresh the Live TUI section.
   refreshUplinkList();
+  // Restore the URL-pinned session (per-tab sessions survive reloads).
+  restoreSessionFromUrl();
+});
+
+// Manual hash edits switch tabs/sessions live (back/forward included). The
+// teardown below rewrites the hash, so suppress those writes.
+window.addEventListener('hashchange', async () => {
+  suppressHashWrite = true;
+  try {
+    if (uplinkActive || uplinkPreview) {
+      detachUplink();
+      uplinkPreview = null;
+    }
+    uplinkLastDetached = null;
+    uplinkAttachError = null;
+    updateMirrorInputState();
+    syncUplinkControls();
+    renderSessionBanner();
+    if (parseSessionHash()?.key) {
+      await restoreSessionFromUrl();
+    } else {
+      updateSessionHash(null);
+      sidebar.clearActive();
+      newSession();
+    }
+  } finally {
+    suppressHashWrite = false;
+  }
 });
 
 // ─── tau-web unified protocol events ───
@@ -329,6 +380,21 @@ wsClient.addEventListener('rpcResponse', (e) => {
     headlessSessionKey = response?.data?.sessionKey || 'bound';
   } else if (response?.command === 'uplink_list' && response?.success) {
     renderLiveSection(response?.data?.instances || []);
+  } else if (response?.command === 'prompt') {
+    // A rejected prompt must never be silent (ADR-007): the backend refused it
+    // before acceptance, so drop the queued bubble and say why.
+    const sent = id ? pendingPrompts.get(id) : null;
+    if (id) pendingPrompts.delete(id);
+    if (response.success === false) {
+      const text = sent?.text;
+      if (text) {
+        const ei = pendingEchoes.findIndex((x) => x.text === text);
+        if (ei !== -1) pendingEchoes.splice(ei, 1);
+        const qi = messageQueue.findIndex((c) => c.message === text);
+        if (qi !== -1) { messageQueue.splice(qi, 1); renderQueuedMessages(); }
+      }
+      messageRenderer.renderError(`Prompt rejected: ${response.error || 'the agent is busy'}`);
+    }
   }
 });
 wsClient.addEventListener('uplinkAttached', (e) => {
@@ -338,6 +404,7 @@ wsClient.addEventListener('uplinkAttached', (e) => {
   uplinkAttachPending = false;
   uplinkAttachError = null;
   viewingActiveSession = true; // the uplinked TUI's session is now the live view
+  updateSessionHash(uplinkTargetSessionFile, true);
   updateMirrorInputState();
   renderSessionBanner();
   syncUplinkControls();
@@ -351,6 +418,7 @@ wsClient.addEventListener('uplinkDetached', () => {
   if (prev) uplinkLastDetached = { port: prev.port, pid: prev.pid, sessionFile: uplinkTargetSessionFile };
   viewingActiveSession = false; // frozen view: routing stays on the bound backend
   if (serverOwnSessionFile) mirrorActiveSessionFile = serverOwnSessionFile;
+  updateSessionHash(uplinkTargetSessionFile, false);
   updateMirrorInputState();
   renderSessionBanner();
   syncUplinkControls();
@@ -363,6 +431,7 @@ wsClient.addEventListener('uplinkDead', (e) => {
   if (was) uplinkLastDetached = { port: was.port, pid: was.pid, sessionFile: uplinkTargetSessionFile };
   viewingActiveSession = false;
   if (serverOwnSessionFile) mirrorActiveSessionFile = serverOwnSessionFile;
+  updateSessionHash(uplinkTargetSessionFile, false);
   renderSessionBanner();
   syncUplinkControls();
   // Never silent (ADR-007): surface the drop and offer headless-continue on the same file.
@@ -582,15 +651,22 @@ function handleMessageStart(message) {
       true
     );
   } else if (message.role === 'user') {
-    // In mirror mode, user messages from TUI appear via events
-    // Only render if we didn't just send this message ourselves
-    if (!lastSentMessage || getMessageText(message) !== lastSentMessage) {
-      const content = getMessageText(message);
-      if (content) {
-        messageRenderer.renderUserMessage({ content });
+    // User messages from the TUI arrive via events. Messages this browser sent
+    // are matched against pendingEchoes: already-rendered ones are suppressed,
+    // and a queued (steered) one moves from the queue into the transcript when
+    // the backend actually delivers it.
+    const content = getMessageText(message);
+    const idx = content ? pendingEchoes.findIndex((e) => e.text === content) : -1;
+    if (idx === -1) {
+      if (content) messageRenderer.renderUserMessage({ content });
+    } else {
+      const echo = pendingEchoes.splice(idx, 1)[0];
+      if (echo.queued) {
+        const qi = messageQueue.findIndex((c) => c.message === content);
+        if (qi !== -1) { messageQueue.splice(qi, 1); renderQueuedMessages(); }
+        if (content) messageRenderer.renderUserMessage({ content });
       }
     }
-    lastSentMessage = null;
   }
 }
 
@@ -993,6 +1069,15 @@ function sendMessage() {
   messageInput.style.height = 'auto';
 
   const cmd = { type: 'prompt', message: message || '(see attached image)' };
+  // Pi queues steered prompts natively while a run is in flight. Always
+  // declare the behavior (ignored when idle) so a send racing the end of a
+  // run is queued instead of rejected with "Agent is already processing".
+  cmd.streamingBehavior = 'steer';
+  cmd.id = `prompt-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+  pendingPrompts.set(cmd.id, { text: cmd.message });
+  // Bounded cleanup: the server-own path never answers over WS (fire-and-forget),
+  // so a rejection response may simply never arrive.
+  setTimeout(() => pendingPrompts.delete(cmd.id), 60000);
 
   if (pendingImages.length > 0) {
     cmd.images = pendingImages.map(img => {
@@ -1006,14 +1091,18 @@ function sendMessage() {
   renderAttachmentPreviews();
 
   if (state.isStreaming) {
-    // Queue it — show as bubble above input
+    // Show it as a bubble AND forward it right away: pi holds the steer in
+    // its own queue and delivers it after the current turn. Waiting for a
+    // browser-side flush on agent_end stranded messages for the whole run.
     messageQueue.push(cmd);
-    lastSentMessage = message;
+    pendingEchoes.push({ text: cmd.message, queued: true });
     renderQueuedMessages();
+    cmd.sent = !!(wsClient.ws && wsClient.ws.readyState === WebSocket.OPEN);
+    routeCommand(cmd);
     return;
   }
 
-  lastSentMessage = message;
+  pendingEchoes.push({ text: cmd.message, queued: false });
   messageRenderer.renderUserMessage({ content: message, images: cmd.images });
   routeCommand(cmd);
 }
@@ -1036,7 +1125,9 @@ function renderQueuedMessages() {
       <button class="queued-msg-cancel" title="Cancel">×</button>
     `;
     el.querySelector('.queued-msg-cancel').addEventListener('click', () => {
-      messageQueue.splice(i, 1);
+      const [removed] = messageQueue.splice(i, 1);
+      const ei = pendingEchoes.findIndex((x) => x.text === removed?.message);
+      if (ei !== -1) pendingEchoes.splice(ei, 1);
       renderQueuedMessages();
     });
     queuedMessagesEl.appendChild(el);
@@ -1050,10 +1141,13 @@ function escapeHtml(text) {
 }
 
 function flushQueue() {
-  if (messageQueue.length > 0 && !state.isStreaming) {
-    const cmd = messageQueue.shift();
-    messageRenderer.renderUserMessage({ content: cmd.message, images: cmd.images });
-    renderQueuedMessages();
+  if (messageQueue.length === 0 || state.isStreaming) return;
+  // Queued messages are forwarded immediately as steers, so normally there is
+  // nothing to do here — their echo moves them into the transcript. Only a
+  // command that never reached the wire is routed now (and not re-sent later).
+  for (const cmd of messageQueue) {
+    if (cmd.sent) continue;
+    cmd.sent = true;
     routeCommand(cmd);
   }
 }
@@ -1584,6 +1678,7 @@ sidebarOverlay.addEventListener('click', () => {
 
 const newSessionBtn = document.getElementById('new-session-btn');
 newSessionBtn.addEventListener('click', () => {
+  updateSessionHash(null);
   resetTokenTracking();
   updateCostDisplay();
   updateTokenUsage();
@@ -1653,6 +1748,7 @@ sessionSearchInput.addEventListener('input', () => {
 });
 
 async function newSession() {
+  updateSessionHash(null); // a fresh scratch session has no URL identity
   resetTokenTracking();
   updateCostDisplay();
   updateTokenUsage();
@@ -1666,7 +1762,16 @@ async function newSession() {
 }
 
 async function handleSessionSelect(session, project) {
+  if (!session) {
+    // Deleting the active session lands here with null — go to a clean slate
+    // instead of crashing on session.filePath.
+    sidebar.clearActive();
+    updateSessionHash(null);
+    await newSession();
+    return;
+  }
   sidebar.setActive(session.filePath);
+  updateSessionHash(session.filePath, false);
   // Navigating away from a detached live session clears its frozen banner.
   if (uplinkLastDetached && !uplinkActive && !uplinkPreview && uplinkLastDetached.sessionFile !== session.filePath) {
     uplinkLastDetached = null;
@@ -1779,6 +1884,16 @@ function handleMirrorSync(data, fromUplink = false) {
   // While previewing/driving/frozen on a live session, snapshots about the web
   // server's OWN session must not clobber the view the user is looking at.
   if (!fromUplink && uplinkOwnsView() && data.sessionFile !== uplinkTargetSessionFile) {
+    isMirrorMode = true;
+    serverOwnSessionFile = data.sessionFile || serverOwnSessionFile;
+    return;
+  }
+  // Same protection for a session pinned in the URL (per-tab sessions): the
+  // server's own snapshots must not clobber the pinned view while the restore
+  // is pending (first snapshot race) or once it is active.
+  const pinned = parseSessionHash();
+  const pinnedActive = !!pinned?.key && sessionKeyOf(sidebar.activeSessionFile) === pinned.key;
+  if (!fromUplink && !uplinkOwnsView() && pinned?.key && sessionKeyOf(data.sessionFile) !== pinned.key && (urlRestorePending || pinnedActive)) {
     isMirrorMode = true;
     serverOwnSessionFile = data.sessionFile || serverOwnSessionFile;
     return;
@@ -1928,8 +2043,10 @@ function syncUplinkControls() {
 // Prompt routing order: live uplink first (the TUI owns the run), then the
 // mirror-live session, then the headless backend, then legacy direct send.
 function routeCommand(cmd) {
+  // The envelope id lets the server inject it into the forwarded command so
+  // the backend's response resolves back to this browser request.
   if (uplinkActive) {
-    wsClient.send({ type: 'uplink_command', command: cmd });
+    wsClient.send({ type: 'uplink_command', id: cmd.id, command: cmd });
     return;
   }
   if (isMirrorMode && viewingActiveSession) {
@@ -1937,7 +2054,7 @@ function routeCommand(cmd) {
     return;
   }
   if (headlessSessionKey) {
-    wsClient.send({ type: 'rpc_command', command: cmd });
+    wsClient.send({ type: 'rpc_command', id: cmd.id, command: cmd });
     return;
   }
   wsClient.send(cmd);
@@ -1993,6 +2110,88 @@ function findSidebarSession(filePath) {
   return null;
 }
 
+// ─── Session-key URL routing ───
+// The hash carries only the session file's basename — never a filesystem path
+// (URLs get shared; the basename leaks nothing beyond timestamp + uuid).
+function sessionKeyOf(filePath) {
+  if (!filePath) return '';
+  return String(filePath).split('/').filter(Boolean).pop() || '';
+}
+function parseSessionHash() {
+  const raw = location.hash.startsWith('#') ? location.hash.slice(1) : location.hash;
+  if (!raw) return null;
+  const params = new URLSearchParams(raw);
+  const key = params.get('session');
+  if (!key) return null;
+  return { key, drive: params.get('drive') === '1' };
+}
+// replaceState only: no history spam, and it does not fire hashchange.
+function updateSessionHash(filePathOrKey, drive) {
+  if (suppressHashWrite) return;
+  const key = sessionKeyOf(filePathOrKey);
+  const next = key ? `#session=${encodeURIComponent(key)}${drive ? '&drive=1' : ''}` : '';
+  if (next ? location.hash === next : !location.hash) return;
+  history.replaceState(null, '', next || `${location.pathname}${location.search}`);
+}
+// Resolve the session pinned in the URL once the socket is up: a live TUI gets
+// previewed (and driven if asked), otherwise the headless backend resumes it.
+async function restoreSessionFromUrl() {
+  const wanted = parseSessionHash();
+  if (!wanted?.key || restoreInFlight) return;
+  restoreInFlight = true;
+  urlRestorePending = true;
+  isMirrorMode = true; // a pinned view never repoints the server's own session
+  try {
+    await waitForWsOpen();
+    await ensureSessionsLoaded();
+    await pollInstances();
+    const live = liveInstances.find((i) => !i.local && sessionKeyOf(i.sessionFile) === wanted.key);
+    uplinkLastDetached = null;
+    uplinkAttachError = null;
+    if (live) {
+      await previewAttach(live.port, live.pid, live.sessionFile, live.startedAt, { fromRestore: true });
+      if (wanted.drive) attachUplink(live.port, live.pid, live.sessionFile);
+      return;
+    }
+    const found = findSidebarSession(wanted.key);
+    if (found) {
+      sidebar.setActive(found.session.filePath);
+      await switchSession(found.session.filePath, found.session, found.project);
+      return;
+    }
+    // The pinned session is gone (deleted/rotated): say so and drop the pin so
+    // a reload doesn't loop on a ghost.
+    updateSessionHash(null);
+    sidebar.clearActive();
+    messageRenderer.clear();
+    messageRenderer.renderError(`Session ${wanted.key} was not found — it may have been deleted.`);
+  } finally {
+    urlRestorePending = false;
+    restoreInFlight = false;
+  }
+}
+function waitForWsOpen(timeoutMs = 5000) {
+  const ws = wsClient.ws;
+  if (ws && ws.readyState === WebSocket.OPEN) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (ok) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      wsClient.removeEventListener('connected', onConnected);
+      resolve(ok);
+    };
+    const onConnected = () => finish(true);
+    wsClient.addEventListener('connected', onConnected);
+    const timer = setTimeout(() => finish(false), timeoutMs);
+  });
+}
+async function ensureSessionsLoaded() {
+  if (sidebar.projects?.length) return;
+  try { await sidebar.loadSessions(); } catch {}
+}
+
 // One banner, five states: error / driving / pending / preview / detached.
 function renderSessionBanner() {
   const el = document.getElementById('session-banner');
@@ -2044,7 +2243,7 @@ function renderSessionBanner() {
   mainEl?.classList.toggle('has-banner', !!html);
 }
 
-async function previewAttach(port, pid, sessionFile, lastActive) {
+async function previewAttach(port, pid, sessionFile, lastActive, opts = {}) {
   if (uplinkActive && uplinkActive.port === port) return; // already driving it
   if (uplinkAttachPending) return;
   // Switching targets: drop local "driving" state; the server detaches the old
@@ -2058,6 +2257,9 @@ async function previewAttach(port, pid, sessionFile, lastActive) {
   uplinkAttachError = null;
   uplinkLastDetached = null; // a new preview supersedes any frozen-detached view
   uplinkTargetSessionFile = sessionFile || null;
+  // URL pin (per-tab sessions) — skipped on restore so a drive=1 pin is not
+  // downgraded before uplinkAttached confirms the attach.
+  if (!opts.fromRestore) updateSessionHash(sessionFile, false);
   const found = findSidebarSession(sessionFile);
   uplinkPreview = {
     port,
@@ -2100,12 +2302,17 @@ function cancelPreview() {
   const found = returnTo?.filePath ? findSidebarSession(returnTo.filePath) : null;
   if (found) {
     sidebar.setActive(returnTo.filePath);
+    updateSessionHash(returnTo.filePath, false);
     switchSession(returnTo.filePath, found.session, found.project);
   } else if (isMirrorMode && mirrorActiveSessionFile) {
     const mf = findSidebarSession(mirrorActiveSessionFile);
     if (mf) { sidebar.setActive(mirrorActiveSessionFile); switchSession(mirrorActiveSessionFile, mf.session, mf.project); }
     else messageRenderer.renderWelcome();
   } else {
+    // Fresh load with nothing to return to: cancel means a clean slate — drop
+    // the URL pin too, or the server's own snapshot stays suppressed forever.
+    updateSessionHash(null);
+    sidebar.clearActive();
     messageRenderer.renderWelcome();
   }
   updateMirrorInputState();
@@ -2114,6 +2321,7 @@ function cancelPreview() {
 async function attachUplink(port, pid, sessionFile) {
   if (!Number.isInteger(port) || !Number.isInteger(pid)) return;
   uplinkTargetSessionFile = sessionFile || uplinkPreview?.sessionFile || uplinkLastDetached?.sessionFile || uplinkTargetSessionFile;
+  updateSessionHash(uplinkTargetSessionFile, true);
   uplinkAttachPending = true;
   uplinkAttachError = null;
   renderSessionBanner();
@@ -2130,6 +2338,7 @@ function detachUplink() {
   uplinkLastDetached = { port: prev.port, pid: prev.pid, sessionFile: uplinkTargetSessionFile };
   viewingActiveSession = false;
   if (serverOwnSessionFile) mirrorActiveSessionFile = serverOwnSessionFile;
+  updateSessionHash(uplinkTargetSessionFile, false);
   renderSessionBanner();
   updateMirrorInputState();
   syncUplinkControls();
@@ -2230,6 +2439,7 @@ async function pollInstances() {
       renderLiveSection(liveInstances);
     }
   } catch {}
+  return liveInstances;
 }
 
 // Poll every 5 seconds
@@ -2282,41 +2492,32 @@ function updateMirrorInputState() {
 // Session history rendering
 // ═══════════════════════════════════════
 
-function renderSessionHistory(entries) {
-  // Full-session accounting + last known model/thinking, independent of the
-  // rendered window: an attached/history session must show its own model,
-  // thinking level, cost and context — not the web server's own state.
-  let histCost = 0;
-  let histTokens = 0;
-  let histUsage = null;
-  let histModel = null;
-  let histThinking = null;
+// Loaded session entries + render-window state. The full history stays in
+// memory (it came over the wire anyway); the DOM only holds the tail until
+// the user asks for older messages.
+let historyEntries = [];
+let historyWindow = VISIBLE_MESSAGE_WINDOW;
+let historyLoadMoreEl = null;
+let historyToolResults = new Map();
+
+// Precompute toolCallId -> result so a tool call and its result stay paired
+// even when the window boundary falls between them (the card is created with
+// its output already applied).
+function computeToolResults(entries) {
+  const map = new Map();
   for (const entry of entries) {
-    if (entry.type === 'model_change') {
-      if (entry.modelId) histModel = entry.modelId;
-    } else if (entry.type === 'thinking_level_change') {
-      if (entry.thinkingLevel) histThinking = entry.thinkingLevel;
-    } else if (entry.type === 'message' && entry.message?.role === 'assistant') {
-      const usage = entry.message.usage;
-      if (usage?.cost?.total) histCost += usage.cost.total;
-      if (Number.isFinite(usage?.input)) { histTokens = usage.input + (usage.cacheRead || 0); histUsage = usage; }
+    if (entry.type !== 'message') continue;
+    const msg = entry.message;
+    if (msg?.role === 'toolResult' && msg.toolCallId) {
+      map.set(msg.toolCallId, { content: msg.content || [], isError: msg.isError });
     }
   }
-  if (histModel && histModel !== currentModelId) { currentModelId = histModel; updateModelLabel(); }
-  if (histThinking && histThinking !== currentThinkingLevel) { currentThinkingLevel = histThinking; updateThinkingBtn(); }
-  sessionTotalCost = histCost;
-  if (histTokens) { lastInputTokens = histTokens; lastUsage = histUsage; }
+  return map;
+}
 
-  // Window the render: full history stays on disk, the DOM only holds the tail.
-  const total = entries.length;
-  const visible = total > VISIBLE_MESSAGE_WINDOW ? entries.slice(total - VISIBLE_MESSAGE_WINDOW) : entries;
-  if (total > VISIBLE_MESSAGE_WINDOW) {
-    messageRenderer.renderSystemMessage(`Showing last ${VISIBLE_MESSAGE_WINDOW} of ${total} entries — full history is on disk.`);
-  }
-  console.log(`[History] Rendering ${visible.length}/${total} entries`);
-  let userCount = 0, assistantCount = 0, toolCardCount = 0, toolResultCount = 0;
-
-  for (const entry of visible) {
+function renderHistoryEntries(slice) {
+  let userCount = 0, assistantCount = 0, toolCardCount = 0;
+  for (const entry of slice) {
     if (entry.type !== 'message') continue;
 
     const msg = entry.message;
@@ -2370,26 +2571,118 @@ function renderSessionHistory(entries) {
       // Show tool calls as compact history cards
       for (const tc of toolCalls) {
         toolCardCount++;
-        const card = toolCardRenderer.createHistoryCard({
+        toolCardRenderer.createHistoryCard({
           toolCallId: tc.id,
           toolName: tc.name,
           args: tc.arguments || {},
         });
-        console.log(`[History] Tool card created: ${tc.name}`, card?.offsetHeight, card?.innerHTML?.substring(0, 100));
+        // Pair the result now: the result entry may sit outside this slice.
+        const result = historyToolResults.get(tc.id);
+        if (result) toolCardRenderer.addHistoryResult(tc.id, { content: result.content }, result.isError);
       }
-    } else if (msg.role === 'toolResult') {
-      toolResultCount++;
-      toolCardRenderer.addHistoryResult(
-        msg.toolCallId,
-        { content: msg.content || [] },
-        msg.isError
-      );
+    }
+    // toolResult entries are paired via historyToolResults at card creation;
+    // rendering them in the loop would create empty cards at window edges.
+  }
+  console.log(`[History] Rendered ${slice.length} entries (${userCount} users, ${assistantCount} assistants, ${toolCardCount} tools)`);
+}
+
+// Boundary control at the top of the transcript: load older messages in
+// VISIBLE_MESSAGE_WINDOW steps. Inserted as the first child so it stays put
+// while older entries are prepended after it.
+function renderLoadMoreControl() {
+  if (historyLoadMoreEl) { historyLoadMoreEl.remove(); historyLoadMoreEl = null; }
+  const total = historyEntries.length;
+  if (total <= VISIBLE_MESSAGE_WINDOW) return;
+  const shown = Math.min(historyWindow, total);
+  const older = total - shown;
+  const el = document.createElement('div');
+  el.className = 'history-more system-message';
+  if (older > 0) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'history-more-btn';
+    btn.textContent = `↑ Load ${Math.min(older, VISIBLE_MESSAGE_WINDOW)} earlier messages`;
+    btn.addEventListener('click', loadEarlierMessages);
+    const info = document.createElement('span');
+    info.className = 'history-more-info';
+    info.textContent = `showing last ${shown} of ${total} entries`;
+    el.appendChild(btn);
+    el.appendChild(info);
+  } else {
+    el.classList.add('done');
+    const info = document.createElement('span');
+    info.className = 'history-more-info';
+    info.textContent = `beginning of session · all ${total} entries shown`;
+    el.appendChild(info);
+  }
+  messagesContainer.insertBefore(el, messagesContainer.firstChild);
+  historyLoadMoreEl = el;
+}
+
+// Prepend the next older slice without rebuilding the DOM. Scroll anchoring is
+// manual (CSS overflow-anchor is off on .messages): shift scrollTop by the
+// height the prepend added so the previously visible content stays put.
+function loadEarlierMessages() {
+  const total = historyEntries.length;
+  const shownBefore = Math.min(historyWindow, total);
+  const nextWindow = Math.min(historyWindow + VISIBLE_MESSAGE_WINDOW, total);
+  const older = historyEntries.slice(total - nextWindow, total - shownBefore);
+  if (older.length === 0) return;
+  const prevHeight = messagesContainer.scrollHeight;
+  const prevTop = messagesContainer.scrollTop;
+  // Render the slice off-screen at the end, then move just those nodes to the
+  // top — the existing messages are never touched (no animation restarts).
+  const marker = document.createComment('older-messages');
+  messagesContainer.appendChild(marker);
+  renderHistoryEntries(older);
+  const frag = document.createDocumentFragment();
+  let node = marker.nextSibling;
+  while (node) { const next = node.nextSibling; frag.appendChild(node); node = next; }
+  marker.remove();
+  historyWindow = nextWindow;
+  const anchor = historyLoadMoreEl ? historyLoadMoreEl.nextSibling : messagesContainer.firstChild;
+  messagesContainer.insertBefore(frag, anchor);
+  messagesContainer.scrollTop = prevTop + (messagesContainer.scrollHeight - prevHeight);
+  renderLoadMoreControl();
+}
+
+function renderSessionHistory(entries) {
+  // Full-session accounting + last known model/thinking, independent of the
+  // rendered window: an attached/history session must show its own model,
+  // thinking level, cost and context — not the web server's own state.
+  let histCost = 0;
+  let histTokens = 0;
+  let histUsage = null;
+  let histModel = null;
+  let histThinking = null;
+  for (const entry of entries) {
+    if (entry.type === 'model_change') {
+      if (entry.modelId) histModel = entry.modelId;
+    } else if (entry.type === 'thinking_level_change') {
+      if (entry.thinkingLevel) histThinking = entry.thinkingLevel;
+    } else if (entry.type === 'message' && entry.message?.role === 'assistant') {
+      const usage = entry.message.usage;
+      if (usage?.cost?.total) histCost += usage.cost.total;
+      if (Number.isFinite(usage?.input)) { histTokens = usage.input + (usage.cacheRead || 0); histUsage = usage; }
     }
   }
+  if (histModel && histModel !== currentModelId) { currentModelId = histModel; updateModelLabel(); }
+  if (histThinking && histThinking !== currentThinkingLevel) { currentThinkingLevel = histThinking; updateThinkingBtn(); }
+  sessionTotalCost = histCost;
+  if (histTokens) { lastInputTokens = histTokens; lastUsage = histUsage; }
 
-  console.log(`[History] Done: ${userCount} users, ${assistantCount} assistants, ${toolCardCount} tools, ${toolResultCount} results`);
-  console.log(`[History] DOM tool-card count:`, document.querySelectorAll('.tool-card').length);
-  console.log(`[History] DOM thinking-block count:`, document.querySelectorAll('.thinking-block').length);
+  // Window the render: full history stays in memory/on disk, the DOM only
+  // holds the tail until "load earlier" grows the window.
+  historyEntries = entries;
+  historyWindow = VISIBLE_MESSAGE_WINDOW;
+  historyToolResults = computeToolResults(entries);
+  historyLoadMoreEl = null;
+  const total = entries.length;
+  const visible = total > VISIBLE_MESSAGE_WINDOW ? entries.slice(total - VISIBLE_MESSAGE_WINDOW) : entries;
+  console.log(`[History] Rendering ${visible.length}/${total} entries`);
+  renderHistoryEntries(visible);
+  renderLoadMoreControl();
 
   updateCostDisplay();
   updateTokenUsage();

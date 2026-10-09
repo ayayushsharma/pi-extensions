@@ -20,7 +20,14 @@ be changed from the web UI while driving. Compaction (manual, threshold and
 overflow) is a first-class UI state: an amber **Compacting…** pill plus an inline
 transcript message that resolves to the summary, a cancellation, or the failure —
 headless sessions are covered by tau-web itself; attached live TUIs forward it once
-the TUI runs the patched `tau` extension. Harness: **ALL PASS**
+the TUI runs the patched `tau` extension. History renders the last 60 entries with
+an incremental **Load earlier messages** control (window grows 60 at a time, scroll
+anchor preserved); the full session stays in memory and on disk. The active session
+is encoded in the URL (`#session=<file-basename>&drive=1`), so a reload re-attaches
+the same session and separate tabs drive separate sessions independently. Messages
+queued while a run is in flight are forwarded immediately as `steer` prompts — pi
+holds them in its own queue and delivers them after the current turn; a rejected
+prompt is surfaced instead of failing silently. Harness: **ALL PASS**
 (health, authed WS, ping/pong, `uplink_list` discovery of live tau, `start_session`
 + headless `HEADLESS-OK` round-trip, uplink attach/detach + live `mirror_sync`).
 
@@ -106,7 +113,10 @@ mirror-live session, then the headless backend, then legacy direct send.
 One WS = one headless backend (server keys by connection); a second browser
 tab/window gets its own backend, so phone + laptop stay independent.
 Session switching bumps a binding epoch — stale stream events from the old
-session are dropped. History renders the last 60 entries; full history stays on disk.
+session are dropped. History renders the last 60 entries with an incremental
+**Load earlier messages** control; full history stays in memory and on disk.
+Per-tab sessions: `#session=<file-basename>` pins the view (add `&drive=1` to
+auto-attach a live TUI); the key is never a filesystem path.
 Command palette (`/` browsing + fuzzy search) with unknown-slash guard; no `ttyd`
 fallback anywhere — failures surface as UI errors, and a dead uplink offers
 **Continue headless** on the same file.

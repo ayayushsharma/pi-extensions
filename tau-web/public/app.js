@@ -507,6 +507,7 @@ function handleAgentStart() {
 }
 
 function handleAgentEnd() {
+  cancelStreamFlush();
   currentStreamingElement = null;
   currentStreamingText = '';
   // Hold the streaming chrome briefly to bridge message-boundary gaps.
@@ -562,25 +563,47 @@ function handleMessageUpdate(event) {
   if (activeStreamEpoch !== -1 && activeStreamEpoch !== bindingEpoch) return; // stale stream after switch
   const { assistantMessageEvent } = event;
 
+  // Coalesce DOM writes to one per frame (scheduleStreamFlush): thinking/text
+  // deltas arrive dozens per second, and rewriting the whole accumulated string
+  // plus scrolling per delta saturates the main thread on phones — which starves
+  // compositor animations and makes pulsing indicators look like they flicker.
   if (assistantMessageEvent.type === 'thinking_delta') {
     currentStreamingThinking += assistantMessageEvent.delta;
-    if (currentStreamingElement) {
-      messageRenderer.updateStreamingThinking(currentStreamingElement, currentStreamingThinking);
-    }
+    scheduleStreamFlush();
   } else if (assistantMessageEvent.type === 'text_delta') {
     currentStreamingText += assistantMessageEvent.delta;
-    if (currentStreamingElement) {
-      messageRenderer.updateStreamingMessage(
-        currentStreamingElement,
-        currentStreamingText
-      );
-    }
+    scheduleStreamFlush();
   }
 }
 
+let streamFlushRaf = null;
+function flushStreamingDom() {
+  if (!currentStreamingElement) return;
+  if (currentStreamingThinking) {
+    messageRenderer.updateStreamingThinking(currentStreamingElement, currentStreamingThinking);
+  }
+  if (currentStreamingText) {
+    messageRenderer.updateStreamingMessage(currentStreamingElement, currentStreamingText);
+  }
+}
+function scheduleStreamFlush() {
+  if (streamFlushRaf) return;
+  streamFlushRaf = requestAnimationFrame(() => {
+    streamFlushRaf = null;
+    flushStreamingDom();
+  });
+}
+function cancelStreamFlush() {
+  if (streamFlushRaf) { cancelAnimationFrame(streamFlushRaf); streamFlushRaf = null; }
+}
+
 function handleMessageEnd(message) {
-  if (activeStreamEpoch !== -1 && activeStreamEpoch !== bindingEpoch) { currentStreamingElement = null; return; }
+  if (activeStreamEpoch !== -1 && activeStreamEpoch !== bindingEpoch) { cancelStreamFlush(); currentStreamingElement = null; return; }
   if (currentStreamingElement) {
+    // Flush any pending frame first: finalize's no-payload fallback reads the
+    // streamed text node, so the last delta must already be in the DOM.
+    flushStreamingDom();
+    cancelStreamFlush();
     // Pass usage info for cost display
     const usage = message?.usage || null;
     // Pass thinking + the final message so finalize renders the real block
@@ -712,11 +735,23 @@ messageInput.addEventListener('input', () => {
   const headerEl = document.querySelector('.header');
   if (!inputArea || typeof ResizeObserver === 'undefined') return;
   const apply = () => {
+    const inputH = `${inputArea.offsetHeight}px`;
+    const headerH = headerEl ? `${headerEl.offsetHeight}px` : null;
+    // Anti-flicker: ResizeObserver can fire during streaming (cost pill, token
+    // %, compact button change the header contents). Rewriting the custom
+    // properties invalidates styles for the banner (margin-top) and .messages
+    // padding even when the value is unchanged, repainting the pulsing dot.
+    if (
+      document.documentElement.style.getPropertyValue('--input-height') === inputH &&
+      (!headerEl || document.documentElement.style.getPropertyValue('--header-height') === headerH)
+    ) {
+      return;
+    }
     const wasNearBottom =
       messagesContainer.scrollHeight - messagesContainer.scrollTop - messagesContainer.clientHeight < 150;
-    document.documentElement.style.setProperty('--input-height', `${inputArea.offsetHeight}px`);
+    document.documentElement.style.setProperty('--input-height', inputH);
     if (headerEl) {
-      document.documentElement.style.setProperty('--header-height', `${headerEl.offsetHeight}px`);
+      document.documentElement.style.setProperty('--header-height', headerH);
     }
     if (wasNearBottom) messagesContainer.scrollTop = messagesContainer.scrollHeight;
   };
@@ -1617,6 +1652,7 @@ async function switchSession(sessionFile, session = null, project = null, opts =
     updateUI();
     activeStreamEpoch = -1;
     // Clear any streaming state from previous session to prevent bleed
+    cancelStreamFlush();
     currentStreamingElement = null;
     currentStreamingThinking = '';
     currentStreamingText = '';
@@ -1954,6 +1990,12 @@ function renderSessionBanner() {
       <button class="sb-btn primary" data-action="retry" data-port="${uplinkLastDetached.port}" data-pid="${uplinkLastDetached.pid}">Attach again</button>
       <button class="sb-btn" data-action="dismiss">×</button>`;
   }
+  // Anti-flicker: only touch the DOM when the rendered banner actually
+  // changes. Re-writing innerHTML recreates .sb-dot and restarts its pulse
+  // animation (the same reason renderLiveSection is signature-guarded).
+  const sig = `${cls}|${html}`;
+  if (el.dataset.sig === sig) return;
+  el.dataset.sig = sig;
   el.className = `session-banner${cls ? ` ${cls}` : ''}${html ? '' : ' hidden'}`;
   el.innerHTML = html;
   mainEl?.classList.toggle('has-banner', !!html);

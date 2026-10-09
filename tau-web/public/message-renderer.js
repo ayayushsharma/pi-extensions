@@ -309,8 +309,11 @@ export class MessageRenderer {
   scrollToBottom() {
     // Never yank the view out from under a reading finger (phone flicker).
     if (this.userIsReading()) return;
-    if (this.isNearBottom) {
-      requestAnimationFrame(() => {
+    // Coalesce to one write per frame: a scroll write per stream delta keeps
+    // restarting scroll animations and repaints the viewport needlessly.
+    if (this.isNearBottom && !this._scrollRaf) {
+      this._scrollRaf = requestAnimationFrame(() => {
+        this._scrollRaf = null;
         if (this.userIsReading()) return;
         this.container.scrollTop = this.container.scrollHeight;
       });

@@ -760,6 +760,7 @@ html {
   margin-right: 6px;
   vertical-align: middle;
   animation: pulse 2s infinite;
+  will-change: opacity;
 }
 
 /* Mirror mode: read-only input */
@@ -795,6 +796,9 @@ html {
   background: var(--success);
   box-shadow: 0 0 6px rgba(52, 211, 153, 0.5);
   animation: pulse 2s infinite;
+  /* Keep the pulse on the compositor: main-thread streaming work must not
+     make this read as flicker. */
+  will-change: opacity;
   flex-shrink: 0;
 }
 .live-label {
@@ -874,6 +878,7 @@ html {
   background: var(--success);
   flex-shrink: 0;
   animation: pulse 2s infinite;
+  will-change: opacity;
 }
 .session-banner.preview .sb-dot { background: #f0b429; }
 .session-banner.error .sb-dot { background: var(--error, #ef4444); animation: none; }
@@ -1218,6 +1223,7 @@ html {
   color: var(--error);
   border-color: rgba(248, 113, 113, 0.25);
   animation: pulse 2s infinite;
+  will-change: opacity;
 }
 
 /* Context window visualiser popover */
@@ -1557,6 +1563,7 @@ html {
 .status-indicator.streaming {
   background: var(--accent);
   animation: pulse 1.5s infinite;
+  will-change: opacity;
   box-shadow: 0 0 12px var(--accent-glow);
 }
 
@@ -1880,7 +1887,11 @@ html {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  scroll-behavior: smooth;
+  /* No CSS smooth scrolling: programmatic scrollTop writes happen per stream
+     frame, and each smooth restart forced a compositor scroll animation that
+     starved the pulsing indicators on phones ("flickering" green dots). The
+     scroll-to-bottom button asks for smooth explicitly. */
+  scroll-behavior: auto;
 }
 
 .messages::-webkit-scrollbar { width: 6px; }

@@ -11,6 +11,7 @@ import { SessionSidebar } from './session-sidebar.js';
 import { themes, applyTheme, getCurrentTheme } from './themes.js';
 import { FileBrowser, getFileIcon } from './file-browser.js';
 import { Launcher } from './launcher.js';
+import { icon } from './icons.js';
 import { SpeechController } from './tts.js';
 
 // ─── Inline login (replaces the native browser login prompt) ───
@@ -176,7 +177,7 @@ let liveInstances = []; // All running Tau instances [{port, sessionFile, cwd}]
 // ─── tau-web unified: epoch guard, headless binding, uplink (ADR-004) ───
 let bindingEpoch = 0; // bumped on every session switch; stale stream events are dropped
 let activeStreamEpoch = -1; // epoch captured when the current stream started
-const VISIBLE_MESSAGE_WINDOW = 60; // render only the tail; full history stays on disk
+const VISIBLE_MESSAGE_WINDOW = 100; // render only the tail; full history stays on disk
 // ─── URL session routing (per-tab sessions) ───
 // The hash carries only the session file's basename (timestamp + uuid) — never
 // a filesystem path, which would leak system details when the URL is shared.
@@ -436,6 +437,7 @@ wsClient.addEventListener('uplinkAttached', (e) => {
   uplinkAttachPending = false;
   uplinkAttachError = null;
   viewingActiveSession = true; // the uplinked TUI's session is now the live view
+  pollAttachedState();
   updateSessionHash(uplinkTargetSessionFile, true);
   updateMirrorInputState();
   renderSessionBanner();
@@ -605,7 +607,7 @@ function handleCompactionStart(event) {
     messagesContainer.appendChild(el);
   }
   el.classList.remove('compaction-done');
-  el.innerHTML = `<span class="compaction-spinner">⟳</span> Compacting context${reason ? ` — ${escapeHtml(reason)}` : ''}…`;
+  el.innerHTML = `<span class="compaction-spinner svg-wrap">${icon('spinner', 13)}</span> Compacting context${reason ? ` — ${escapeHtml(reason)}` : ''}…`;
   scrollToBottom();
 }
 
@@ -616,11 +618,11 @@ function handleCompactionEnd(event) {
     const error = event?.errorMessage || event?.error;
     const summary = event?.summary || event?.result?.summary;
     if (event?.aborted) {
-      indicator.innerHTML = '⊘ Compaction cancelled';
+      indicator.innerHTML = `${icon('x', 13)} Compaction cancelled`;
     } else if (error) {
-      indicator.innerHTML = `⚠ Compaction failed — ${escapeHtml(String(error))}`;
+      indicator.innerHTML = `${icon('warn', 13)} Compaction failed — ${escapeHtml(String(error))}`;
     } else {
-      indicator.innerHTML = `✓ Context compacted${summary ? ` — ${escapeHtml(String(summary))}` : ''}${event?.willRetry ? ' · retrying' : ''}`;
+      indicator.innerHTML = `${icon('check', 13)} Context compacted${summary ? ` — ${escapeHtml(String(summary))}` : ''}${event?.willRetry ? ' · retrying' : ''}`;
     }
     indicator.classList.add('compaction-done');
   }
@@ -1038,7 +1040,7 @@ function makeRemoveBtn(onClick) {
   const btn = document.createElement('button');
   btn.className = 'image-preview-remove';
   btn.setAttribute('aria-label', 'Remove');
-  btn.textContent = '✕';
+  btn.innerHTML = icon('x', 12);
   btn.addEventListener('click', onClick);
   return btn;
 }
@@ -1097,7 +1099,7 @@ function renderAttachmentPreviews() {
       el.title = fp.path;
       const icon = document.createElement('span');
       icon.className = 'file-chip-icon';
-      icon.textContent = getFileChipIcon(fp.ext);
+      icon.innerHTML = getFileChipIcon(fp.ext);
       const label = document.createElement('span');
       label.className = 'file-chip-name';
       label.textContent = fp.name;
@@ -1185,7 +1187,7 @@ function renderQueuedMessages() {
     el.innerHTML = `
       <span class="queued-msg-label">Queued</span>
       <span class="queued-msg-text">${escapeHtml(cmd.message)}</span>
-      <button class="queued-msg-cancel" title="Cancel">×</button>
+      <button class="queued-msg-cancel" title="Cancel" aria-label="Cancel">${icon('x', 12)}</button>
     `;
     el.querySelector('.queued-msg-cancel').addEventListener('click', () => {
       const [removed] = messageQueue.splice(i, 1);
@@ -1233,11 +1235,12 @@ const commandList = document.getElementById('command-list');
 const commandSearch = document.getElementById('command-search');
 
 const localCommands = [
-  { icon: '🗜️', label: 'Compact', desc: 'Compact context to save tokens', action: () => rpcCommand({ type: 'compact' }, 'Compacting...') },
-  { icon: '📋', label: 'Export HTML', desc: 'Export session as HTML file', action: () => rpcExportHtml() },
-  { icon: '📊', label: 'Session Stats', desc: 'Show session statistics', action: () => showSessionStats() },
-  { icon: '⬇️', label: 'Expand All Tools', desc: 'Expand all tool cards', action: () => toolCardRenderer.expandAll() },
-  { icon: '⬆️', label: 'Collapse All Tools', desc: 'Collapse all tool cards', action: () => toolCardRenderer.collapseAll() },
+  { icon: icon('compact', 15), label: 'Compact', desc: 'Compact context to save tokens', action: () => rpcCommand({ type: 'compact' }, 'Compacting...') },
+  { icon: icon('export', 15), label: 'Export HTML', desc: 'Export session as HTML file', action: () => rpcExportHtml() },
+  { icon: icon('stats', 15), label: 'Session Stats', desc: 'Show session statistics', action: () => showSessionStats() },
+  { icon: icon('expand', 15), label: 'Expand All Tools', desc: 'Expand all tool cards', action: () => toolCardRenderer.expandAll() },
+  { icon: icon('collapse', 15), label: 'Collapse All Tools', desc: 'Collapse all tool cards', action: () => toolCardRenderer.collapseAll() },
+  { icon: icon('reload', 15), label: 'Reload Runtime', desc: 'Reload extensions, skills and prompts (/reload)', action: () => { messageInput.value = '/reload'; sendMessage(); } },
 ];
 
 // Slash commands from the Pi session (fetched via get_commands, cached here).
@@ -1470,7 +1473,7 @@ async function showSessionStats() {
   if (data?.success && data.data) {
     const s = data.data;
     const lines = [
-      `📊 Session Stats`,
+      `Session Stats`,
       `Messages: ${s.totalMessages} (${s.userMessages} user, ${s.assistantMessages} assistant)`,
       `Tool calls: ${s.toolCalls}`,
     ];
@@ -1494,14 +1497,8 @@ function updateThinkingBtn() {
   thinkingBtn.textContent = currentThinkingLevel;
   thinkingBtn.classList.toggle('off', currentThinkingLevel === 'off');
 }
-// pi's canonical thinking levels. Older tau builds cycle a 5-level subset
-// (off..high), which would skip xhigh/max on an attached session — so cycle
-// the full list here and send the explicit level instead.
+// pi's canonical thinking levels, picked from the header dropdown.
 const THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
-function nextThinkingLevel(current) {
-  const i = THINKING_LEVELS.indexOf(current);
-  return THINKING_LEVELS[(i + 1) % THINKING_LEVELS.length];
-}
 let currentModelId = '';
 let availableModels = [];
 let currentThinkingLevel = 'off';
@@ -1637,17 +1634,41 @@ document.addEventListener('click', (e) => {
 });
 
 // Thinking level button — cycles through levels
-thinkingBtn.addEventListener('click', async () => {
-  if (uplinkPreview) {
-    statusText.textContent = 'Attach & Drive to change thinking level';
-    setTimeout(() => { statusText.textContent = 'Connected'; }, 2500);
-    return;
-  }
-  const next = nextThinkingLevel(currentThinkingLevel);
-  const data = await rpcCommand({ type: 'set_thinking_level', level: next }, `Thinking: ${next}...`);
-  if (data?.success === false) return; // keep the previous level on failure
-  currentThinkingLevel = next;
-  updateThinkingBtn();
+const thinkingDropdown = document.getElementById('thinking-dropdown');
+const thinkingMenu = document.getElementById('thinking-menu');
+function renderThinkingMenu() {
+  if (!thinkingMenu) return;
+  thinkingMenu.innerHTML = THINKING_LEVELS.map((lv) =>
+    `<button class="thinking-item${lv === currentThinkingLevel ? ' active' : ''}" data-level="${lv}">${lv}</button>`
+  ).join('');
+  thinkingMenu.querySelectorAll('.thinking-item').forEach((item) => {
+    item.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const level = item.dataset.level;
+      thinkingMenu.classList.add('hidden');
+      thinkingDropdown?.classList.remove('open');
+      if (level === currentThinkingLevel) return;
+      if (uplinkPreview) {
+        statusText.textContent = 'Attach & Drive to change thinking level';
+        setTimeout(() => { statusText.textContent = 'Connected'; }, 2500);
+        return;
+      }
+      const data = await rpcCommand({ type: 'set_thinking_level', level }, `Thinking: ${level}...`);
+      if (data?.success === false) return; // keep the previous level on failure
+      currentThinkingLevel = level;
+      updateThinkingBtn();
+    });
+  });
+}
+thinkingBtn.addEventListener('click', (e) => {
+  e.stopPropagation();
+  renderThinkingMenu();
+  thinkingMenu?.classList.toggle('hidden');
+  thinkingDropdown?.classList.toggle('open');
+});
+document.addEventListener('click', () => {
+  thinkingMenu?.classList.add('hidden');
+  thinkingDropdown?.classList.remove('open');
 });
 
 // ═══════════════════════════════════════
@@ -1710,7 +1731,7 @@ function isMobile() {
 }
 
 function updateSidebarToggleIcon() {
-  sidebarToggle.textContent = '☰';
+  sidebarToggle.innerHTML = icon('menu', 18);
 }
 
 function refreshMobileOverlay() {
@@ -2346,7 +2367,7 @@ function renderSessionBanner() {
       <span class="sb-text"><strong>Attach failed${errName ? ` — ${esc(errName)}` : ''}</strong><span class="sb-hint">${esc(uplinkAttachError)}</span></span>
       ${target ? `<button class="sb-btn" data-action="retry" data-port="${target.port}" data-pid="${target.pid}">Retry</button>` : ''}
       ${(target?.sessionFile || uplinkTargetSessionFile) ? `<button class="sb-btn" data-action="headless">Continue headless</button>` : ''}
-      <button class="sb-btn" data-action="dismiss">×</button>`;
+      <button class="sb-btn svg-btn" data-action="dismiss" aria-label="Dismiss">${icon('x', 12)}</button>`;
   } else if (uplinkActive) {
     const driveName = nameOf(uplinkTargetSessionFile);
     cls = 'driving';
@@ -2373,7 +2394,8 @@ function renderSessionBanner() {
     html = `<span class="sb-dot"></span>
       <span class="sb-text"><strong>Detached${detName ? ` from “${esc(detName)}”` : ''} · :${uplinkLastDetached.port}</strong><span class="sb-hint">View is frozen; the TUI keeps running</span></span>
       <button class="sb-btn primary" data-action="retry" data-port="${uplinkLastDetached.port}" data-pid="${uplinkLastDetached.pid}">Attach again</button>
-      <button class="sb-btn" data-action="dismiss">×</button>`;
+      <button class="sb-btn" data-action="live" title="Back to this server's live session">This server</button>
+      <button class="sb-btn svg-btn" data-action="dismiss" aria-label="Dismiss">${icon('x', 12)}</button>`;
   }
   // Anti-flicker: only touch the DOM when the rendered banner actually
   // changes. Re-writing innerHTML recreates .sb-dot and restarts its pulse
@@ -2384,6 +2406,31 @@ function renderSessionBanner() {
   el.className = `session-banner${cls ? ` ${cls}` : ''}${html ? '' : ' hidden'}`;
   el.innerHTML = html;
   mainEl?.classList.toggle('has-banner', !!html);
+}
+
+// Back to this server's own live session — the one-click return after a
+// detach (or after wandering into history). Clears any frozen-detached or
+// preview state, then opens the server-owned session file read-write.
+async function backToLive(sessionFile) {
+  uplinkPreview = null;
+  uplinkLastDetached = null;
+  uplinkAttachError = null;
+  uplinkAttachPending = false;
+  viewingActiveSession = true;
+  renderSessionBanner();
+  const target = sessionFile || serverOwnSessionFile || mirrorActiveSessionFile;
+  const found = target ? findSidebarSession(target) : null;
+  if (found) {
+    sidebar.setActive(target);
+    updateSessionHash(target, false);
+    await switchSession(target, found.session, found.project);
+  } else {
+    updateSessionHash(null);
+    sidebar.clearActive();
+    messageRenderer.renderWelcome();
+  }
+  updateMirrorInputState();
+  syncUplinkControls();
 }
 
 async function previewAttach(port, pid, sessionFile, lastActive, opts = {}) {
@@ -2494,6 +2541,7 @@ document.getElementById('session-banner')?.addEventListener('click', (e) => {
   if (action === 'attach') attachUplink(uplinkPreview?.port, uplinkPreview?.pid);
   else if (action === 'retry') attachUplink(Number(btn.dataset.port), Number(btn.dataset.pid));
   else if (action === 'detach') detachUplink();
+  else if (action === 'live') backToLive();
   else if (action === 'cancel') cancelPreview();
   else if (action === 'dismiss') { uplinkAttachError = null; uplinkLastDetached = null; renderSessionBanner(); updateMirrorInputState(); }
   else if (action === 'headless') {
@@ -2544,7 +2592,9 @@ function renderLiveSection(instances) {
     const label = liveInstanceLabel(i);
     const sub = `${viewing ? 'viewing · ' : ''}${i.cwd ? `${escapeHtml(i.cwd.split('/').filter(Boolean).pop() || '')} · :${i.port}` : `:${i.port}`}`;
     const action = i.local
-      ? `<span class="live-tag" title="The web server's own Pi process (rpc mode) — the browser already talks to it directly; Attach is only for separate live TUI sessions">this server</span>`
+      ? (viewing
+        ? `<span class="live-tag" title="The web server's own Pi process — the browser already talks to it directly; Attach is only for separate live TUI sessions">this server</span>`
+        : `<button class="live-btn" data-action="live" data-file="${escapeHtml(i.sessionFile || '')}" title="Back to this server's live session">Live</button>`)
       : attached
         ? `<button class="live-btn" data-action="detach" data-port="${i.port}">Detach</button>`
         : previewing
@@ -2567,12 +2617,41 @@ function renderLiveSection(instances) {
         previewAttach(Number(btn.dataset.port), Number(btn.dataset.pid), btn.dataset.file || null, btn.dataset.started || null);
       } else if (btn.dataset.action === 'cancelpreview') {
         cancelPreview();
+      } else if (btn.dataset.action === 'live') {
+        backToLive(btn.dataset.file || null);
       } else {
         detachUplink();
       }
     });
   });
 }
+// Attached-session state: model, thinking level and context window belong to
+// the TUI being driven, not to the web server. mirror_sync covers the attach
+// moment; this 60s poll keeps the header honest on long-lived attaches.
+function applyAttachedState(d) {
+  if (!d) return;
+  if (d.model?.id) {
+    currentModelId = d.model.id;
+    updateModelLabel();
+    if (d.model.contextWindow) {
+      contextWindowSize = d.model.contextWindow;
+      updateTokenUsage();
+    }
+  }
+  if (d.thinkingLevel) {
+    currentThinkingLevel = d.thinkingLevel;
+    updateThinkingBtn();
+  }
+}
+async function pollAttachedState() {
+  if (!uplinkActive) return;
+  try {
+    const data = await sendRpc({ type: 'uplink_command', command: { type: 'get_state' } });
+    if (data && !data.timeout && data.success && data.data) applyAttachedState(data.data);
+  } catch {}
+}
+setInterval(pollAttachedState, 60000);
+
 // Poll for running instances to mark all live sessions
 async function pollInstances() {
   try {
@@ -2724,6 +2803,7 @@ function renderHistoryEntries(slice) {
           toolCallId: tc.id,
           toolName: tc.name,
           args: tc.arguments || {},
+          timestamp: entry.timestamp || null,
         });
         // Pair the result now: the result entry may sit outside this slice.
         const result = historyToolResults.get(tc.id);
@@ -3057,8 +3137,18 @@ const themeGrid = document.getElementById('theme-grid');
 
 
 const toggleAutoCompact = document.getElementById('toggle-auto-compact');
-const btnThinkingLevel = document.getElementById('btn-thinking-level');
 const toggleShowThinking = document.getElementById('toggle-show-thinking');
+
+// Settings tabs: one pane visible at a time so the panel stays short.
+const settingsTabs = document.querySelectorAll('#settings-tabs .settings-tab');
+function selectSettingsTab(name) {
+  settingsTabs.forEach((t) => t.classList.toggle('active', t.dataset.tab === name));
+  document.querySelectorAll('#settings-panel .settings-section').forEach((sec) => {
+    sec.classList.toggle('hidden', sec.dataset.pane !== name);
+  });
+  try { localStorage.setItem('tau-settings-tab', name); } catch {}
+}
+settingsTabs.forEach((t) => t.addEventListener('click', () => selectSettingsTab(t.dataset.tab)));
 
 
 function buildThemeGrid() {
@@ -3083,19 +3173,27 @@ function buildThemeGrid() {
 
 async function openSettings() {
   buildThemeGrid();
-  // Voice section: hidden where the browser has no speechSynthesis.
+  // Voice tab: hidden where the browser has no speechSynthesis.
+  const voiceTab = document.querySelector('#settings-tabs .settings-tab[data-tab="voice"]');
   const voiceSection = document.getElementById('settings-voice-section');
-  if (voiceSection) voiceSection.style.display = speech.supported ? '' : 'none';
+  if (!speech.supported) {
+    if (voiceTab) voiceTab.style.display = 'none';
+    if (voiceSection) voiceSection.style.display = 'none';
+  } else {
+    if (voiceTab) voiceTab.style.display = '';
+    if (voiceSection) voiceSection.style.display = '';
+  }
+  let lastTab = null;
+  try { lastTab = localStorage.getItem('tau-settings-tab'); } catch {}
+  selectSettingsTab(!speech.supported && lastTab === 'voice' ? 'appearance' : (lastTab === 'agent' || lastTab === 'voice' || lastTab === 'server' ? lastTab : 'appearance'));
   populateVoiceSelect();
   syncVoiceControls();
   settingsPanel.classList.remove('hidden');
   settingsOverlay.classList.remove('hidden');
-  // Server section: version + uptime from /api/health (auth-exempt).
+  // Server pane: version + uptime from /api/health (auth-exempt).
   try {
     const h = await tauRawFetch('/api/health').then((r) => r.json()).catch(() => null);
-    const sec = document.getElementById('settings-server-section');
-    if (h && sec) {
-      sec.style.display = '';
+    if (h) {
       document.getElementById('server-version').textContent = h.version || '—';
       document.getElementById('server-uptime').textContent = h.startedAt ? formatUptime(Date.now() - new Date(h.startedAt).getTime()) : '—';
     }
@@ -3123,30 +3221,9 @@ function formatUptime(ms) {
       const s = data.data;
       // Auto-compaction toggle
       toggleAutoCompact.className = `settings-toggle${s.autoCompactionEnabled ? ' on' : ''}`;
-      // Thinking level — only when no live-TUI view owns the header state.
-      if (!uplinkOwnsView()) {
-        btnThinkingLevel.textContent = s.thinkingLevel || 'off';
-        currentThinkingLevel = s.thinkingLevel || 'off';
-        updateThinkingBtn();
-      }
-      // Session name
-      inputSessionName.value = s.sessionName || '';
     }
   } catch (e) {
     // Silent
-  }
-
-  // Fetch auth state
-  try {
-    const authData = await rpcCommand({ type: 'get_auth' });
-    if (authData?.success && authData.data?.configured) {
-      authSection.style.display = '';
-      toggleAuth.className = `settings-toggle${authData.data.enabled ? ' on' : ''}`;
-    } else {
-      authSection.style.display = 'none';
-    }
-  } catch {
-    authSection.style.display = 'none';
   }
 }
 
@@ -3222,21 +3299,6 @@ if (btnTtsTest) {
   });
 }
 
-// Thinking level cycle (settings panel button)
-btnThinkingLevel.addEventListener('click', async () => {
-  if (uplinkPreview) {
-    statusText.textContent = 'Attach & Drive to change thinking level';
-    setTimeout(() => { statusText.textContent = 'Connected'; }, 2500);
-    return;
-  }
-  const next = nextThinkingLevel(currentThinkingLevel);
-  const data = await rpcCommand({ type: 'set_thinking_level', level: next });
-  if (data?.success === false) return;
-  currentThinkingLevel = next;
-  btnThinkingLevel.textContent = next;
-  updateThinkingBtn();
-});
-
 // Show thinking toggle (local pref)
 const showThinking = localStorage.getItem('tau-show-thinking') !== 'false';
 toggleShowThinking.className = `settings-toggle${showThinking ? ' on' : ''}`;
@@ -3249,17 +3311,6 @@ toggleShowThinking.addEventListener('click', () => {
   localStorage.setItem('tau-show-thinking', !isOn);
 });
 
-// Auth toggle
-const toggleAuth = document.getElementById('toggle-auth');
-const authSection = document.getElementById('settings-auth-section');
-
-toggleAuth.addEventListener('click', async () => {
-  const isOn = toggleAuth.classList.contains('on');
-  const data = await rpcCommand({ type: 'set_auth', enabled: !isOn });
-  if (data?.success) {
-    toggleAuth.className = `settings-toggle${!isOn ? ' on' : ''}`;
-  }
-});
 // Log out this browser: clear the cookie session + cached creds, then prompt.
 document.getElementById('btn-logout')?.addEventListener('click', async () => {
   try { await tauRawFetch('/api/logout', { method: 'POST' }); } catch {}
@@ -3595,4 +3646,4 @@ if (splash) {
   });
 }
 
-console.log('🚀 Tau initialized');
+console.log('Tau initialized');

@@ -2,6 +2,8 @@
  * Dialogs - Handles extension UI dialogs
  */
 
+import { icon } from './icons.js';
+
 export class DialogHandler {
   constructor(container, wsClient) {
     this.container = container;
@@ -148,7 +150,8 @@ export class DialogHandler {
     // Create a temporary notification element
     const notification = document.createElement('div');
     notification.className = 'error-message';
-    notification.textContent = `${notifyType === 'error' ? '⚠️' : notifyType === 'warning' ? '⚠️' : 'ℹ️'} ${message}`;
+    notification.innerHTML = `${icon(notifyType === 'info' ? 'info' : 'warn', 14)}<span></span>`;
+    notification.querySelector('span').textContent = message;
     
     // Add to messages container temporarily
     const messagesContainer = document.getElementById('messages');

@@ -2,32 +2,10 @@
  * File Browser — right sidebar file tree with drag-and-drop
  */
 
-const FILE_ICONS = {
-  // Folders
-  directory: '📁',
-  // Code
-  js: '📄', ts: '📄', jsx: '📄', tsx: '📄',
-  py: '🐍', rb: '💎', go: '📄', rs: '🦀',
-  // Web
-  html: '🌐', css: '🎨', svg: '🎨',
-  // Data
-  json: '📋', yaml: '📋', yml: '📋', toml: '📋',
-  xml: '📋', csv: '📋',
-  // Docs
-  md: '📝', txt: '📝', rst: '📝',
-  // Images
-  png: '🖼️', jpg: '🖼️', jpeg: '🖼️', gif: '🖼️',
-  webp: '🖼️', ico: '🖼️',
-  // Config
-  env: '🔒', gitignore: '🔒', lock: '🔒',
-  // Default
-  default: '📄',
-};
+import { fileKindIcon } from './icons.js';
 
 export function getFileIcon(name, isDirectory) {
-  if (isDirectory) return FILE_ICONS.directory;
-  const ext = name.split('.').pop()?.toLowerCase() || '';
-  return FILE_ICONS[ext] || FILE_ICONS.default;
+  return fileKindIcon(name || 'file', !!isDirectory);
 }
 
 function formatSize(bytes) {

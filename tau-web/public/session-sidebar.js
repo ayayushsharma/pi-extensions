@@ -2,6 +2,8 @@
  * Session Sidebar - Lists sessions grouped by project, handles switching
  */
 
+import { icon } from './icons.js';
+
 export class SessionSidebar {
   constructor(container, onSessionSelect) {
     this.container = container;
@@ -104,7 +106,7 @@ export class SessionSidebar {
 
     const header = document.createElement('div');
     header.className = 'project-header search-results-header';
-    header.innerHTML = `<span>🔍</span> <span>Message matches</span> <span class="project-count">${this._searchResults.length}</span>`;
+    header.innerHTML = `<span class="svg-wrap">${icon('search', 13)}</span> <span>Message matches</span> <span class="project-count">${this._searchResults.length}</span>`;
     group.appendChild(header);
 
     const sessionsDiv = document.createElement('div');
@@ -222,10 +224,10 @@ export class SessionSidebar {
     menu.className = 'session-context-menu';
 
     const items = [
-      { icon: isFav ? '★' : '☆', label: isFav ? 'Unfavourite' : 'Favourite', action: () => this.toggleFavourite(session.filePath) },
-      { icon: '✎', label: 'Rename', action: () => this.startRename(itemEl) },
-      { icon: '📋', label: 'Export HTML', action: () => this.exportSession(session) },
-      { icon: '🗑', label: 'Delete', action: () => this.deleteSession(session, itemEl) },
+      { icon: isFav ? icon('star', 13) : icon('starOutline', 13), label: isFav ? 'Unfavourite' : 'Favourite', action: () => this.toggleFavourite(session.filePath) },
+      { icon: icon('pencil', 13), label: 'Rename', action: () => this.startRename(itemEl) },
+      { icon: icon('export', 13), label: 'Export HTML', action: () => this.exportSession(session) },
+      { icon: icon('trash', 13), label: 'Delete', action: () => this.deleteSession(session, itemEl) },
     ];
 
     for (const item of items) {
@@ -353,7 +355,7 @@ export class SessionSidebar {
     const title = session.name || session.firstMessage || 'Empty session';
     const time = this.formatTime(session.timestamp);
     const tmuxTag = session.tmux ? '<span class="session-tag tmux-tag">tmux</span>' : '';
-    const favIcon = this.isFavourite(session.filePath) ? '<span class="session-fav-icon">★</span>' : '';
+    const favIcon = this.isFavourite(session.filePath) ? `<span class="session-fav-icon svg-wrap">${icon('star', 11)}</span>` : '';
 
     item.innerHTML = `
       <div class="session-title-row">
@@ -394,7 +396,7 @@ export class SessionSidebar {
 
       const header = document.createElement('div');
       header.className = 'project-header favourites-header';
-      header.innerHTML = `<span class="fav-star">★</span> <span>Favourites</span> <span class="project-count">${favSessions.length}</span>`;
+      header.innerHTML = `<span class="fav-star svg-wrap">${icon('star', 12)}</span> <span>Favourites</span> <span class="project-count">${favSessions.length}</span>`;
       favGroup.appendChild(header);
 
       const sessionsDiv = document.createElement('div');

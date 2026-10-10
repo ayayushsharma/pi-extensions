@@ -6,6 +6,21 @@
 // append only the delta instead of re-writing (and re-laying-out) the block.
 const lastOutput = new WeakMap();
 
+function fmtClock(ts) {
+  try {
+    const d = new Date(ts);
+    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  } catch { return ''; }
+}
+function fmtDuration(ms) {
+  if (ms == null || ms < 0) return '';
+  const s = Math.round(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ${s % 60}s`;
+  return `${Math.floor(m / 60)}h ${m % 60}m`;
+}
+
 export class ToolCardRenderer {
   constructor(container) {
     this.container = container;
@@ -24,6 +39,13 @@ export class ToolCardRenderer {
     card.className = 'tool-card';
     card.dataset.toolCallId = toolCallId;
 
+    const startedAt = toolExecution.startedAt || Date.now();
+    card.dataset.startedAt = String(startedAt);
+    const clock = fmtClock(startedAt);
+    const timeHtml = clock
+      ? `<span class="tool-time" title="Started ${new Date(startedAt).toLocaleString()}">${this.escapeHtml(clock)}</span>`
+      : '';
+
     const argsPreview = this.getArgsPreview(toolName, args);
     const argsJson = this.formatJson(args);
     const isExpanded = (status === 'streaming' || status === 'pending');
@@ -38,6 +60,7 @@ export class ToolCardRenderer {
           ${argsPreview ? `<span class="tool-args-preview">${this.escapeHtml(argsPreview)}</span>` : ''}
         </div>
         <div class="tool-header-right">
+          ${timeHtml}
           <button class="tool-action-btn copy-output-btn" title="Copy output" onclick="event.stopPropagation(); var t=this.closest('.tool-card').querySelector('.tool-output'); if(!t||!t.textContent.trim())return; var s=t.textContent,b=this; (navigator.clipboard?navigator.clipboard.writeText(s):new Promise(function(r){var a=document.createElement('textarea');a.value=s;a.style.cssText='position:fixed;left:-9999px';document.body.appendChild(a);a.select();document.execCommand('copy');document.body.removeChild(a);r()})).then(function(){b.classList.add('copied');setTimeout(function(){b.classList.remove('copied')},1500)})"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg></button>
           <div class="tool-status ${status}">${status}</div>
         </div>
@@ -110,6 +133,16 @@ export class ToolCardRenderer {
     const card = this.toolCards.get(toolCallId);
     if (!card) return;
 
+    // Light timestamp: start clock plus how long the call took.
+    const timeEl = card.querySelector('.tool-time');
+    if (timeEl) {
+      const started = Number(card.dataset.startedAt) || Date.now();
+      const dur = fmtDuration(Date.now() - started);
+      const next = timeEl.textContent + (dur ? ` · ${dur}` : '');
+      if (timeEl.textContent !== next) timeEl.textContent = next;
+      timeEl.title = `Started ${new Date(started).toLocaleString()}${dur ? ` · took ${dur}` : ''}`;
+    }
+
     // Update status
     const statusElement = card.querySelector('.tool-status');
     if (statusElement) {
@@ -172,9 +205,20 @@ export class ToolCardRenderer {
 
     header.appendChild(headerLeft);
 
-    // Right side: copy button + status
+    // Right side: timestamp + copy button + status
     const headerRight = document.createElement('div');
     headerRight.className = 'tool-header-right';
+
+    if (toolExecution.timestamp) {
+      const ts = new Date(toolExecution.timestamp).getTime();
+      if (!Number.isNaN(ts)) {
+        const timeEl = document.createElement('span');
+        timeEl.className = 'tool-time';
+        timeEl.textContent = fmtClock(ts);
+        timeEl.title = new Date(ts).toLocaleString();
+        headerRight.appendChild(timeEl);
+      }
+    }
 
     const copyBtn = document.createElement('button');
     copyBtn.className = 'tool-action-btn copy-output-btn';
@@ -291,30 +335,65 @@ export class ToolCardRenderer {
     }
   }
 
-  /** Render a simple inline diff for Edit tool */
+  /** GitHub-style unified diff for the Edit tool (LCS on lines). */
   renderDiff(oldText, newText) {
     const container = document.createElement('div');
     container.className = 'tool-diff';
+    const table = document.createElement('div');
+    table.className = 'diff-table';
+    container.appendChild(table);
 
-    const oldLines = oldText.split('\n');
-    const newLines = newText.split('\n');
+    const oldLines = String(oldText ?? '').split('\n');
+    const newLines = String(newText ?? '').split('\n');
+    // Cap pathological inputs: bound the LCS matrix, fall back to
+    // remove-all/add-all past the cap instead of hanging the phone.
+    const MAX = 400;
+    const a = oldLines.slice(0, MAX);
+    const b = newLines.slice(0, MAX);
+    const truncated = oldLines.length > MAX || newLines.length > MAX;
 
-    // Removed lines
-    for (const line of oldLines) {
-      const el = document.createElement('div');
-      el.className = 'diff-line diff-removed';
-      el.textContent = '- ' + line;
-      container.appendChild(el);
+    // LCS lengths (Uint16 is plenty: capped at 400 lines per side).
+    const n = a.length, m = b.length;
+    const dp = new Uint16Array((n + 1) * (m + 1));
+    for (let i = n - 1; i >= 0; i--) {
+      for (let j = m - 1; j >= 0; j--) {
+        dp[i * (m + 1) + j] = a[i] === b[j]
+          ? dp[(i + 1) * (m + 1) + j + 1] + 1
+          : Math.max(dp[(i + 1) * (m + 1) + j], dp[i * (m + 1) + j + 1]);
+      }
     }
-
-    // Added lines
-    for (const line of newLines) {
+    let i = 0, j = 0, oldNo = 0, newNo = 0;
+    const row = (kind, gutter, text, oNum, nNum) => {
       const el = document.createElement('div');
-      el.className = 'diff-line diff-added';
-      el.textContent = '+ ' + line;
-      container.appendChild(el);
+      el.className = `diff-line diff-${kind}`;
+      const g = document.createElement('span');
+      g.className = 'diff-gutter';
+      g.textContent = gutter;
+      const on = document.createElement('span');
+      on.className = 'diff-n';
+      on.textContent = oNum || '';
+      const nn = document.createElement('span');
+      nn.className = 'diff-n';
+      nn.textContent = nNum || '';
+      const code = document.createElement('span');
+      code.className = 'diff-code';
+      code.textContent = text;
+      el.append(g, on, nn, code);
+      table.appendChild(el);
+    };
+    while (i < n && j < m) {
+      if (a[i] === b[j]) { oldNo++; newNo++; row('ctx', ' ', a[i] || ' ', String(oldNo), String(newNo)); i++; j++; }
+      else if (dp[(i + 1) * (m + 1) + j] >= dp[i * (m + 1) + j + 1]) { oldNo++; row('del', '−', a[i], String(oldNo), ''); i++; }
+      else { newNo++; row('add', '+', b[j], '', String(newNo)); j++; }
     }
-
+    while (i < n) { oldNo++; row('del', '−', a[i], String(oldNo), ''); i++; }
+    while (j < m) { newNo++; row('add', '+', b[j], '', String(newNo)); j++; }
+    if (truncated) {
+      const el = document.createElement('div');
+      el.className = 'diff-line diff-note';
+      el.textContent = `… diff truncated at ${MAX} lines per side`;
+      table.appendChild(el);
+    }
     return container;
   }
 

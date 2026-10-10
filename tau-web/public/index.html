@@ -61,7 +61,10 @@
           <div class="model-dropdown-menu hidden" id="model-dropdown-menu"></div>
         </div>
         <div class="header-sub">
-          <button class="thinking-tag" id="thinking-btn" title="Cycle thinking level">off</button>
+          <div class="thinking-dropdown" id="thinking-dropdown">
+            <button class="thinking-tag" id="thinking-btn" title="Thinking level">off</button>
+            <div class="thinking-menu hidden" id="thinking-menu"></div>
+          </div>
           <div class="pill session-cost" id="session-cost" title="Session cost"></div>
         </div>
         <div class="header-tokens">
@@ -181,30 +184,29 @@
       <h3>Settings</h3>
       <button class="settings-close" id="settings-close"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
     </div>
+    <div class="settings-tabs" id="settings-tabs">
+      <button class="settings-tab active" data-tab="appearance">Appearance</button>
+      <button class="settings-tab" data-tab="agent">Agent</button>
+      <button class="settings-tab" data-tab="voice">Voice</button>
+      <button class="settings-tab" data-tab="server">Server</button>
+    </div>
     <div class="settings-body">
-      <div class="settings-section">
+      <div class="settings-section" data-pane="appearance">
         <div class="settings-section-title">Appearance</div>
         <div class="theme-grid" id="theme-grid"></div>
-      </div>
-      <div class="settings-section">
-        <div class="settings-section-title">Agent</div>
-        <div class="settings-row" id="setting-auto-compact">
-          <span class="settings-label">Auto-compaction</span>
-          <button class="settings-toggle" id="toggle-auto-compact"></button>
-        </div>
-        <div class="settings-row" id="setting-thinking">
-          <span class="settings-label">Thinking level</span>
-          <button class="settings-value-btn" id="btn-thinking-level"></button>
-        </div>
-      </div>
-      <div class="settings-section">
-        <div class="settings-section-title">Display</div>
         <div class="settings-row">
           <span class="settings-label">Show thinking</span>
           <button class="settings-toggle on" id="toggle-show-thinking"></button>
         </div>
       </div>
-      <div class="settings-section" id="settings-voice-section">
+      <div class="settings-section hidden" data-pane="agent">
+        <div class="settings-section-title">Agent</div>
+        <div class="settings-row" id="setting-auto-compact">
+          <span class="settings-label">Auto-compaction</span>
+          <button class="settings-toggle" id="toggle-auto-compact"></button>
+        </div>
+      </div>
+      <div class="settings-section hidden" data-pane="voice" id="settings-voice-section">
         <div class="settings-section-title">Voice</div>
         <div class="settings-row">
           <span class="settings-label">Read replies aloud</span>
@@ -226,18 +228,7 @@
           <button class="settings-value-btn" id="btn-tts-test">Speak sample</button>
         </div>
       </div>
-      <div class="settings-section" id="settings-auth-section" style="display:none">
-        <div class="settings-section-title">Authentication</div>
-        <div class="settings-row">
-          <span class="settings-label">Require login</span>
-          <button class="settings-toggle" id="toggle-auth"></button>
-        </div>
-        <div class="settings-row">
-          <span class="settings-label">This browser</span>
-          <button class="settings-value-btn" id="btn-logout">Log out</button>
-        </div>
-      </div>
-      <div class="settings-section" id="settings-server-section" style="display:none">
+      <div class="settings-section hidden" data-pane="server" id="settings-server-section">
         <div class="settings-section-title">Server</div>
         <div class="settings-row">
           <span class="settings-label">Version</span>
@@ -246,6 +237,10 @@
         <div class="settings-row">
           <span class="settings-label">Uptime</span>
           <span class="settings-value" id="server-uptime">—</span>
+        </div>
+        <div class="settings-row">
+          <span class="settings-label">This browser</span>
+          <button class="settings-value-btn" id="btn-logout">Log out</button>
         </div>
       </div>
     </div>

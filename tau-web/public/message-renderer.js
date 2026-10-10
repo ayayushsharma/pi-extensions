@@ -3,6 +3,7 @@
  */
 
 import { renderMarkdown, renderUserMarkdown } from './markdown.js';
+import { icon } from './icons.js';
 
 export class MessageRenderer {
   constructor(container) {
@@ -283,7 +284,8 @@ export class MessageRenderer {
   renderError(errorMessage) {
     const div = document.createElement('div');
     div.className = 'error-message';
-    div.textContent = `⚠️ ${errorMessage}`;
+    div.innerHTML = `${icon('warn', 14)}<span></span>`;
+    div.querySelector('span').textContent = errorMessage;
     this.container.appendChild(div);
     this.scrollToBottom();
   }

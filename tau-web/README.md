@@ -20,8 +20,8 @@ be changed from the web UI while driving. Compaction (manual, threshold and
 overflow) is a first-class UI state: an amber **Compacting…** pill plus an inline
 transcript message that resolves to the summary, a cancellation, or the failure —
 headless sessions are covered by tau-web itself; attached live TUIs forward it once
-the TUI runs the patched `tau` extension. History renders the last 60 entries with
-an incremental **Load earlier messages** control (window grows 60 at a time, scroll
+the TUI runs the patched `tau` extension. History renders the last 100 entries with
+an incremental **Load earlier messages** control (window grows 100 at a time, scroll
 anchor preserved); the full session stays in memory and on disk. The active session
 is encoded in the URL (`#session=<file-basename>&drive=1`), so a reload re-attaches
 the same session and separate tabs drive separate sessions independently. Messages
@@ -100,6 +100,7 @@ Unified envelope: every backend event arrives as `{type: "rpc_event", event, upl
 | `uplink_detach` / `uplink_command {command}` | leave / drive the attached TUI |
 | `extension_ui_response {id, …}` | answer a dialog; routed to uplink owner, headless child, or mirror waiter |
 | `ping` | `pong` |
+| legacy `prompt` `/reload` | shim `/reload` command (extensions/reload-shim.ts) reloads extensions/skills/prompts |
 | legacy mirror commands | unchanged (`prompt`, `abort`, `get_commands`, `mirror_sync_request`, …) |
 
 HTTP auth endpoints: `POST /api/login` (Basic → HttpOnly `tau_auth` cookie,
@@ -113,7 +114,7 @@ mirror-live session, then the headless backend, then legacy direct send.
 One WS = one headless backend (server keys by connection); a second browser
 tab/window gets its own backend, so phone + laptop stay independent.
 Session switching bumps a binding epoch — stale stream events from the old
-session are dropped. History renders the last 60 entries with an incremental
+session are dropped. History renders the last 100 entries with an incremental
 **Load earlier messages** control; full history stays in memory and on disk.
 Per-tab sessions: `#session=<file-basename>` pins the view (add `&drive=1` to
 auto-attach a live TUI); the key is never a filesystem path.
@@ -132,6 +133,19 @@ fallback anywhere — failures surface as UI errors, and a dead uplink offers
 | `TAU_DISABLED` | — | `=1` disables the server (injected into headless children) |
 | `PI_WEB_PI_BIN` / `TAU_PI_BIN` | `pi` | binary spawned for headless backends |
 | `PI_WEB_TTL_MS` / `TAU_HEADLESS_TTL_MS` | `900000` (15 min) | idle reap of headless backends |
+
+## UI notes
+
+- No emoji anywhere: all glyphs are inline SVG (`public/icons.js`), so themes
+  apply via `currentColor` and phones render identically.
+- Thinking level is a header dropdown (off…max); attaching shows the driven
+  session's model/thinking/context window, re-polled every 60s.
+- Tool cards carry light start-time/duration stamps; Edit diffs render
+  GitHub-style (gutter + line numbers) and never trap vertical touch scroll.
+- Settings is tabbed (Appearance/Agent/Voice/Server); auth has no toggle —
+  login is cookie-based and logout lives under Server.
+- On coarse pointers all WS-driven infinite motion freezes to a resting state
+  (no Android flicker); compaction stays a first-class Compact… state.
 
 ## Security
 

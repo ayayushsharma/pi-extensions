@@ -952,6 +952,13 @@ html {
 .session-banner.preview .sb-dot { background: #f0b429; }
 .session-banner.error .sb-dot { background: var(--error, #ef4444); }
 .session-banner.detached .sb-dot { background: var(--tool-accent-text); animation: none; }
+.sb-btn { min-height: 36px; }
+.session-banner .sb-text { min-width: 0; }
+@media (max-width: 768px) {
+  .session-banner { flex-wrap: wrap; row-gap: 8px; }
+  .sb-btn { min-height: 40px; padding: 8px 14px; }
+  .sb-btn.svg-btn { display: inline-flex; align-items: center; justify-content: center; min-width: 40px; padding: 8px; }
+}
 .session-banner .sb-text {
   flex: 1;
   min-width: 0;
@@ -1464,6 +1471,18 @@ html {
   to { transform: rotate(360deg); }
 }
 
+/* Shared inline SVG icons (no emoji anywhere in the UI) */
+.svg-icon { display: inline-block; vertical-align: -2px; flex: none; }
+.svg-wrap { display: inline-flex; align-items: center; }
+.svg-spinner.spinning-svg { animation: spin 1s linear infinite; }
+.command-icon .svg-icon, .file-icon .svg-icon, .context-menu-icon .svg-icon,
+.session-fav-icon .svg-icon, .fav-star .svg-icon { vertical-align: -2px; }
+.file-icon { display: inline-flex; align-items: center; color: var(--text-dim); }
+.context-menu-icon { display: inline-flex; align-items: center; width: 16px; justify-content: center; }
+.tool-time { font-size: 11px; color: var(--text-dim); opacity: 0.75; white-space: nowrap; }
+.error-message { display: flex; align-items: center; }
+.error-message .svg-icon { margin-right: 6px; }
+
 /* Model button — prominent in header */
 /* Model dropdown */
 .model-dropdown {
@@ -1584,6 +1603,35 @@ html {
 }
 
 /* Thinking tag — matches settings-value-btn style */
+.thinking-dropdown { position: relative; }
+.thinking-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 60;
+  min-width: 120px;
+  background: var(--bg-elevated, var(--bg-secondary));
+  border: 1px solid var(--border);
+  border-radius: var(--radius, 8px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+  padding: 4px;
+}
+.thinking-menu.hidden { display: none; }
+.thinking-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 8px 10px;
+  min-height: 36px;
+  background: none;
+  border: none;
+  border-radius: 6px;
+  color: var(--text-primary);
+  font-size: 13px;
+  cursor: pointer;
+}
+.thinking-item:hover { background: var(--bg-glass-hover); }
+.thinking-item.active { color: var(--accent); font-weight: 700; }
 .thinking-tag {
   padding: 4px 10px;
   background: var(--bg-glass);
@@ -1722,6 +1770,28 @@ html {
   background: var(--bg-glass-hover);
 }
 
+.settings-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 10px 14px 0;
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+}
+.settings-tab {
+  flex: 1 0 auto;
+  padding: 10px 8px;
+  min-height: 40px;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-dim);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.settings-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+.settings-section.hidden { display: none; }
 .settings-body {
   display: flex;
   flex-direction: column;
@@ -1961,6 +2031,11 @@ html {
   cursor: pointer;
   padding: 2px 4px;
   font-size: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  min-height: 28px;
   line-height: 1;
   border-radius: var(--radius-xs);
   flex-shrink: 0;
@@ -2628,45 +2703,82 @@ body.hide-thinking .thinking-block { display: none !important; }
 .tool-output::-webkit-scrollbar-track { background: transparent; }
 .tool-output::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
 
-/* Diff view for Edit tool */
+/* Diff view for Edit tool — GitHub-style unified diff.
+   Vertical gestures belong to the page (pan-y): the table scrolls
+   horizontally inside the card but never traps the Android finger scroll. */
 .tool-diff {
   font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
   font-size: 11px;
   line-height: 1.5;
   overflow-x: auto;
-  max-height: 300px;
-  overflow-y: auto;
+  overflow-y: visible;
+  touch-action: pan-y;
+  overscroll-behavior-x: contain;
   border-bottom: 1px solid var(--border);
+  -webkit-overflow-scrolling: touch;
 }
-
-.diff-line {
-  padding: 1px 12px;
-  white-space: pre-wrap;
-  word-break: break-all;
+.diff-table { min-width: max-content; }
+.diff-line { display: flex; align-items: baseline; white-space: pre; }
+.diff-gutter {
+  flex: none;
+  width: 18px;
+  text-align: center;
+  opacity: 0.7;
+  user-select: none;
 }
-
-.diff-removed {
-  background: rgba(248, 113, 113, 0.08);
-  color: var(--error);
+.diff-n {
+  flex: none;
+  width: 30px;
+  text-align: right;
+  padding-right: 8px;
+  opacity: 0.45;
+  user-select: none;
 }
+.diff-code { padding: 1px 12px 1px 0; }
+.diff-ctx { color: var(--text-dim); }
+.diff-del { background: rgba(248, 113, 113, 0.10); color: var(--error); }
+.diff-add { background: rgba(52, 211, 153, 0.10); color: var(--success); }
+.diff-del .diff-gutter, .diff-add .diff-gutter { opacity: 1; }
+.diff-note { padding: 4px 12px; color: var(--text-dim); font-style: italic; }
 
-.diff-added {
-  background: rgba(52, 211, 153, 0.08);
-  color: var(--success);
-}
-
-:root[data-theme="clean"] .diff-removed,
-:root[data-theme="terracotta"] .diff-removed,
-:root[data-theme="sage"] .diff-removed {
+:root[data-theme="clean"] .diff-del,
+:root[data-theme="terracotta"] .diff-del,
+:root[data-theme="sage"] .diff-del {
   background: rgba(220, 80, 80, 0.08);
   color: #b84040;
 }
 
-:root[data-theme="clean"] .diff-added,
-:root[data-theme="terracotta"] .diff-added,
-:root[data-theme="sage"] .diff-added {
+:root[data-theme="clean"] .diff-add,
+:root[data-theme="terracotta"] .diff-add,
+:root[data-theme="sage"] .diff-add {
   background: rgba(40, 160, 90, 0.08);
   color: #1a8a5a;
+}
+
+/* Coarse pointers (phones/tablets): infinite WS-driven motion reads as
+   flicker while the main thread streams. Freeze pulses/shimmers/bounces to
+   their resting state — same information, zero animation cost. One-shot
+   entrances (fadeIn/msgIn/dropdownIn) and the compaction spinner keep running:
+   they are transform/opacity-only and never restart mid-stream. */
+@media (pointer: coarse) {
+  .status-indicator,
+  .session-item.mirror-live .session-title::before,
+  .cs-dot.live, .cs-dot.preview, .cs-dot.detached,
+  .live-dot,
+  .session-banner .sb-dot,
+  .token-usage.critical,
+  .tool-status.streaming, .tool-status.streaming::before,
+  .session-skeleton-title, .session-skeleton-meta,
+  .message-content.streaming::after,
+  .typing-dot,
+  .input-mic-btn.recording {
+    animation: none !important;
+  }
+  .status-indicator, .cs-dot.live, .cs-dot.preview, .live-dot,
+  .session-banner .sb-dot, .tool-status.streaming { opacity: 1; }
+  .typing-dot { opacity: 0.7; }
+  .message-content.streaming::after { content: ''; }
+  .session-skeleton-title, .session-skeleton-meta { opacity: 0.6; }
 }
 
 /* ═══════════════════════════════════════════════════════

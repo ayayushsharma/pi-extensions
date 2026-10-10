@@ -10,7 +10,7 @@ and no shared build — do not add one.
 ```text
 pi-extensions/
 ├── AGENTS.md               # this file — repo conventions (you are here)
-├── tau/                    # tau-mirror — web UI that mirrors a Pi TUI session
+├── tau-web/                # tau-web — unified Pi web UI (mirror + headless + uplink)
 └── extension-template/     # scaffold for a new package — copy it, don't edit it
 ```
 
@@ -30,7 +30,7 @@ my-package/
 
 | Dir | npm | What |
 |-----|-----|------|
-| `tau/` | `tau-mirror` | HTTP+WS mirror server extension + browser UI in `public/`. Retired upstream; kept for reference and local use. See `tau/README.md`, `tau/CLAUDE.md`, `tau/ROADMAP.md`. |
+| `tau-web/` | `tau-web` | Unified Pi web UI: live TUI mirror + headless backends + uplink proxy + cookie auth. Supersedes the retired `tau` package (removed). See `tau-web/README.md`. |
 | `ctx-limit/` | `pi-ctx-limit` | Caps the model's effective context window at `min(manual, model)` so Pi's own auto-compaction triggers early and still continues the run, via `--context-size` / `ctxLimit` settings. See `ctx-limit/README.md`. |
 | `extension-template/` | n/a (not published) | Minimal working package. Starting point for every new extension. |
 
@@ -66,7 +66,7 @@ Source of truth: pi docs in
   runtime state.
 - **Never write to stdout/stderr** from an extension — it corrupts the fullscreen
   TUI (especially under tmux). User-visible output goes via `ctx.ui.notify()` /
-  `ctx.ui.setStatus()`; diagnostics go to a log file (see `tau/` `tauLog` pattern).
+  `ctx.ui.setStatus()`; diagnostics go to a log file (see `tau-web/` `tauLog` pattern).
 - **Modes:** extensions load in tui, rpc, json, and print modes. Guard
   terminal-only behavior with `ctx.mode === "tui"` / `ctx.hasUI`; keep tool and
   event behavior rendering-independent so non-interactive modes work.
@@ -117,7 +117,7 @@ pi list                     # configured packages
 
 - Extension `.ts` changes: clear the jiti cache then restart Pi
   (`rm -rf $TMPDIR/jiti` or `%LOCALAPPDATA%\Temp\jiti` on Windows).
-- Static/browser assets (e.g. `tau/public/`): browser reload only, no Pi restart.
+- Static/browser assets (e.g. `tau-web/public/`): browser reload only, no Pi restart.
   Prefer the `TAU_STATIC_DIR=$(pwd)/public pi` override pattern for UI work.
 - Verify with `npx tsc --noEmit` (if a tsconfig exists) or at minimum `node --check`
   on plain JS before committing. No shared lint config — match the package's
@@ -126,7 +126,7 @@ pi list                     # configured packages
 ## Working in this repo
 
 - Scope every change to one package directory (plus this file only if conventions
-  genuinely change). Check `git status` — unrelated dirty trees (e.g. `tau/`
+  genuinely change). Check `git status` — unrelated dirty trees (e.g. `tau-web/`
   mid-dev) are normal; don't touch them.
 - Read the package's own `README.md` / `CLAUDE.md` / `.pi/AGENTS.md` before
   changing it — they override these repo-level defaults.

@@ -1,8 +1,0 @@
-.git
-.pi
-.DS_Store
-docs
-*.html
-!public/index.html
-ROADMAP.md
-MOBILE.md

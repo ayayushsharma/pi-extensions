@@ -17,7 +17,8 @@
   },
   "pi": {
     "extensions": [
-      "./extensions/mirror-server.ts"
+      "./extensions/mirror-server.ts",
+      "./extensions/reload-shim.ts"
     ],
     "image": "https://raw.githubusercontent.com/deflating/tau/main/docs/images/dark.png"
   },

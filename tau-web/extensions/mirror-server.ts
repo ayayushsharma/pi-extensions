@@ -78,6 +78,18 @@ function parseAuthCookie(req: http.IncomingMessage): string {
   } catch {}
   return "";
 }
+// Secure flag only when the transport is actually encrypted: setting it on
+// plain HTTP would stop the browser storing the cookie at all (local
+// loopback dev stays HTTP, world-facing deploys sit behind TLS that sets
+// X-Forwarded-Proto or terminates on this socket).
+function cookieAttr(req: http.IncomingMessage): string {
+  try {
+    const sock = req.socket as any;
+    const proto = (req.headers["x-forwarded-proto"] as string || "").split(",")[0].trim().toLowerCase();
+    if (sock?.encrypted || proto === "https") return "; Secure";
+  } catch {}
+  return "";
+}
 // @ts-ignore — __dirname is provided by jiti at runtime
 const STATIC_DIR = process.env.TAU_STATIC_DIR || findPublicDir();
 
@@ -1350,7 +1362,7 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
         const token = mintAuthToken();
         res.writeHead(200, {
           "Content-Type": "application/json",
-          "Set-Cookie": `${AUTH_COOKIE}=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=2592000`,
+          "Set-Cookie": `${AUTH_COOKIE}=${token}; HttpOnly; SameSite=Lax; Path=/${cookieAttr(req)}; Max-Age=2592000`,
         });
         res.end(JSON.stringify({ ok: true }));
       } else {
@@ -1365,7 +1377,7 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
       if (token) authTokens.delete(token);
       res.writeHead(200, {
         "Content-Type": "application/json",
-        "Set-Cookie": `${AUTH_COOKIE}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0`,
+        "Set-Cookie": `${AUTH_COOKIE}=; HttpOnly; SameSite=Lax; Path=/${cookieAttr(req)}; Max-Age=0`,
       });
       res.end(JSON.stringify({ ok: true }));
       return;

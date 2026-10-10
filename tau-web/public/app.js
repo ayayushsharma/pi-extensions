@@ -442,6 +442,7 @@ wsClient.addEventListener('uplinkAttached', (e) => {
   updateMirrorInputState();
   renderSessionBanner();
   syncUplinkControls();
+  closeSidebarOnMobile(); // reveal the Driving banner + live transcript
   messageRenderer.renderSystemMessage(`Attached to live session on :${e.detail.port} — prompts now drive the TUI.`);
 });
 wsClient.addEventListener('uplinkDetached', () => {
@@ -456,6 +457,7 @@ wsClient.addEventListener('uplinkDetached', () => {
   updateMirrorInputState();
   renderSessionBanner();
   syncUplinkControls();
+  closeSidebarOnMobile(); // reveal the Attach-again banner
 });
 wsClient.addEventListener('uplinkDead', (e) => {
   const was = uplinkActive;
@@ -468,6 +470,7 @@ wsClient.addEventListener('uplinkDead', (e) => {
   updateSessionHash(uplinkTargetSessionFile, false);
   renderSessionBanner();
   syncUplinkControls();
+  closeSidebarOnMobile(); // reveal the dropped-uplink banner
   // Never silent (ADR-007): surface the drop and offer headless-continue on the same file.
   messageRenderer.renderError(`Live uplink to :${e.detail.port} dropped. The TUI may have exited.`);
   if (e.detail.headlessContinue && was) offerHeadlessContinue(e.detail);
@@ -1730,6 +1733,15 @@ function isMobile() {
   return window.innerWidth <= 768;
 }
 
+// Phone slide-over: every navigation path must dismiss it, or the new view
+// loads invisibly behind the open sidebar.
+function closeSidebarOnMobile() {
+  if (isMobile()) {
+    sidebarEl.classList.add('collapsed');
+    sidebarOverlay.classList.remove('visible');
+  }
+}
+
 function updateSidebarToggleIcon() {
   sidebarToggle.innerHTML = icon('menu', 18);
 }
@@ -1851,10 +1863,7 @@ async function newSession() {
   updateTokenUsage();
   await switchSession(null);
   sidebar.clearActive();
-  if (isMobile()) {
-    sidebarEl.classList.add('collapsed');
-    sidebarOverlay.classList.remove('visible');
-  }
+  closeSidebarOnMobile();
   if (!isMobile()) messageInput.focus();
 }
 
@@ -1879,12 +1888,7 @@ async function handleSessionSelect(session, project) {
   updateCostDisplay();
   updateTokenUsage();
   await switchSession(session.filePath, session, project);
-
-  // Close sidebar on mobile after selecting
-  if (isMobile()) {
-    sidebarEl.classList.add('collapsed');
-    sidebarOverlay.classList.remove('visible');
-  }
+  closeSidebarOnMobile(); // reveal the new view from behind the slide-over
 }
 
 async function switchSession(sessionFile, session = null, project = null, opts = {}) {
@@ -2431,6 +2435,7 @@ async function backToLive(sessionFile) {
   }
   updateMirrorInputState();
   syncUplinkControls();
+  closeSidebarOnMobile(); // return to the home server in full view
 }
 
 async function previewAttach(port, pid, sessionFile, lastActive, opts = {}) {
@@ -2478,6 +2483,7 @@ async function previewAttach(port, pid, sessionFile, lastActive, opts = {}) {
     messageRenderer.renderSystemMessage('History unavailable for this session — you can still attach.');
   }
   renderSessionBanner();
+  closeSidebarOnMobile(); // let the preview banner show, not the sidebar
 }
 
 function cancelPreview() {
@@ -2506,6 +2512,7 @@ function cancelPreview() {
     messageRenderer.renderWelcome();
   }
   updateMirrorInputState();
+  closeSidebarOnMobile(); // back to the pre-preview view in full
 }
 
 async function attachUplink(port, pid, sessionFile) {

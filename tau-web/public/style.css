@@ -990,8 +990,8 @@ html {
   opacity: 0.6;
   font-variant-numeric: tabular-nums;
 }
-/* tau-web: sidebar LIVE rows — Attach/Detach/Cancel. Base size is compact for
-   desktop; the mobile block grows it to a finger-sized target. */
+/* tau-web: sidebar LIVE rows — Attach/Detach/Cancel. Compact on desktop,
+   finger-sized on phones (the @media block right below). */
 .live-btn {
   flex-shrink: 0;
   font-size: 12px;
@@ -1009,6 +1009,10 @@ html {
 }
 .live-btn:active {
   transform: scale(0.96);
+}
+@media (max-width: 768px) {
+  .live-btn { min-height: 40px; padding: 8px 14px; font-size: 13px; }
+  .live-row { padding: 7px 6px; }
 }
 .link-btn {
   background: none;
@@ -1729,12 +1733,19 @@ html {
   -webkit-backdrop-filter: blur(var(--blur-heavy)) saturate(1.6);
   border: 1px solid var(--border-hover);
   border-radius: var(--radius-lg);
-  padding: 24px;
+  padding: 20px 20px 16px;
   z-index: 1001;
-  width: 300px;
-  max-width: 90vw;
+  width: 320px;
+  max-width: 92vw;
+  /* Phones clip a fixed sheet: cap the height and scroll the panes. */
+  max-height: min(88vh, 680px);
+  display: flex;
+  flex-direction: column;
   box-shadow: var(--shadow-lg), var(--shadow-inset);
   animation: sheetIn 0.3s var(--ease);
+}
+@media (max-width: 768px) {
+  .settings-panel { width: min(92vw, 380px); }
 }
 
 @keyframes sheetIn {
@@ -1796,7 +1807,16 @@ html {
   display: flex;
   flex-direction: column;
   gap: 18px;
+  /* Vertical gestures belong to this pane (pan-y) so long panes scroll on
+     phones without fighting the sheet or the page behind it. */
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  touch-action: pan-y;
+  -webkit-overflow-scrolling: touch;
+  min-height: 0;
+  padding: 14px 2px 6px;
 }
+.settings-header, .settings-tabs { flex: none; }
 
 .settings-section-title {
   font-size: 10px;

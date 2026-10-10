@@ -1,7 +1,7 @@
 // Tau Service Worker — minimal, just enables PWA install
 // No aggressive caching since Tau connects to a live local server
 
-const CACHE_NAME = 'tau-v1';
+const CACHE_NAME = 'tau-v2';
 
 // Served for navigations that hit an auth challenge: unregisters workers
 // and reloads without interception so the browser prompts for login.
@@ -25,6 +25,10 @@ self.addEventListener('install', (event) => {
         '/dialogs.js',
         '/session-sidebar.js',
         '/websocket-client.js',
+        '/file-browser.js',
+        '/launcher.js',
+        '/tts.js',
+        '/icons.js',
         '/manifest.json',
       ]).catch(() => {});
     })

@@ -100,7 +100,7 @@ Unified envelope: every backend event arrives as `{type: "rpc_event", event, upl
 | `uplink_detach` / `uplink_command {command}` | leave / drive the attached TUI |
 | `extension_ui_response {id, …}` | answer a dialog; routed to uplink owner, headless child, or mirror waiter |
 | `ping` | `pong` |
-| legacy `prompt` `/reload` | shim `/reload` command (extensions/reload-shim.ts) reloads extensions/skills/prompts |
+| legacy `prompt` `/reload` | built-in `/reload` command reloads extensions/skills/prompts |
 | legacy mirror commands | unchanged (`prompt`, `abort`, `get_commands`, `mirror_sync_request`, …) |
 
 HTTP auth endpoints: `POST /api/login` (Basic → HttpOnly `tau_auth` cookie,

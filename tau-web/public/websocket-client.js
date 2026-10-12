@@ -172,6 +172,11 @@ export class WebSocketClient extends EventTarget {
       case 'session_ended':
         this.dispatchEvent(new CustomEvent('sessionEnded', { detail: message }));
         break;
+      case 'session_file':
+        // A fresh headless backend discovered its session file — the UI pins
+        // #session=<basename> so reload/resume identifies the session.
+        this.dispatchEvent(new CustomEvent('sessionFile', { detail: message }));
+        break;
       default:
         console.warn('[WS] Unknown message type:', message.type);
     }

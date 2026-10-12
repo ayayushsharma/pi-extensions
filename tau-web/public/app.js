@@ -167,6 +167,7 @@ let lastUsage = null; // Full usage object for context visualiser
 let mirrorActiveSessionFile = null; // The live session file path from the TUI
 let viewingActiveSession = true; // Whether we're viewing the live session or a historical one
 let isMirrorMode = false; // Set when mirror_sync received
+let serverMode = null; // 'hub' | 'mirror' — from the WS state frame (ADR-010)
 let liveInstances = []; // All running Tau instances [{port, sessionFile, cwd}]
 // ─── tau-web unified: epoch guard, headless binding, uplink (ADR-004) ───
 let bindingEpoch = 0; // bumped on every session switch; stale stream events are dropped
@@ -182,9 +183,9 @@ let headlessSessionKey = null; // acked by start_session response; null = headle
 let headlessBinding = null; // { cwd, sessionFile } — rejoin target persisted per browser
 try { headlessBinding = JSON.parse(localStorage.getItem('tau-web-binding') || 'null'); } catch {}
 let uplinkActive = null; // { port, pid } while attached to a live TUI via uplink proxy
-// tau-web preview-then-attach: attaching is two-phase. Picking Attach loads the
-// session history read-only with a confirm banner; only "Attach & Drive" wires
-// the uplink. uplinkLastDetached powers the "Attach again" affordance.
+// tau-web preview-then-drive: driving a live TUI is two-phase. Picking Drive
+// loads the session history read-only with a confirm banner; only "Drive this
+// TUI" wires the uplink. uplinkLastDetached powers the "Drive again" affordance.
 let uplinkPreview = null; // { port, pid, sessionFile, returnTo } while previewing
 let uplinkLastDetached = null; // { port, pid, sessionFile } after a detach
 let uplinkAttachPending = false;
@@ -245,12 +246,14 @@ fileSidebarToggle.addEventListener('click', () => {
     sidebarEl.classList.add('collapsed');
   }
   refreshMobileOverlay();
+  updatePaneButtons();
   localStorage.setItem('tau-file-sidebar', isCollapsed ? 'closed' : 'open');
 });
 
 fileSidebarClose.addEventListener('click', () => {
   fileSidebar.classList.add('collapsed');
   refreshMobileOverlay();
+  updatePaneButtons();
   localStorage.setItem('tau-file-sidebar', 'closed');
 });
 
@@ -408,7 +411,7 @@ wsClient.addEventListener('connected', async () => {
   } else {
     bindHeadless(headlessBinding?.cwd || null, headlessBinding?.sessionFile || null);
   }
-  // The server detaches uplinks on WS close; re-attach to the same TUI.
+  // The server detaches uplinks on WS close; re-drive the same TUI.
   if (uplinkActive) attachUplink(uplinkActive.port, uplinkActive.pid, uplinkTargetSessionFile);
   // Refresh the Live TUI section.
   refreshUplinkList();
@@ -486,7 +489,7 @@ wsClient.addEventListener('uplinkAttached', (e) => {
   renderSessionBanner();
   syncUplinkControls();
   closeSidebarOnMobile(); // reveal the Driving banner + live transcript
-  messageRenderer.renderSystemMessage(`Attached to live session on :${e.detail.port} — prompts now drive the TUI.`);
+  messageRenderer.renderSystemMessage(`Now driving the live TUI on :${e.detail.port} — your prompts go to that session.`);
 });
 wsClient.addEventListener('uplinkDetached', () => {
   // Echo of our own uplink_detach — teardown already happened synchronously
@@ -504,13 +507,13 @@ wsClient.addEventListener('uplinkDetached', () => {
   updateMirrorInputState();
   renderSessionBanner();
   syncUplinkControls();
-  closeSidebarOnMobile(); // reveal the Attach-again banner
+  closeSidebarOnMobile(); // reveal the Drive-again banner
 });
 wsClient.addEventListener('uplinkDead', (e) => {
   const was = uplinkActive;
   uplinkActive = null;
   uplinkAttachPending = false;
-  uplinkAttachError = `Live uplink to :${e.detail.port} dropped — the TUI may have exited.`;
+  uplinkAttachError = `Lost the drive link to :${e.detail.port} — the TUI may have exited.`;
   if (was) uplinkLastDetached = { port: was.port, pid: was.pid, sessionFile: uplinkTargetSessionFile };
   viewingActiveSession = false;
   if (serverOwnSessionFile) mirrorActiveSessionFile = serverOwnSessionFile;
@@ -519,12 +522,35 @@ wsClient.addEventListener('uplinkDead', (e) => {
   syncUplinkControls();
   closeSidebarOnMobile(); // reveal the dropped-uplink banner
   // Never silent (ADR-007): surface the drop and offer headless-continue on the same file.
-  messageRenderer.renderError(`Live uplink to :${e.detail.port} dropped. The TUI may have exited.`);
+  messageRenderer.renderError(`Lost the drive link to :${e.detail.port}. The TUI may have exited.`);
   if (e.detail.headlessContinue && was) offerHeadlessContinue(e.detail);
 });
 wsClient.addEventListener('sessionEnded', (e) => {
   headlessSessionKey = null;
   messageRenderer.renderError(`Headless session ended (exit ${e.detail.code ?? '?'}). Pick a session from the sidebar to continue.`);
+});
+
+// A fresh headless backend discovered its session file: pin the URL identity so
+// reload/resume works (ADR-010 §UI flow 2). Never clobber a previewed/driven or
+// URL-pinned view with a discovery from the background backend.
+wsClient.addEventListener('sessionFile', (e) => {
+  const file = e.detail?.sessionFile;
+  if (!file) return;
+  if (uplinkOwnsView()) return;
+  const pinned = parseSessionHash();
+  const key = sessionKeyOf(file);
+  if (pinned?.key && pinned.key !== key) return;
+  if (!headlessBinding) headlessBinding = { cwd: e.detail?.cwd || null, sessionFile: null };
+  headlessBinding = { cwd: headlessBinding.cwd || e.detail?.cwd || null, sessionFile: key };
+  persistBinding();
+  updateSessionHash(file, false);
+});
+
+// Track hub vs mirror so the Live section never offers cross-session attach on
+// a mirror (ADR-010: only the hub owns the switchboard / dials other TUIs).
+wsClient.addEventListener('stateUpdate', (e) => {
+  serverMode = e.detail?.mode || null;
+  renderLiveSection(liveInstances);
 });
 
 wsClient.addEventListener('disconnected', () => {
@@ -1604,9 +1630,9 @@ function updateModelLabel() {
 
 function toggleModelDropdown() {
   // Preview is read-only: the uplink isn't wired yet, so a model switch here
-  // would hit the wrong backend. Attach & Drive first.
+  // would hit the wrong backend. Drive the TUI first.
   if (uplinkPreview) {
-    statusText.textContent = 'Attach & Drive to change the model';
+    statusText.textContent = 'Drive this TUI to change the model';
     setTimeout(() => { statusText.textContent = 'Connected'; }, 2500);
     return;
   }
@@ -1668,6 +1694,8 @@ function openModelDropdown() {
   search.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') { closeModelDropdown(); e.stopPropagation(); }
     if (e.key === 'Enter') {
+      // Inside a <form> (hub composer) Enter would submit and send the message.
+      e.preventDefault();
       const first = itemsContainer.querySelector('.model-dropdown-item');
       if (first) first.click();
     }
@@ -1698,7 +1726,7 @@ const thinkingMenu = document.getElementById('thinking-menu');
 function renderThinkingMenu() {
   if (!thinkingMenu) return;
   thinkingMenu.innerHTML = THINKING_LEVELS.map((lv) =>
-    `<button class="thinking-item${lv === currentThinkingLevel ? ' active' : ''}" data-level="${lv}">${lv}</button>`
+    `<button type="button" class="thinking-item${lv === currentThinkingLevel ? ' active' : ''}" data-level="${lv}">${lv}</button>`
   ).join('');
   thinkingMenu.querySelectorAll('.thinking-item').forEach((item) => {
     item.addEventListener('click', async (e) => {
@@ -1708,7 +1736,7 @@ function renderThinkingMenu() {
       thinkingDropdown?.classList.remove('open');
       if (level === currentThinkingLevel) return;
       if (uplinkPreview) {
-        statusText.textContent = 'Attach & Drive to change thinking level';
+        statusText.textContent = 'Drive this TUI to change thinking level';
         setTimeout(() => { statusText.textContent = 'Connected'; }, 2500);
         return;
       }
@@ -1796,11 +1824,23 @@ function closeSidebarOnMobile() {
     sidebarEl.classList.add('collapsed');
     sidebarOverlay.classList.remove('visible');
   }
+  updatePaneButtons();
 }
 
 function updateSidebarToggleIcon() {
   sidebarToggle.innerHTML = icon('menu', 18);
+  updatePaneButtons();
 }
+
+// A pane's toggle only shows while that pane is closed — once it is open its
+// own Back button closes it, so the toggle would be redundant.
+function updatePaneButtons() {
+  sidebarToggle.classList.toggle('hidden', !sidebarEl.classList.contains('collapsed'));
+  if (fileSidebarToggle) {
+    fileSidebarToggle.classList.toggle('hidden', !fileSidebar.classList.contains('collapsed'));
+  }
+}
+updatePaneButtons();
 
 function refreshMobileOverlay() {
   if (!isMobile()) return;
@@ -1855,18 +1895,27 @@ const sessionActions = createSessionActions({
   onFresh: (data) => applyFreshSession(data),
   onClosed: () => { newSession(); },
 });
-// Header Kill button (injected next to New; single shell, no second page).
+// Decoupled hook for the hub shell: `+` / Ctrl+T dispatch `tau:new-session`
+// (instant, same project) so hub.js never reaches into app.js internals.
+// The directory-picker modal stays on the sidebar's New button.
+window.addEventListener('tau:new-session', () => { sessionActions.newSessionSameProject(); });
+// Header Kill button. Placed on the current-session card so it is visually
+// attached to the session it terminates (no ambiguity about which one dies).
 (function initKillButton() {
-  const header = newSessionBtn?.parentElement;
-  if (!header || document.getElementById('kill-session-btn')) return;
+  if (document.getElementById('kill-session-btn')) return;
   const btn = document.createElement('button');
-  btn.className = 'icon-btn';
+  btn.className = 'icon-btn cs-kill';
   btn.id = 'kill-session-btn';
-  btn.title = 'Kill running session (pi keeps working until you do)';
-  btn.setAttribute('aria-label', 'Kill running session');
-  btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>';
+  btn.title = 'Kill this session';
+  btn.setAttribute('aria-label', 'Kill this session');
+  btn.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>';
   btn.addEventListener('click', () => sessionActions.closeCurrentSession());
-  header.insertBefore(btn, newSessionBtn.nextSibling);
+  const csTop = document.querySelector('#current-session .cs-top');
+  if (csTop) {
+    csTop.appendChild(btn);
+  } else if (newSessionBtn?.parentElement) {
+    newSessionBtn.parentElement.insertBefore(btn, newSessionBtn.nextSibling);
+  }
 })();
 
 refreshSessionsBtn.addEventListener('click', () => {
@@ -2049,7 +2098,7 @@ async function switchSession(sessionFile, session = null, project = null, opts =
           // even when no live TUI owns the session. Previews stay read-only
           // and don't move the headless backend. Files owned by a live TUI
           // are never bound (ADR-003): a second process must not attach to
-          // a live session's file — attach & drive instead.
+          // a live session's file — drive the running TUI instead.
           if (!opts.preview) {
             const ownedByTui = (liveInstances || []).some((li) => !li.local && li.sessionFile && sessionFile && li.sessionFile === sessionFile);
             if (!ownedByTui) bindHeadless(project?.path || null, file);
@@ -2224,7 +2273,7 @@ function currentConnectionInfo() {
   const activeFile = sidebar.activeSessionFile || mirrorActiveSessionFile || null;
   if (uplinkAttachPending) {
     const port = uplinkPreview?.port || uplinkLastDetached?.port;
-    return { state: 'preview', label: `Attaching${port ? ` · :${port}` : ''}…` };
+    return { state: 'preview', label: `Taking over${port ? ` · :${port}` : ''}…` };
   }
   if (uplinkActive) return { state: 'live', label: `Driving · :${uplinkActive.port}` };
   if (uplinkPreview) return { state: 'preview', label: `Preview · :${uplinkPreview.port}` };
@@ -2233,11 +2282,51 @@ function currentConnectionInfo() {
   }
   const boundKey = headlessBinding?.sessionFile ? sessionKeyOf(headlessBinding.sessionFile) : null;
   if (headlessSessionKey && boundKey && boundKey === sessionKeyOf(activeFile)) {
-    return { state: 'headless', label: 'Headless backend' };
+    return { state: 'headless', label: 'Headless runner' };
   }
   if (viewingActiveSession) return { state: 'server', label: 'This server' };
-  if (activeFile) return { state: 'headless', label: 'Headless backend' };
+  if (activeFile) return { state: 'headless', label: 'Headless runner' };
   return { state: 'none', label: 'No session' };
+}
+
+// ─── Session status bar: project + git branch (bottom of the composer) ───
+const gitInfoCache = new Map(); // cwd -> { at, info }
+async function fetchGitInfo(cwd) {
+  if (!cwd) return null;
+  const hit = gitInfoCache.get(cwd);
+  if (hit && Date.now() - hit.at < 10000) return hit.info;
+  try {
+    const r = await fetch(`/api/git?cwd=${encodeURIComponent(cwd)}`);
+    const info = await r.json();
+    gitInfoCache.set(cwd, { at: Date.now(), info });
+    return info;
+  } catch {
+    const info = { repo: false };
+    gitInfoCache.set(cwd, { at: Date.now(), info });
+    return info;
+  }
+}
+function renderSessionBar(cwd) {
+  const bar = document.getElementById('session-bar');
+  if (!bar) return;
+  const projItem = document.getElementById('sb-project');
+  const projName = document.getElementById('sb-project-name');
+  const branchItem = document.getElementById('sb-branch');
+  const branchName = document.getElementById('sb-branch-name');
+  if (!cwd) { bar.classList.add('hidden'); return; }
+  bar.classList.remove('hidden');
+  const base = cwd.replace(/[/\\]+$/, '').split(/[/\\]/).pop() || cwd;
+  if (projName) projName.textContent = base;
+  if (projItem) projItem.title = cwd;
+  if (branchItem) branchItem.classList.add('hidden');
+  fetchGitInfo(cwd).then((info) => {
+    if (!branchItem) return;
+    if (!info || !info.repo || !info.branch) { branchItem.classList.add('hidden'); return; }
+    branchItem.classList.remove('hidden');
+    branchItem.classList.toggle('dirty', !!info.dirty);
+    if (branchName) branchName.textContent = info.branch;
+    branchItem.title = `${info.detached ? 'detached HEAD ' : ''}${info.branch}${info.dirty ? ' · uncommitted changes' : ''}${info.root ? ` — ${info.root}` : ''}`;
+  });
 }
 
 let currentSessionSig = null;
@@ -2250,7 +2339,7 @@ function renderCurrentSessionCard() {
   let name = found?.session?.name || found?.session?.firstMessage || liveSessionName(activeFile) || '';
   if (!name && activeFile) name = activeFile.split('/').pop().replace(/\.jsonl$/, '');
   if (!name) name = 'New session';
-  const dir = found?.project?.path || inst?.cwd || '';
+  const dir = found?.project?.path || inst?.cwd || headlessBinding?.cwd || '';
   const info = currentConnectionInfo();
   const sig = `${info.state}|${info.label}|${name}|${dir}`;
   if (sig === currentSessionSig) return;
@@ -2267,6 +2356,25 @@ function renderCurrentSessionCard() {
     dirEl.title = dir;
     dirEl.style.display = dir ? '' : 'none';
   }
+  // The kill × lives on this card: attach it to the session it terminates.
+  const killBtn = document.getElementById('kill-session-btn');
+  if (killBtn) {
+    killBtn.classList.toggle('hidden', info.state === 'none');
+    killBtn.title = `Kill this session${name ? ` — ${name}` : ''}`;
+  }
+  // Title bar (hub) under the tabs: names the session this view is showing.
+  const titleBar = document.getElementById('title-bar');
+  if (titleBar) {
+    const show = !!activeFile;
+    titleBar.classList.toggle('hidden', !show);
+    if (show) {
+      const tbTitle = document.getElementById('tb-title');
+      const tbState = document.getElementById('tb-state');
+      if (tbTitle) { tbTitle.textContent = name; tbTitle.title = activeFile || name; }
+      if (tbState) tbState.textContent = info.state === 'none' ? '' : info.label;
+    }
+  }
+  renderSessionBar(dir);
   // Keep the LIVE list's "viewing" marker in sync with the selection.
   renderLiveSection(liveInstances);
 }
@@ -2277,8 +2385,9 @@ function liveByFileMap() {
   }
   return m;
 }
-// Mark all live sessions in the sidebar with a green dot + inline Attach.
-// Clicking an item still only views history; Attach is what drives the TUI.
+// Mark all live sessions in the sidebar with a running tag + green dot + inline
+// Drive. Clicking an item still only views history; Drive is what takes over the
+// running TUI.
 function updateMirrorLiveIndicator() {
   const liveFiles = new Set(liveInstances.map(i => i.sessionFile));
   // Also include the current mirror session
@@ -2290,7 +2399,23 @@ function updateMirrorLiveIndicator() {
     el.classList.toggle('mirror-live', liveFiles.has(f));
     const inst = f && byFile.get(f);
     let btn = el.querySelector(':scope > .session-title-row > .live-attach-btn');
-    if (inst && !inst.local) {
+    const row = el.querySelector(':scope > .session-title-row');
+    // A running tag tells a live row apart from a resumable historical one.
+    let tag = row ? row.querySelector(':scope > .running-tag') : null;
+    if (inst && !inst.local && row) {
+      if (!tag) {
+        tag = document.createElement('span');
+        tag.className = 'session-tag running-tag';
+        tag.textContent = 'running';
+        tag.title = 'A Pi TUI is running this session — viewing it is read-only';
+        row.appendChild(tag);
+      }
+    } else if (tag) {
+      tag.remove();
+    }
+    // ADR-010: cross-session drive is hub-only; a mirror never shows it.
+    const canAttach = !serverMode || serverMode === 'hub';
+    if (inst && !inst.local && canAttach) {
       // Shared state: same port = same backend, whichever section attached.
       const attached = !!(uplinkActive && uplinkActive.port === inst.port);
       const previewing = !!(uplinkPreview && uplinkPreview.port === inst.port);
@@ -2306,21 +2431,20 @@ function updateMirrorLiveIndicator() {
           else if (uplinkPreview && uplinkPreview.port === port) cancelPreview();
           else previewAttach(port, pid, e.currentTarget.dataset.file || null, e.currentTarget.dataset.started || null);
         });
-        const row = el.querySelector('.session-title-row');
         if (row) row.appendChild(btn);
       }
       btn.dataset.port = String(inst.port);
       btn.dataset.pid = String(inst.pid);
       btn.dataset.file = inst.sessionFile || '';
       btn.dataset.started = inst.startedAt || '';
-      const label = attached ? 'Detach' : previewing ? 'Cancel' : 'Attach';
+      const label = attached ? 'Detach' : previewing ? 'Cancel' : 'Drive';
       if (btn.textContent !== label) btn.textContent = label;
       btn.classList.toggle('attached', attached);
       btn.title = attached
-        ? `Stop driving the live session on :${inst.port}`
+        ? `Stop driving the running TUI on :${inst.port}`
         : previewing
           ? 'Cancel the preview'
-          : `Preview and drive the live session on :${inst.port}`;
+          : `Take over the running TUI on :${inst.port} and send prompts to it`;
     } else if (btn) {
       btn.remove();
     }
@@ -2372,9 +2496,9 @@ async function refreshUplinkList() {
     if (data && !data.timeout) renderLiveSection(data?.data?.instances || []);
   } catch {}
 }
-// ─── Preview-then-attach (tau-web) ───
-// Attaching is two-phase: picking a live session loads its history read-only
-// with a confirm banner; only "Attach & Drive" wires the uplink.
+// ─── Preview-then-drive (tau-web) ───
+// Driving is two-phase: picking a live session loads its history read-only
+// with a confirm banner; only "Drive this TUI" wires the uplink.
 
 function timeAgo(ts) {
   if (!ts) return '';
@@ -2505,7 +2629,7 @@ function renderSessionBanner() {
     const errName = nameOf(target?.sessionFile) || nameOf(uplinkTargetSessionFile);
     cls = 'error';
     html = `<span class="sb-dot"></span>
-      <span class="sb-text"><strong>Attach failed${errName ? ` — ${esc(errName)}` : ''}</strong><span class="sb-hint">${esc(uplinkAttachError)}</span></span>
+      <span class="sb-text"><strong>Couldn't drive TUI${errName ? ` — ${esc(errName)}` : ''}</strong><span class="sb-hint">${esc(uplinkAttachError)}</span></span>
       ${target ? `<button class="sb-btn" data-action="retry" data-port="${target.port}" data-pid="${target.pid}">Retry</button>` : ''}
       ${(target?.sessionFile || uplinkTargetSessionFile) ? `<button class="sb-btn" data-action="headless">Continue headless</button>` : ''}
       <button class="sb-btn svg-btn" data-action="dismiss" aria-label="Dismiss">${icon('x', 12)}</button>`;
@@ -2513,28 +2637,28 @@ function renderSessionBanner() {
     const driveName = nameOf(uplinkTargetSessionFile);
     cls = 'driving';
     html = `<span class="sb-dot"></span>
-      <span class="sb-text"><strong>Driving${driveName ? ` “${esc(driveName)}”` : ' live TUI'} · :${uplinkActive.port}</strong><span class="sb-hint">TUI is also attached — typing in both places may race</span></span>
+      <span class="sb-text"><strong>Driving${driveName ? ` “${esc(driveName)}”` : ' live TUI'} · :${uplinkActive.port}</strong><span class="sb-hint">The TUI is still running — prompts from both places may race</span></span>
       <button class="sb-btn" data-action="detach">Detach</button>`;
   } else if (uplinkAttachPending) {
     const target = uplinkPreview || uplinkLastDetached;
     const pendName = nameOf(target?.sessionFile) || nameOf(uplinkTargetSessionFile);
     cls = 'preview';
     html = `<span class="sb-dot"></span>
-      <span class="sb-text"><strong>Attaching${pendName ? ` to “${esc(pendName)}”` : ''}${target?.port ? ` · :${target.port}` : ''}…</strong></span>`;
+      <span class="sb-text"><strong>Taking over${pendName ? ` “${esc(pendName)}”` : ''}${target?.port ? ` · :${target.port}` : ''}…</strong></span>`;
   } else if (uplinkPreview) {
     const last = uplinkPreview.lastActive ? ` · last active ${timeAgo(uplinkPreview.lastActive)}` : '';
     const prevName = nameOf(uplinkPreview.sessionFile) || nameOf(uplinkTargetSessionFile);
     cls = 'preview';
     html = `<span class="sb-dot"></span>
-      <span class="sb-text"><strong>Previewing${prevName ? ` “${esc(prevName)}”` : ' live session'} · :${uplinkPreview.port}</strong><span class="sb-hint">Read-only until you attach${esc(last)}</span></span>
-      <button class="sb-btn primary" data-action="attach">Attach &amp; Drive</button>
+      <span class="sb-text"><strong>Previewing${prevName ? ` “${esc(prevName)}”` : ' live TUI'} · :${uplinkPreview.port}</strong><span class="sb-hint">Read-only — Drive to take over${esc(last)}</span></span>
+      <button class="sb-btn primary" data-action="attach">Drive this TUI</button>
       <button class="sb-btn" data-action="cancel">Cancel</button>`;
   } else if (uplinkLastDetached) {
     const detName = nameOf(uplinkLastDetached.sessionFile) || nameOf(uplinkTargetSessionFile);
     cls = 'detached';
     html = `<span class="sb-dot"></span>
       <span class="sb-text"><strong>Detached${detName ? ` from “${esc(detName)}”` : ''} · :${uplinkLastDetached.port}</strong><span class="sb-hint">View is frozen; the TUI keeps running</span></span>
-      <button class="sb-btn primary" data-action="retry" data-port="${uplinkLastDetached.port}" data-pid="${uplinkLastDetached.pid}">Attach again</button>
+      <button class="sb-btn primary" data-action="retry" data-port="${uplinkLastDetached.port}" data-pid="${uplinkLastDetached.pid}">Drive again</button>
       <button class="sb-btn" data-action="live" title="Back to this server's live session">This server</button>
       <button class="sb-btn svg-btn" data-action="dismiss" aria-label="Dismiss">${icon('x', 12)}</button>`;
   }
@@ -2596,6 +2720,12 @@ async function backToLive(sessionFile) {
 }
 
 async function previewAttach(port, pid, sessionFile, lastActive, opts = {}) {
+  // ADR-010: cross-session drive is hub-only. A mirror must never preview or
+  // drive another TUI, even if stale instance data slipped through.
+  if (serverMode && serverMode !== 'hub') {
+    messageRenderer.renderSystemMessage('Driving another TUI is only available through the hub.');
+    return;
+  }
   if (uplinkActive && uplinkActive.port === port) return; // already driving it
   if (uplinkAttachPending) return;
   // Switching targets: drop local "driving" state; the server detaches the old
@@ -2641,7 +2771,7 @@ async function previewAttach(port, pid, sessionFile, lastActive, opts = {}) {
     // server default or another session's directory).
     refreshFileBrowser(sessionFile, session, project);
   } else if (!session || !project) {
-    messageRenderer.renderSystemMessage('History unavailable for this session — you can still attach.');
+    messageRenderer.renderSystemMessage('History unavailable for this session — you can still drive it.');
   }
   renderSessionBanner();
   closeSidebarOnMobile(); // let the preview banner show, not the sidebar
@@ -2761,13 +2891,16 @@ function renderLiveSection(instances) {
     const sub = `${viewing ? 'viewing · ' : ''}${i.cwd ? `${escapeHtml(i.cwd.split('/').filter(Boolean).pop() || '')} · :${i.port}` : `:${i.port}`}`;
     const action = i.local
       ? (viewing
-        ? `<span class="live-tag" title="The web server's own Pi process — the browser already talks to it directly; Attach is only for separate live TUI sessions">this server</span>`
+        ? `<span class="live-tag" title="The web server's own Pi process — the browser already talks to it directly; Drive is only for separate running TUIs">this server</span>`
         : `<button class="live-btn" data-action="live" data-file="${escapeHtml(i.sessionFile || '')}" title="Back to this server's live session">Live</button>`)
-      : attached
+      : (serverMode && serverMode !== 'hub')
+        // A mirror has no switchboard: never offer to dial a sibling TUI.
+        ? ''
+        : attached
         ? `<button class="live-btn" data-action="detach" data-port="${i.port}">Detach</button>`
         : previewing
           ? `<button class="live-btn" data-action="cancelpreview">Cancel</button>`
-          : `<button class="live-btn" data-action="attach" data-port="${i.port}" data-pid="${i.pid}" data-file="${escapeHtml(i.sessionFile || '')}" data-started="${escapeHtml(i.startedAt || '')}">Attach</button>`;
+          : `<button class="live-btn" data-action="attach" data-port="${i.port}" data-pid="${i.pid}" data-file="${escapeHtml(i.sessionFile || '')}" data-started="${escapeHtml(i.startedAt || '')}">Drive</button>`;
     return `<div class="live-row${attached ? ' attached' : ''}${viewing ? ' viewing' : ''}">
       <span class="live-dot"></span>
       <span class="live-text">
@@ -2777,7 +2910,7 @@ function renderLiveSection(instances) {
       ${action}
     </div>`;
   }).join('');
-  host.innerHTML = `<div class="live-header">LIVE</div>${rows}`;
+  host.innerHTML = `<div class="live-header">RUNNING TUIs</div><div class="live-hint">Drive takes over a running TUI. Past sessions open directly.</div>${rows}`;
   host.querySelectorAll('.live-btn').forEach((btn) => {
     btn.addEventListener('click', () => {
       if (btn.dataset.action === 'attach') {
@@ -2849,13 +2982,13 @@ function updateMirrorInputState() {
   // transitions, which all funnel through here.
   renderCurrentSessionCard();
   const inputArea = document.querySelector('.input-area');
-  // Preview: read-only until the user confirms the attach. Detached: the frozen
-  // view of a live session is read-only too (the TUI keeps running without us).
+  // Preview: read-only until the user takes over. Detached: the frozen view of
+  // a live session is read-only too (the TUI keeps running without us).
   const frozenDetached = uplinkLastDetached && !uplinkActive
     && sidebar.activeSessionFile === uplinkLastDetached.sessionFile;
   if (uplinkPreview) {
     messageInput.disabled = true;
-    messageInput.placeholder = 'Previewing live session — attach to drive';
+    messageInput.placeholder = 'Previewing live session — Drive to take over';
     inputArea?.classList.add('mirror-readonly');
     return;
   }
@@ -2873,13 +3006,13 @@ function updateMirrorInputState() {
     inputArea?.classList.remove('mirror-readonly');
     return;
   }
-  // A history session is read-only only while a live TUI owns it — attaching
-  // (or detaching) drives that session. Anything else can be continued headless.
+  // A history session is read-only only while a live TUI owns it — driving
+  // (or detaching) takes over that session. Anything else can be continued headless.
   const activeFile = sidebar.activeSessionFile;
   const ownedByTui = activeFile && liveInstances.some((i) => !i.local && i.sessionFile === activeFile);
   if (ownedByTui) {
     messageInput.disabled = true;
-    messageInput.placeholder = 'Owned by a live TUI — attach to drive';
+    messageInput.placeholder = 'Owned by a running TUI — Drive to take over';
     inputArea?.classList.add('mirror-readonly');
   } else {
     messageInput.disabled = false;
@@ -3280,14 +3413,11 @@ function updateUI() {
   // it enabled (which briefly unlocked the input over read-only views).
   updateMirrorInputState();
 
-  if (isStreaming) {
-    abortBtn.classList.remove('hidden');
-    sendBtn.classList.add('hidden');
-  } else {
-    abortBtn.classList.add('hidden');
-    sendBtn.classList.remove('hidden');
-    flushQueue();
-  }
+  // Keep Send visible while streaming: a message sent mid-run is queued and
+  // forwarded as a steer (runs right after the current turn).
+  abortBtn.classList.toggle('hidden', !isStreaming);
+  sendBtn.classList.remove('hidden');
+  if (!isStreaming) flushQueue();
 }
 
 // ═══════════════════════════════════════
@@ -3359,7 +3489,7 @@ async function openSettings() {
   }
   let lastTab = null;
   try { lastTab = localStorage.getItem('tau-settings-tab'); } catch {}
-  selectSettingsTab(!speech.supported && lastTab === 'voice' ? 'appearance' : (lastTab === 'agent' || lastTab === 'voice' || lastTab === 'server' ? lastTab : 'appearance'));
+  selectSettingsTab(!speech.supported && lastTab === 'voice' ? 'appearance' : (lastTab === 'voice' || lastTab === 'server' ? lastTab : 'appearance'));
   populateVoiceSelect();
   syncVoiceControls();
   settingsPanel.classList.remove('hidden');

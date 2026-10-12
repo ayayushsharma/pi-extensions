@@ -63,7 +63,7 @@
         <div class="sidebar-actions">
           <button class="icon-btn" id="new-session-btn" title="New session" aria-label="New session"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></button>
           <button class="icon-btn" id="refresh-sessions-btn" title="Refresh sessions" aria-label="Refresh sessions"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></svg></button>
-          <button class="icon-btn sidebar-close-btn" id="sidebar-close-btn" title="Close sidebar" aria-label="Close sidebar"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+          <button class="icon-btn sidebar-close-btn" id="sidebar-close-btn" title="Back" aria-label="Back"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5"/><path d="m12 19-7-7 7-7"/></svg></button>
         </div>
       </div>
       <!-- Currently connected session: name + project directory + state -->
@@ -100,20 +100,6 @@
           <div class="thinking-dropdown" id="thinking-dropdown">
             <button class="thinking-tag" id="thinking-btn" title="Thinking level">off</button>
             <div class="thinking-menu hidden" id="thinking-menu"></div>
-          </div>
-          <div class="pill session-cost" id="session-cost" title="Session cost"></div>
-        </div>
-        <div class="header-tokens">
-          <div class="pill token-usage" id="token-usage" title="Click for context breakdown"></div>
-          <div class="pill context-size" id="context-size" title="Tokens used / context window"></div>
-          <div class="context-viz hidden" id="context-viz">
-            <div class="context-viz-title">Context Window</div>
-            <div class="context-bar" id="context-bar"></div>
-            <div class="context-legend" id="context-legend"></div>
-            <div class="context-viz-footer">
-              <span id="context-viz-used"></span>
-              <span id="context-viz-total"></span>
-            </div>
           </div>
         </div>
         <div class="status">
@@ -180,17 +166,44 @@
               rows="2"
 
             ></textarea>
-            <button type="button" class="input-mic-btn" id="mic-btn" title="Voice input" tabindex="-1">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/></svg>
-            </button>
-          </div>
-          <div class="input-actions">
-            <button type="submit" id="send-btn" title="Send message" tabindex="-1">
-              <span class="send-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg></span>
-            </button>
-            <button type="button" id="abort-btn" class="hidden" title="Abort (Esc)" tabindex="-1"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2"/></svg></button>
+            <div class="bubble-actions">
+              <button type="button" class="input-mic-btn" id="mic-btn" title="Voice input" tabindex="-1">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/></svg>
+              </button>
+              <button type="button" id="abort-btn" class="hidden" title="Abort (Esc)" tabindex="-1"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2"/></svg></button>
+              <button type="submit" id="send-btn" title="Send message" tabindex="-1">
+                <span class="send-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg></span>
+              </button>
+            </div>
           </div>
         </form>
+        <!-- Session context: which project + git branch this view operates on -->
+        <div class="session-bar hidden" id="session-bar">
+          <span class="sb-item" id="sb-project" title="">
+            <svg class="sb-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>
+            <span class="sb-text" id="sb-project-name"></span>
+          </span>
+          <span class="sb-item sb-branch hidden" id="sb-branch" title="">
+            <svg class="sb-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>
+            <span class="sb-text" id="sb-branch-name"></span>
+          </span>
+          <!-- Cost + context usage live at the bottom-right, not in the header. -->
+          <span class="sb-spacer"></span>
+          <div class="pill session-cost" id="session-cost" title="Session cost"></div>
+          <div class="header-tokens">
+            <div class="pill token-usage" id="token-usage" title="Click for context breakdown"></div>
+            <div class="pill context-size" id="context-size" title="Tokens used / context window"></div>
+            <div class="context-viz hidden" id="context-viz">
+              <div class="context-viz-title">Context Window</div>
+              <div class="context-bar" id="context-bar"></div>
+              <div class="context-legend" id="context-legend"></div>
+              <div class="context-viz-footer">
+                <span id="context-viz-used"></span>
+                <span id="context-viz-total"></span>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -225,7 +238,6 @@
     </div>
     <div class="settings-tabs" id="settings-tabs">
       <button class="settings-tab active" data-tab="appearance">Appearance</button>
-      <button class="settings-tab" data-tab="agent">Agent</button>
       <button class="settings-tab" data-tab="voice">Voice</button>
       <button class="settings-tab" data-tab="server">Server</button>
     </div>
@@ -236,13 +248,6 @@
         <div class="settings-row">
           <span class="settings-label">Show thinking</span>
           <button class="settings-toggle on" id="toggle-show-thinking"></button>
-        </div>
-      </div>
-      <div class="settings-section hidden" data-pane="agent">
-        <div class="settings-section-title">Agent</div>
-        <div class="settings-row">
-          <span class="settings-label">Compaction</span>
-          <span class="settings-value">Automatic + manual via the Compact command</span>
         </div>
       </div>
       <div class="settings-section hidden" data-pane="voice" id="settings-voice-section">

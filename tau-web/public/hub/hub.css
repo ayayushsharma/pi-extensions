@@ -1,0 +1,436 @@
+/* ═══════════════════════════════════════════════════════════════════════
+   Tau Hub — tabbed, opencode-style session shell
+   Loaded only by public/hub/index.html, after the shared style.css.
+   The hub keeps the mirror engine (app.js) but swaps the chrome:
+   a slim session-tab bar on top + a search-first "home" overlay, with the
+   session list demoted to an off-canvas drawer.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+.hub-shell {
+  --tabbar-height: 46px;
+  --hub-max: 860px;
+}
+
+/* ─── Off-canvas session drawer ─────────────────────────────────────── */
+/* app.js already toggles `.collapsed` on #sidebar; on the hub it starts
+   collapsed, so the tab bar + home are the primary navigation. */
+.hub-shell .sidebar {
+  background: var(--bg-frosted);
+  border-right: 1px solid var(--border);
+}
+
+/* ─── Top bar ─────────────────────────────────────────────────────── */
+/* The tab bar IS the header (app.js measures .header for --header-height),
+   so there is exactly one chrome row. */
+.hub-shell .header {
+  padding: 0;
+  min-height: 0;
+  display: block;
+}
+
+.tabbar {
+  height: var(--tabbar-height);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 10px;
+  -webkit-app-region: drag;
+}
+
+.tabbar button,
+.tabbar .status { -webkit-app-region: no-drag; }
+
+.tabbar-home,
+.tab-new,
+.hub-shell .tabbar .sidebar-toggle {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background var(--duration) var(--ease), color var(--duration) var(--ease);
+}
+.tabbar-home:hover,
+.tab-new:hover { background: var(--bg-glass-hover); color: var(--text-primary); }
+.tabbar-home:active,
+.tab-new:active { transform: scale(0.94); }
+
+.tabbar-logo {
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  opacity: 0.9;
+}
+
+.tab-new { margin-left: 2px; }
+
+.tabbar-spacer { flex: 1; min-width: 8px; }
+
+/* ─── Tab strip ─────────────────────────────────────────────────────── */
+.tab-strip {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.tab-strip::-webkit-scrollbar { display: none; }
+
+.tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  max-width: 220px;
+  height: 30px;
+  padding: 0 6px 0 11px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background var(--duration) var(--ease), color var(--duration) var(--ease);
+}
+.tab:hover { background: var(--bg-glass-hover); color: var(--text-primary); }
+.tab.active { background: var(--bg-glass-active); color: var(--text-primary); }
+.tab.dragging { opacity: 0.5; }
+.tab.drop-before { box-shadow: inset 2px 0 0 var(--accent); }
+.tab.drop-after { box-shadow: inset -2px 0 0 var(--accent); }
+
+.tab-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--text-dim);
+}
+.tab-dot.live { background: var(--success); box-shadow: 0 0 6px rgba(52, 211, 153, 0.5); }
+.tab-dot.new { background: var(--accent); }
+
+.tab-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tab-close {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--duration) var(--ease), background var(--duration) var(--ease);
+}
+.tab:hover .tab-close,
+.tab.active .tab-close { opacity: 1; }
+.tab-close:hover { background: var(--bg-glass-active); color: var(--text-primary); }
+
+/* ─── Status lives in the tab bar now ────────────────────────────────── */
+.hub-shell .tabbar .status {
+  max-width: 260px;
+  min-width: 0;
+  margin-right: 2px;
+}
+.hub-shell .tabbar #status-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ─── Title bar: which session the view is showing ──────────────────── */
+.title-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  padding: 0 14px;
+  border-top: 1px solid var(--border);
+  font-size: 13px;
+}
+.title-bar.hidden { display: none; }
+.tb-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+  font-weight: 600;
+}
+.tb-state {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--bg-glass-active);
+}
+.tb-state:empty { display: none; }
+
+/* ─── Keep the message list clear of the single top bar ─────────────── */
+.hub-shell .messages {
+  padding-top: calc(var(--header-height, 46px) + 18px);
+}
+.hub-shell .session-banner {
+  margin-top: calc(var(--header-height, 46px) + 10px);
+}
+.hub-shell .welcome { padding-top: 28px; }
+
+/* Roomier, centered conversation column (opencode-like) */
+.hub-shell .messages > * {
+  width: 100%;
+  max-width: var(--hub-max);
+  margin-left: auto;
+  margin-right: auto;
+}
+
+/* ─── Composer: one rounded box, controls on the bottom row ─────────── */
+/* `overflow-x: hidden` computes overflow-y to `auto`, which clips the
+   upward-opening menus to the (short) composer box — let them escape. */
+.hub-shell .input-area { overflow: visible; }
+.hub-shell .input-area form { max-width: var(--hub-max); margin: 0 auto; }
+.hub-shell #chat-form { display: block; }
+
+.hub-shell .composer-box {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-glass);
+  backdrop-filter: blur(var(--blur));
+  -webkit-backdrop-filter: blur(var(--blur));
+  box-shadow: var(--shadow-sm);
+  transition: border-color var(--duration) var(--ease), box-shadow var(--duration) var(--ease);
+}
+.hub-shell .composer-box:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
+.hub-shell .input-bubble { display: flex; align-items: flex-end; gap: 8px; }
+.hub-shell #message-input {
+  display: block;
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  box-shadow: none;
+  border-radius: 0;
+  /* `.composer-box` already paints the glass background and blur. A second
+     backdrop-filter here re-blurs the parent's already-filtered backdrop and
+     paints a hard-edged, square-cornered rectangle inside the rounded box
+     (visible as a lighter block on the right in dark themes). The textarea is
+     transparent, so the filter bought nothing but the artifact. */
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  padding: 14px 4px 12px 16px;
+  font-size: 15px;
+  max-height: 220px;
+}
+.hub-shell #message-input:focus { border: none; box-shadow: none; background: transparent; }
+/* Same inset as the text (16px left / 12px bottom) so the buttons sit on the
+   same background, at the same margin, as the textarea text. */
+.hub-shell .bubble-actions { padding: 0 16px 12px 0; }
+
+.hub-shell .composer-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px 8px;
+  min-height: 38px;
+}
+.hub-shell .input-left-actions { flex-direction: row; gap: 2px; align-self: center; }
+.hub-shell .composer-controls { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.hub-shell .input-actions { align-self: center; }
+.hub-shell .input-mic-btn {
+  position: static;
+  transform: none;
+  width: 30px;
+  height: 30px;
+}
+
+/* Menus open upward — the composer is pinned to the bottom of the screen. */
+.hub-shell .model-dropdown-menu,
+.hub-shell .thinking-menu,
+.hub-shell .context-viz {
+  top: auto;
+  bottom: calc(100% + 8px);
+}
+
+@media (max-width: 900px) {
+  .hub-shell .tabbar .status { display: none; }
+}
+/* ─── Session home / search overlay ─────────────────────────────────── */
+.session-home {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: min(18vh, 150px) 16px 16px;
+}
+.session-home.hidden { display: none; }
+
+.session-home-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  animation: fadeIn 0.12s var(--ease);
+}
+
+.session-home-panel {
+  position: relative;
+  width: 100%;
+  max-width: 620px;
+  max-height: 70vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-frosted);
+  border: 1px solid var(--border-hover);
+  border-radius: 14px;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+  animation: popIn 0.16s var(--ease);
+}
+
+.session-home-search {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-dim);
+}
+.session-home-search input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 15px;
+  font-family: inherit;
+  outline: none;
+}
+.session-home-search input::placeholder { color: var(--text-dim); }
+.session-home-kbd {
+  flex-shrink: 0;
+  font-size: 10px;
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--text-dim);
+}
+
+.session-home-list {
+  overflow-y: auto;
+  padding: 6px;
+  overscroll-behavior: contain;
+}
+
+.sh-group-title {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  padding: 10px 10px 4px;
+}
+
+.sh-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 13px;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.sh-item:hover,
+.sh-item.active { background: var(--bg-glass-active); }
+.sh-item-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sh-item-meta {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+.sh-item-tag {
+  flex-shrink: 0;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(52, 211, 153, 0.15);
+  color: var(--success);
+}
+.sh-empty {
+  padding: 28px 16px;
+  text-align: center;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+.sh-new {
+  margin: 6px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 10px;
+  border: 1px dashed var(--border-hover);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--accent-text);
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+  width: calc(100% - 12px);
+}
+.sh-new:hover { background: var(--bg-glass-hover); }
+
+/* ─── Small screens: keep tabs usable, drop max-width centering ─────── */
+@media (max-width: 768px) {
+  .hub-shell { --hub-max: 100%; }
+  .tab { max-width: 150px; }
+  .session-home { padding-top: 10vh; }
+  .title-bar { height: 30px; padding: 0 12px; }
+  .session-bar { gap: 10px; }
+  .session-bar .sb-text { max-width: 40vw; }
+}

@@ -710,6 +710,13 @@ html {
   border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent);
 }
 
+/* Running TUI tag — distinguishes a live row from a resumable historical one */
+.running-tag {
+  background: color-mix(in srgb, var(--success) 15%, transparent);
+  color: var(--success);
+  border: 1px solid color-mix(in srgb, var(--success) 30%, transparent);
+}
+
 /* Search results */
 .search-results-header {
   color: var(--accent-text);
@@ -843,6 +850,12 @@ html {
   letter-spacing: 0.08em;
   opacity: 0.7;
   padding: 2px 4px 6px;
+}
+.live-hint {
+  font-size: 11px;
+  line-height: 1.35;
+  opacity: 0.55;
+  padding: 0 4px 7px;
 }
 .live-row {
   display: flex;
@@ -1262,6 +1275,11 @@ html {
 .context-size {
   display: none;
 }
+
+/* The pane toggles hide while their pane is open (its Back button closes it).
+   ID selectors so they beat .hub-shell .tabbar .sidebar-toggle's display. */
+#sidebar-toggle.hidden,
+#file-sidebar-toggle.hidden { display: none; }
 
 .sidebar-toggle,
 .settings-btn {
@@ -2875,8 +2893,54 @@ body.hide-thinking .thinking-block { display: none !important; }
   left: 0;
   right: 0;
   z-index: 10;
-  overflow-x: hidden;
+  /* `overflow-x: hidden` computes overflow-y to `auto`, which clips the
+     upward-opening context popover anchored in the status bar. */
+  overflow: visible;
 }
+
+/* Session context bar (project + git branch) under the composer. Shows which
+   project/branch the current view operates on — the per-session disambiguator. */
+.session-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-width: var(--hub-max, 800px);
+  margin: 0 auto;
+  padding: 7px 4px 0;
+  font-size: 13px;
+  line-height: 1.3;
+  color: var(--text-dim);
+  min-width: 0;
+}
+.session-bar.hidden { display: none; }
+.session-bar .sb-item { display: inline-flex; align-items: center; gap: 5px; min-width: 0; }
+.session-bar .sb-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 260px; }
+/* display:block kills the inline-SVG baseline gap so the glyph centers on the text */
+.session-bar .sb-icon { flex-shrink: 0; display: block; width: 13px; height: 13px; opacity: 0.7; }
+.session-bar .sb-spacer { flex: 1; }
+/* Cost + context usage are pinned to the bottom-right of the status bar. */
+.session-bar .header-tokens { margin-left: 0; }
+.session-bar .pill { flex-shrink: 0; }
+/* The popover is anchored at the bottom of the screen, so it opens upward. */
+.session-bar .context-viz {
+  top: auto;
+  bottom: calc(100% + 8px);
+  right: 0;
+}
+.session-bar .sb-branch { color: var(--text-secondary); }
+.session-bar .sb-branch.dirty { color: var(--accent); }
+.session-bar .sb-name { color: var(--text-secondary); }
+
+/* Kill × lives on the current-session card so its target is unambiguous. */
+.cs-kill {
+  margin-left: auto;
+  width: 22px;
+  height: 22px;
+  padding: 2px;
+  opacity: 0.5;
+}
+.cs-kill:hover { opacity: 1; color: var(--accent); }
+.cs-kill.hidden { display: none; }
 
 /* Image previews */
 .image-previews {
@@ -3006,9 +3070,29 @@ body.hide-thinking .thinking-block { display: none !important; }
   align-items: stretch;
 }
 
+.input-bubble {
+  flex: 1;
+  min-width: 0;
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+}
+
+/* Mic + send/stop sit inside the message box, bottom-right. */
+.bubble-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  padding: 0 6px 8px 0;
+}
+.bubble-actions .input-mic-btn { position: static; transform: none; }
+
 #message-input {
   flex: 1;
-  padding: 12px 44px 12px 18px;
+  min-width: 0;
+  padding: 12px 12px 12px 18px;
   background: var(--bg-glass);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
@@ -3033,10 +3117,8 @@ body.hide-thinking .thinking-block { display: none !important; }
 }
 
 .input-mic-btn {
-  position: absolute;
-  right: 8px;
-  top: 50%;
-  transform: translateY(-50%);
+  position: static;
+  transform: none;
   width: 28px;
   height: 28px;
   padding: 0;
@@ -3921,13 +4003,12 @@ body.no-tts .message-speak-btn { display: none; }
     color: var(--thinking-accent-text);
   }
 
-  /* Context popover spans the screen width, below the taller header */
+  /* Context popover is anchored in the bottom status bar — open it upward,
+     clamped to the viewport so it stays reachable on a phone. */
   .context-viz {
-    position: fixed;
-    top: calc(var(--header-height, 68px) + 8px);
-    left: 12px;
-    right: 12px;
-    width: auto;
+    left: auto;
+    right: 0;
+    width: min(320px, calc(100vw - 28px));
   }
 
   /* Files + settings get their own columns, vertically centred */

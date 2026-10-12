@@ -115,8 +115,13 @@ pi remove <source>
 pi list                     # configured packages
 ```
 
-- Extension `.ts` changes: clear the jiti cache then restart Pi
-  (`rm -rf $TMPDIR/jiti` or `%LOCALAPPDATA%\Temp\jiti` on Windows).
+- Extension `.ts` changes: `node clear-jiti.mjs` (repo root, cross-platform:
+  Termux/Linux/Windows), then `/reload` in the running TUI — pi re-imports
+  extension files from disk on reload, so no process restart is needed.
+  (Full restart also works. Manual cache fallback: `rm -rf $TMPDIR/jiti`
+  or `%LOCALAPPDATA%\Temp\jiti` on Windows.) `/reload` drops browser
+  sockets + kills headless children (both auto-recover on reconnect) and
+  wipes in-memory cookie sessions, so browser tabs must log in again.
 - Static/browser assets (e.g. `tau-web/public/`): browser reload only, no Pi restart.
   Prefer the `TAU_STATIC_DIR=$(pwd)/public pi` override pattern for UI work.
 - Verify with `npx tsc --noEmit` (if a tsconfig exists) or at minimum `node --check`
@@ -128,7 +133,7 @@ pi list                     # configured packages
 - Scope every change to one package directory (plus this file only if conventions
   genuinely change). Check `git status` — unrelated dirty trees (e.g. `tau-web/`
   mid-dev) are normal; don't touch them.
-- Read the package's own `README.md` / `CLAUDE.md` / `.pi/AGENTS.md` before
+- Read the package's own `README.md` / `AGENTS.md` / `.pi/AGENTS.md` before
   changing it — they override these repo-level defaults.
 - Commit per package (`tau: ...`, `<pkg>: ...`). The template itself is never
   published and never takes a dependency on a real package.

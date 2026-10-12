@@ -105,6 +105,9 @@ export type ManagedHeadless = {
   idleTimer: NodeJS.Timeout | null;
   isClosing: boolean;
   discoveredFile: string | null;
+  // True only for a web /new backend: it may announce its discovered file so
+  // the tab can pin #session=<basename>. Ambient scratch binds stay hash-less.
+  hashDiscovery: boolean;
   // lastActiveMs tracks the last event/client activity so the optional
   // TTL or LRU pool cap (TAU_MAX_HEADLESS) can reap truly-idle sessions first.
   lastActiveMs: number;
@@ -121,6 +124,7 @@ export class HeadlessRegistry {
       onEvent: (managed: ManagedHeadless, event: any) => void;
       onError: (managed: ManagedHeadless, message: string) => void;
       onExit: (managed: ManagedHeadless, code: number | null) => void;
+      onFileDiscovered?: (managed: ManagedHeadless, file: string) => void;
       log: (...args: any[]) => void;
     },
   ) {}
@@ -162,6 +166,10 @@ export class HeadlessRegistry {
     managed.lastActiveMs = Date.now();
     if (managed.idleTimer) { clearTimeout(managed.idleTimer); managed.idleTimer = null; }
     this.socketBinding.set(ws, managed);
+    // Web /new (fresh) spawns a file-less child whose session file is unknown
+    // until it answers get_state; ask now so the tab can pin #session=basename.
+    // Ambient binds (cold open / scratch) stay hash-less by design.
+    if (opts?.fresh) { managed.hashDiscovery = true; this.requestState(managed); }
     return managed;
   }
 
@@ -195,10 +203,22 @@ export class HeadlessRegistry {
           // clients so the user can resume from any tab. Only reap when
           // an opt-in positive TTL is configured.
           this.scheduleIdleCleanup(managed);
+          // Discovery fallback: if the spawn-time get_state came back empty
+          // (child not ready yet), the first run's end is a safe retry point.
+          this.requestState(managed);
         }
         if (event?.type === "response" && event?.command === "get_state" && event?.success) {
           const sf = event?.data?.sessionFile;
-          if (typeof sf === "string" && sf.length > 0) managed.discoveredFile = basename(sf);
+          if (typeof sf === "string" && sf.length > 0) {
+            const base = basename(sf);
+            if (managed.discoveredFile !== base) {
+              const wasKnown = !!managed.sessionFile; // resumed sessions know their file already
+              managed.discoveredFile = base;
+              // Only announce genuinely-new identities for a /new backend; a
+              // resumed session's file is already pinned in the tab's URL.
+              if (!wasKnown && managed.hashDiscovery) this.hooks.onFileDiscovered?.(managed, base);
+            }
+          }
         }
         this.hooks.onEvent(managed, event);
       },
@@ -220,6 +240,7 @@ export class HeadlessRegistry {
       id, cwd, sessionFile, rpc,
       clients: new Set(), isAgentRunning: false,
       idleTimer: null, isClosing: false, discoveredFile: null,
+      hashDiscovery: false,
       lastActiveMs: Date.now(),
     };
     // Resuming an existing file is issued by the caller via switchToFile
@@ -227,6 +248,13 @@ export class HeadlessRegistry {
     this.sessions.set(id, managed);
     this.enforcePoolCap(id);
     return managed;
+  }
+
+  /** Ask a child for its current state (used to discover a fresh file). */
+  private requestState(managed: ManagedHeadless): void {
+    if (managed.isClosing || !managed.hashDiscovery) return;
+    if (managed.sessionFile || managed.discoveredFile) return; // identity already known
+    try { managed.rpc.send({ type: "get_state" }); } catch { /* child gone */ }
   }
 
   /** LRU cap (TAU_MAX_HEADLESS): keep at most N children alive. Evicts the

@@ -202,7 +202,7 @@ function unregisterInstance() {
   try { fs.unlinkSync(path.join(INSTANCES_DIR, `${process.pid}.json`)); } catch {}
 }
 
-function getRunningInstances(): Array<{ port: number; pid: number; sessionFile: string; cwd: string }> {
+function getRunningInstances(): Array<{ port: number; pid: number; sessionFile: string; cwd: string; startedAt?: string }> {
   if (!fs.existsSync(INSTANCES_DIR)) return [];
   const instances: any[] = [];
   for (const file of fs.readdirSync(INSTANCES_DIR)) {
@@ -219,7 +219,33 @@ function getRunningInstances(): Array<{ port: number; pid: number; sessionFile: 
       }
     } catch {}
   }
-  return instances;
+  return dedupeBySessionFile(instances);
+}
+
+/**
+ * Collapse registry rows that point at the same session file.
+ *
+ * A session can be resumed by a fresh process — kill + restart, or a second
+ * TUI opened in the same cwd — and each owner binds its own port and writes
+ * its own `${pid}.json`. Without this the sidebar lists the same session once
+ * per port ("same session on multiple ports"). Only the most recently started
+ * owner is advertised: that is the process the user just resumed, and the one
+ * whose port is live. Rows without a session file (scratch backends) are left
+ * alone — several of those may legitimately coexist.
+ */
+function dedupeBySessionFile<T extends { sessionFile?: string | null; startedAt?: string }>(list: T[]): T[] {
+  const byFile = new Map<string, T>();
+  const unowned: T[] = [];
+  for (const inst of list) {
+    const file = inst.sessionFile;
+    if (!file) { unowned.push(inst); continue; }
+    const prev = byFile.get(file);
+    if (!prev) { byFile.set(file, inst); continue; }
+    const prevAt = Date.parse(prev.startedAt || "") || 0;
+    const nextAt = Date.parse(inst.startedAt || "") || 0;
+    if (nextAt >= prevAt) byFile.set(file, inst);
+  }
+  return [...unowned, ...byFile.values()];
 }
 
 /**
@@ -361,6 +387,18 @@ function isAllowedHostName(hostname: string): boolean {
   const bind = hostnameOf(HOST);
   return !!bind && bind === hostname;
 }
+/** The explicit port a Host header carries, or null when it carries none. */
+function explicitPortOfHost(header: string | undefined): string | null {
+  if (!header) return null;
+  const h = header.trim().toLowerCase();
+  const v6 = h.match(/^\[[^\]]+\]:(\d+)$/); // [::1]:12040
+  if (v6) return v6[1];
+  const m = h.match(/^[^:]+:(\d+)$/); // host:port (unbracketed IPv6 has no port)
+  return m ? m[1] : null;
+}
+function defaultPortForProtocol(protocol: string): string {
+  return protocol === "https:" || protocol === "wss:" ? "443" : "80";
+}
 function checkRequestOrigin(req: http.IncomingMessage): boolean {
   if (process.env.TAU_ALLOW_ANY_HOST === "1") return true;
   const host = req.headers["host"] as string | undefined;
@@ -370,9 +408,19 @@ function checkRequestOrigin(req: http.IncomingMessage): boolean {
   // does not match the requested Host is the rebinding signature. Non-browser
   // clients send none, and are not the threat model here.
   if (origin) {
-    try {
-      if (hostnameOf(new URL(origin).host) !== hostnameOf(host)) return false;
-    } catch { return false; }
+    let originUrl: URL;
+    try { originUrl = new URL(origin); } catch { return false; }
+    if (hostnameOf(originUrl.host) !== hostnameOf(host)) return false;
+    // Hostname alone is not enough: a page at http://127.0.0.1:12099 could
+    // still reach ws://127.0.0.1:12040. When the Host header pins a port,
+    // the Origin's effective port must match it. A portless Host means a
+    // TLS-terminating proxy (Serve / cloudflared) forwarded a bare public
+    // name, where the loopback port is unknowable — fall back to hostname.
+    const hostPort = explicitPortOfHost(host);
+    if (hostPort) {
+      const originPort = originUrl.port || defaultPortForProtocol(originUrl.protocol);
+      if (hostPort !== originPort) return false;
+    }
   }
   return true;
 }
@@ -404,6 +452,14 @@ export default function (pi: ExtensionAPI) {
       // Forward headless events in pi-web envelope so one UI speaks both dialects.
       for (const client of managed.clients) {
         sendTo(client, { type: "rpc_event", event });
+      }
+    },
+    // A brand-new headless child's session file is only known after it answers
+    // get_state. Tell the owning tab so it can pin #session=<basename> — the
+    // URL identity that makes reload/resume work (ADR-010 §UI flow 2).
+    onFileDiscovered: (managed, file) => {
+      for (const client of managed.clients) {
+        sendTo(client, { type: "session_file", sessionFile: file, cwd: managed.cwd });
       }
     },
     onError: (managed, message) => {
@@ -1542,7 +1598,15 @@ export default function (pi: ExtensionAPI) {
     // Strip query params
     urlPath = urlPath.split("?")[0];
 
-    // Default to index.html
+    // Hub shell is mounted at /hub/ (public/hub/index.html) so the URL stays
+    // clean and the mirror shell stays at /. A hub redirects its root there;
+    // a mirror keeps serving its own shell at /.
+    if (role === "hub" && (urlPath === "/" || urlPath === "/index.html")) {
+      res.writeHead(302, { Location: "/hub/" });
+      res.end();
+      return;
+    }
+    if (urlPath === "/hub" || urlPath === "/hub/") urlPath = "/hub/index.html";
     if (urlPath === "/") urlPath = "/index.html";
 
     const filePath = path.join(STATIC_DIR, urlPath);
@@ -1753,9 +1817,15 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
 
     if (urlPath === "/api/instances") {
       res.writeHead(200, { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" });
+      // ADR-010: only the hub owns the switchboard. A mirror cannot dial other
+      // TUIs (uplink_attach is hub-only), so exposing the whole registry here
+      // would advertise Attach buttons for servers this process cannot drive.
+      // Scope a mirror to its own row; the hub still sees every instance.
+      const registry = getRunningInstances();
+      const visible = role === "hub" ? registry : registry.filter((i) => i.pid === process.pid);
       // Flag in-process instances (the old-tau ghost rides along in every pi
       // process): the UI tags them `local` and offers no Attach for them.
-      const local = getRunningInstances().map((i) => ({ ...i, local: i.pid === process.pid }));
+      const local = visible.map((i) => ({ ...i, local: i.pid === process.pid }));
       // On the hub, also surface socket-registered mirrors that never started
       // their own HTTP server (TAU_DISABLED), so the Live list is complete.
       const mirrors = role === "hub" && hubSockets
@@ -1766,7 +1836,9 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
         : [];
       const byPid = new Map<string, any>();
       for (const i of [...local, ...mirrors]) byPid.set(String(i.pid), { ...byPid.get(String(i.pid)), ...i });
-      res.end(JSON.stringify({ instances: [...byPid.values()] }));
+      // A session resumed on a new port must not show up once per port.
+      const merged = dedupeBySessionFile([...byPid.values()]);
+      res.end(JSON.stringify({ instances: merged }));
       return;
     }
 
@@ -1845,6 +1917,42 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
       } catch (err: any) {
         res.writeHead(500, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: err.message }));
+      }
+      return;
+    }
+
+    // Git context for the session status bar (branch / repo root / dirty).
+    // execFile (argv, no shell) so a hostile cwd can't inject a command.
+    // NB: handleApiRoute receives urlPath WITH the query string still attached.
+    if ((urlPath === "/api/git" || urlPath.startsWith("/api/git?")) && req.method === "GET") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      try {
+        const gitUrl = new URL(`http://localhost${req.url}`);
+        const rawCwd = gitUrl.searchParams.get("cwd") || process.cwd();
+        const cwd = path.resolve(rawCwd);
+        if (!fs.existsSync(cwd) || !fs.statSync(cwd).isDirectory()) {
+          res.end(JSON.stringify({ repo: false, error: "not a directory" }));
+          return;
+        }
+        const { execFileSync } = require("node:child_process");
+        const git = (args: string[]) =>
+          execFileSync("git", ["-C", cwd, ...args], {
+            timeout: 4000,
+            encoding: "utf-8",
+            stdio: ["ignore", "pipe", "ignore"],
+          }).trim();
+        const root = git(["rev-parse", "--show-toplevel"]);
+        let branch = git(["rev-parse", "--abbrev-ref", "HEAD"]);
+        let detached = false;
+        if (branch === "HEAD") {
+          detached = true;
+          branch = git(["rev-parse", "--short", "HEAD"]);
+        }
+        let dirty = false;
+        try { dirty = git(["status", "--porcelain"]).length > 0; } catch {}
+        res.end(JSON.stringify({ repo: true, root, branch, detached, dirty }));
+      } catch {
+        res.end(JSON.stringify({ repo: false }));
       }
       return;
     }
@@ -2389,6 +2497,7 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
     let firstMessage: string | null = null;
     let sessionName: string | null = null;
     let userMessageCount = 0;
+    let assistantMessageCount = 0;
     let lineCount = 0;
 
     for await (const line of rl) {
@@ -2409,6 +2518,14 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
               if (tb) firstMessage = tb.text.substring(0, 120);
             }
           }
+        } else if (entry.type === "message" && entry.message?.role === "assistant") {
+          // Only a real assistant turn counts; an aborted run can leave an
+          // empty assistant entry behind.
+          const content = entry.message.content;
+          const hasText = typeof content === "string"
+            ? content.trim().length > 0
+            : Array.isArray(content) && content.some((b: any) => b.type === "text" && typeof b.text === "string" && b.text.trim().length > 0);
+          if (hasText) assistantMessageCount++;
         }
       } catch { /* skip */ }
 
@@ -2419,7 +2536,13 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
     stream.destroy();
 
     if (!header?.id) return null;
-    if (userMessageCount <= 1 && lineCount <= 8) return null; // pipe mode
+    // Hide empty scratch sessions (no user turn) and incomplete one-shot pipe
+    // runs (a lone user message that never got an assistant reply). A finished
+    // single-turn session is real and must stay listed/resumable — the old
+    // `lineCount <= 8` rule also hid those, which broke reload of a fresh
+    // web-started session.
+    if (userMessageCount === 0) return null;
+    if (userMessageCount <= 1 && assistantMessageCount === 0 && lineCount <= 8) return null;
 
     return {
       id: header.id,

@@ -296,7 +296,11 @@ export class MessageRenderer {
     btn.addEventListener('click', () => {
       const content = messageEl.querySelector('.message-content');
       if (!content) return;
-      const text = content.textContent;
+      // Copy the reply text, not the Thinking blocks (their label + body
+      // would otherwise pollute the clipboard).
+      const clone = content.cloneNode(true);
+      clone.querySelectorAll('.thinking-block').forEach((n) => n.remove());
+      const text = clone.textContent;
       // Fallback for non-HTTPS (LAN access)
       const copyText = (t) => {
         if (navigator.clipboard) return navigator.clipboard.writeText(t);
@@ -336,7 +340,8 @@ export class MessageRenderer {
   escapeHtml(text) {
     const div = document.createElement('div');
     div.textContent = text;
-    return div.innerHTML;
+    // innerHTML escapes &<>, but NOT quotes — attribute contexts need them too.
+    return div.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   }
 
   scrollToBottom() {

@@ -415,7 +415,8 @@ export class ToolCardRenderer {
   escapeHtml(text) {
     const div = document.createElement('div');
     div.textContent = text;
-    return div.innerHTML;
+    // innerHTML escapes &<>, but NOT quotes — attribute contexts need them too.
+    return div.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   }
 
   scrollToBottom() {

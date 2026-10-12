@@ -14,3 +14,9 @@ Bearer token in `localStorage`; Access-only gating.
 ## Consequences
 - Auth check on HTTP + WS handshake; 401 shows login prompt, never silent hang.
 - Tunnel points at `127.0.0.1`-bound server; public exposure decision (P3) is config-only.
+
+## Implementation note (2026-10-11)
+Browsers authenticate with the HttpOnly `tau_auth` cookie (the WS handshake
+cannot carry headers). Server-to-server uplink dials authenticate with the
+same user/pass over the `Authorization: Basic` header — the WS upgrade
+accepts either. Cookie tokens are per-process memory and are never forwarded.

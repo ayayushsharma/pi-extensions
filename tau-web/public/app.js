@@ -13,21 +13,15 @@ import { FileBrowser, getFileIcon } from './file-browser.js';
 import { Launcher } from './launcher.js';
 import { icon } from './icons.js';
 import { SpeechController } from './tts.js';
+import { createSessionActions } from './session-actions.js';
 
-// ─── Inline login (replaces the native browser login prompt) ───
-// The server mints an HttpOnly cookie session via POST /api/login, which the
-// browser then sends on fetches AND the WS handshake (which can't carry
-// custom headers). On any API 401 we show the overlay instead of reloading.
-// Creds live in memory + sessionStorage (per-tab; a fresh tab re-prompts).
-let tauBasicCreds = null;
-try { tauBasicCreds = sessionStorage.getItem('tau-basic') || null; } catch {}
-function tauSetCreds(basic) {
-  tauBasicCreds = basic;
-  try {
-    if (basic) sessionStorage.setItem('tau-basic', basic);
-    else sessionStorage.removeItem('tau-basic');
-  } catch {}
-}
+// ─── Cookie-session login (no Basic Auth client-side) ───
+// The login form POSTs JSON credentials to /api/login once; the server mints
+// an HttpOnly cookie session which the browser then sends on every fetch AND
+// the WS handshake (which can't carry custom headers). The server never sends
+// WWW-Authenticate, so the native browser login prompt can never appear —
+// any API 401 raises the inline overlay instead. Nothing credential-like is
+// kept in JS memory or storage; the cookie is the whole session.
 let tauLoginVisible = false;
 function tauShowLogin(hint) {
   const overlay = document.getElementById('login-overlay');
@@ -38,6 +32,7 @@ function tauShowLogin(hint) {
     if (sub) sub.textContent = hint;
   }
   overlay.classList.remove('hidden');
+  try { window.tauResetPasswordReveal?.(); } catch {}
   setTimeout(() => document.getElementById('login-user')?.focus(), 50);
 }
 function tauHideLogin() {
@@ -57,7 +52,6 @@ async function tauRefreshAfterLogin() {
 function tauNeedsLogin(res, url) {
   const u = typeof url === 'string' ? url : url?.url || '';
   if (res?.status === 401 && u.includes('/api/')) {
-    tauSetCreds(null);
     tauShowLogin();
     return true;
   }
@@ -66,11 +60,7 @@ function tauNeedsLogin(res, url) {
 const tauRawFetch = window.fetch.bind(window);
 window.fetch = (url, opts) => {
   opts = opts || {};
-  // Attach in-memory Basic creds so the login POST itself authenticates
-  // without ever invoking the browser's native prompt.
-  if (tauBasicCreds && typeof url === 'string' && url.includes('/api/')) {
-    opts.headers = { ...(opts.headers || {}), Authorization: `Basic ${tauBasicCreds}` };
-  }
+  // Cookie session rides along automatically (same-origin). No auth headers.
   return tauRawFetch(url, opts).then((res) => {
     // The login/logout endpoints manage their own 401s — never loop on them.
     if (typeof url === 'string' && (url.endsWith('/api/login') || url.endsWith('/api/logout'))) return res;
@@ -89,11 +79,15 @@ const toolCardRenderer = new ToolCardRenderer(document.getElementById('messages'
 // Shared sticky-scroll courtesy: tool cards defer to the message renderer.
 toolCardRenderer.shouldStick = () => !messageRenderer.userIsReading();
 const dialogHandler = new DialogHandler(document.getElementById('dialog-container'), wsClient);
+// Dialog abort-run routing: mirror session by default; dialogs.js targets the
+// uplink/headless owner itself when the request came from one.
+dialogHandler.onAbortRequest = () => routeCommand({ type: 'abort' });
 
-// Session sidebar
+// Session sidebar (themed confirm modal for destructive actions)
 const sidebar = new SessionSidebar(
   document.getElementById('session-list'),
-  handleSessionSelect
+  handleSessionSelect,
+  (opts) => dialogHandler.confirmLocal(opts)
 );
 
 // UI elements
@@ -177,7 +171,7 @@ let liveInstances = []; // All running Tau instances [{port, sessionFile, cwd}]
 // ─── tau-web unified: epoch guard, headless binding, uplink (ADR-004) ───
 let bindingEpoch = 0; // bumped on every session switch; stale stream events are dropped
 let activeStreamEpoch = -1; // epoch captured when the current stream started
-const VISIBLE_MESSAGE_WINDOW = 100; // render only the tail; full history stays on disk
+const VISIBLE_MESSAGE_WINDOW = 50; // render only the last 50; older loads on demand, full history stays on disk
 // ─── URL session routing (per-tab sessions) ───
 // The hash carries only the session file's basename (timestamp + uuid) — never
 // a filesystem path, which would leak system details when the URL is shared.
@@ -241,7 +235,10 @@ const fileBrowser = new FileBrowser(fileList, fileSidebarPath, messageInput, (fi
 fileSidebarToggle.addEventListener('click', () => {
   const isCollapsed = fileSidebar.classList.toggle('collapsed');
   if (!isCollapsed && !fileBrowser.currentPath) {
-    fileBrowser.load(); // Load session cwd
+    // Open on the viewed session's directory — never the server's own cwd
+    // when another session (history, preview, uplink) is on screen.
+    fileBrowser.load(fileBrowser.pendingRoot || resolveViewCwd(sidebar.activeSessionFile || mirrorActiveSessionFile) || undefined);
+    fileBrowser.pendingRoot = null;
   }
   // Only one slide-over at a time on mobile
   if (isMobile() && !isCollapsed) {
@@ -260,6 +257,12 @@ fileSidebarClose.addEventListener('click', () => {
 fileSidebarUp.addEventListener('click', () => {
   const parent = fileBrowser.getParentPath();
   if (parent) fileBrowser.load(parent);
+});
+
+// Start a brand-new session rooted at the directory the explorer is showing.
+document.getElementById('file-sidebar-new')?.addEventListener('click', () => {
+  const cwd = fileBrowser.currentPath;
+  if (cwd) sessionActions.newSessionInCwd(cwd);
 });
 
 fetch('/api/health').then(r => r.json()).then(data => {
@@ -281,7 +284,42 @@ document.getElementById('file-sidebar-finder').addEventListener('click', () => {
 // Restore file sidebar state (desktop only — mobile starts as a slide-over)
 if (!isMobile() && localStorage.getItem('tau-file-sidebar') === 'open') {
   fileSidebar.classList.remove('collapsed');
-  fileBrowser.load();
+  fileBrowser.load(resolveViewCwd(sidebar.activeSessionFile || mirrorActiveSessionFile) || undefined);
+}
+
+// File browser follows the viewed session: opening another session (history,
+// preview, or driving a live TUI) must show THAT session's directory, not
+// the web server's own cwd.
+function resolveViewCwd(sessionFile, session = null, project = null) {
+  const inst = (liveInstances || []).find((i) => sessionFile && i.sessionFile && sessionKeyOf(i.sessionFile) === sessionKeyOf(sessionFile));
+  if (inst?.cwd) return inst.cwd;
+  if (session?.cwd) return session.cwd;
+  if (project?.path) return project.path;
+  if (sessionFile) {
+    const found = findSidebarSession(sessionFile);
+    if (found?.session?.cwd) return found.session.cwd;
+    if (found?.project?.path) return found.project.path;
+  }
+  return null;
+}
+function refreshFileBrowser(sessionFile, session = null, project = null, entries = null) {
+  let cwd = resolveViewCwd(sessionFile, session, project);
+  if (!cwd && entries) {
+    try {
+      const hdr = entries.find((e) => e && e.type === 'session');
+      if (hdr?.cwd) cwd = hdr.cwd;
+    } catch {}
+  }
+  if (!cwd) return;
+  fileBrowser.pendingRoot = cwd;
+  fileBrowser.sessionKey = sessionKeyOf(sessionFile);
+  if (fileBrowser.currentPath === cwd) return;
+  if (fileSidebar.classList.contains('collapsed')) {
+    // Closed: drop the stale path so the next open loads the new root.
+    fileBrowser.currentPath = null;
+  } else {
+    fileBrowser.load(cwd);
+  }
 }
 
 
@@ -432,11 +470,16 @@ wsClient.addEventListener('rpcResponse', (e) => {
 });
 wsClient.addEventListener('uplinkAttached', (e) => {
   uplinkActive = { port: e.detail.port, pid: e.detail.pid };
+  // Authoritative target from the server (banner retry / reconnect paths
+  // carry no file — without this the file browser keeps a stale directory).
+  if (e.detail.sessionFile) uplinkTargetSessionFile = e.detail.sessionFile;
   uplinkPreview = null;
   uplinkLastDetached = null;
   uplinkAttachPending = false;
   uplinkAttachError = null;
   viewingActiveSession = true; // the uplinked TUI's session is now the live view
+  refreshFileBrowser(uplinkTargetSessionFile);
+  pollInstances().then(() => refreshFileBrowser(uplinkTargetSessionFile)).catch(() => {});
   pollAttachedState();
   updateSessionHash(uplinkTargetSessionFile, true);
   updateMirrorInputState();
@@ -446,6 +489,10 @@ wsClient.addEventListener('uplinkAttached', (e) => {
   messageRenderer.renderSystemMessage(`Attached to live session on :${e.detail.port} — prompts now drive the TUI.`);
 });
 wsClient.addEventListener('uplinkDetached', () => {
+  // Echo of our own uplink_detach — teardown already happened synchronously
+  // at the send site. Re-applying it here would clobber whatever view was
+  // opened since (e.g. backToLive's fresh live session).
+  if (!uplinkActive && !uplinkPreview && !uplinkAttachPending) return;
   const prev = uplinkActive;
   uplinkActive = null;
   uplinkPreview = null;
@@ -1089,7 +1136,8 @@ function renderAttachmentPreviews() {
         thumb.remove();
         const icon = document.createElement('span');
         icon.className = 'file-chip-icon';
-        icon.textContent = getFileChipIcon(fp.name);
+        // innerHTML: getFileChipIcon returns SVG markup, not text.
+        icon.innerHTML = getFileChipIcon(fp.name);
         const label = document.createElement('span');
         label.className = 'file-chip-name';
         label.textContent = fp.name;
@@ -1187,17 +1235,23 @@ function renderQueuedMessages() {
   messageQueue.forEach((cmd, i) => {
     const el = document.createElement('div');
     el.className = 'queued-msg';
+    // Already forwarded as a steer: pi will run it after the current turn,
+    // so there is nothing left to cancel — say so instead of offering a
+    // cancel button that only hides the bubble.
+    const sent = !!cmd.sent;
     el.innerHTML = `
-      <span class="queued-msg-label">Queued</span>
+      <span class="queued-msg-label">${sent ? 'Sent · runs next' : 'Queued'}</span>
       <span class="queued-msg-text">${escapeHtml(cmd.message)}</span>
-      <button class="queued-msg-cancel" title="Cancel" aria-label="Cancel">${icon('x', 12)}</button>
+      ${sent ? '' : `<button class="queued-msg-cancel" title="Cancel" aria-label="Cancel">${icon('x', 12)}</button>`}
     `;
-    el.querySelector('.queued-msg-cancel').addEventListener('click', () => {
-      const [removed] = messageQueue.splice(i, 1);
-      const ei = pendingEchoes.findIndex((x) => x.text === removed?.message);
-      if (ei !== -1) pendingEchoes.splice(ei, 1);
-      renderQueuedMessages();
-    });
+    if (!sent) {
+      el.querySelector('.queued-msg-cancel').addEventListener('click', () => {
+        const [removed] = messageQueue.splice(i, 1);
+        const ei = pendingEchoes.findIndex((x) => x.text === removed?.message);
+        if (ei !== -1) pendingEchoes.splice(ei, 1);
+        renderQueuedMessages();
+      });
+    }
     queuedMessagesEl.appendChild(el);
   });
 }
@@ -1205,7 +1259,9 @@ function renderQueuedMessages() {
 function escapeHtml(text) {
   const div = document.createElement('div');
   div.textContent = text;
-  return div.innerHTML;
+  // innerHTML escapes &<>, but NOT quotes — attribute contexts
+  // (title="…", data-file="…") need &quot; too.
+  return div.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
 function flushQueue() {
@@ -1785,20 +1841,33 @@ document.getElementById('sidebar-close-btn')?.addEventListener('click', () => {
 
 const newSessionBtn = document.getElementById('new-session-btn');
 newSessionBtn.addEventListener('click', () => {
-  updateSessionHash(null);
-  speech.stop();
-  pendingAutoRead = null;
-  resetTokenTracking();
-  updateCostDisplay();
-  updateTokenUsage();
-  state.reset();
-  messageRenderer.clear();
-  toolCardRenderer.clear();
-  messageRenderer.renderWelcome();
-  sidebar.clearActive();
-  viewingActiveSession = true;
-  updateMirrorInputState();
+  promptNewSession();
 });
+
+// ─── Persistent session actions (hub mode) ───
+// Browser close only detaches; pi keeps running until explicit Kill.
+// Module kept tiny and separate (session-actions.js) so lifecycle reads
+// in one place instead of scattered across app.js.
+const sessionActions = createSessionActions({
+  sendRpc,
+  dialogConfirm: (opts) => dialogHandler.confirmLocal(opts),
+  getCwd: () => headlessBinding?.cwd || fileBrowser.currentPath || null,
+  onFresh: (data) => applyFreshSession(data),
+  onClosed: () => { newSession(); },
+});
+// Header Kill button (injected next to New; single shell, no second page).
+(function initKillButton() {
+  const header = newSessionBtn?.parentElement;
+  if (!header || document.getElementById('kill-session-btn')) return;
+  const btn = document.createElement('button');
+  btn.className = 'icon-btn';
+  btn.id = 'kill-session-btn';
+  btn.title = 'Kill running session (pi keeps working until you do)';
+  btn.setAttribute('aria-label', 'Kill running session');
+  btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>';
+  btn.addEventListener('click', () => sessionActions.closeCurrentSession());
+  header.insertBefore(btn, newSessionBtn.nextSibling);
+})();
 
 refreshSessionsBtn.addEventListener('click', () => {
   if (isMobile()) {
@@ -1857,14 +1926,57 @@ sessionSearchInput.addEventListener('input', () => {
 });
 
 async function newSession() {
+  // A scratch view gets a fresh headless backend so prompts never leak
+  // into the previously bound session's backend.
+  bindHeadless(null, null);
+  await resetToScratchView();
+}
+
+// Shared UI reset for "empty scratch session" — no binding changes here.
+async function resetToScratchView() {
   updateSessionHash(null); // a fresh scratch session has no URL identity
   resetTokenTracking();
   updateCostDisplay();
   updateTokenUsage();
+  try { speech.stop(); } catch {}
+  pendingAutoRead = null;
   await switchSession(null);
   sidebar.clearActive();
   closeSidebarOnMobile();
   if (!isMobile()) messageInput.focus();
+}
+
+// Adopt the backend the server already created for a `new_session` ack.
+// Rebinding here (calling bindHeadless) would spawn a second child and orphan
+// the one we just asked for.
+async function applyFreshSession(data) {
+  const cwd = data?.data?.cwd || null;
+  headlessSessionKey = data?.data?.sessionKey || 'bound';
+  headlessBinding = { cwd, sessionFile: null };
+  persistBinding();
+  await resetToScratchView();
+  if (cwd) {
+    fileBrowser.pendingRoot = cwd;
+    if (!fileSidebar.classList.contains('collapsed')) fileBrowser.load(cwd);
+  }
+}
+
+// New-session modal: directory (prefilled) + optional starter prompt. Resume
+// lives in the sidebar; this path always starts fresh.
+async function promptNewSession() {
+  const cwd = fileBrowser.currentPath || headlessBinding?.cwd || '';
+  const result = await dialogHandler.promptLocal({
+    title: 'New session',
+    fields: [
+      { name: 'cwd', label: 'Directory', value: cwd, placeholder: '~/project' },
+      { name: 'prompt', label: 'Starter prompt (optional)', placeholder: 'What should the agent do?', multiline: true },
+    ],
+    okLabel: 'Start',
+  });
+  if (!result) return;
+  await sessionActions.newSessionInCwd(result.cwd?.trim() || null);
+  const starter = result.prompt?.trim();
+  if (starter) sendMessage(starter);
 }
 
 async function handleSessionSelect(session, project) {
@@ -1935,8 +2047,16 @@ async function switchSession(sessionFile, session = null, project = null, opts =
           renderSessionHistory(data.entries || []);
           // Bind the headless backend to this file so prompts have a runner
           // even when no live TUI owns the session. Previews stay read-only
-          // and don't move the headless backend.
-          if (!opts.preview) bindHeadless(project?.path || null, file);
+          // and don't move the headless backend. Files owned by a live TUI
+          // are never bound (ADR-003): a second process must not attach to
+          // a live session's file — attach & drive instead.
+          if (!opts.preview) {
+            const ownedByTui = (liveInstances || []).some((li) => !li.local && li.sessionFile && sessionFile && li.sessionFile === sessionFile);
+            if (!ownedByTui) bindHeadless(project?.path || null, file);
+          }
+          // File browser follows the viewed session (history entries carry
+          // the authoritative cwd when the sidebar object lacks it).
+          refreshFileBrowser(sessionFile, session, project, data.entries || []);
         } catch (e) {
           console.error('[App] History fetch error:', e);
         }
@@ -2002,9 +2122,21 @@ function handleMirrorSync(data, fromUplink = false) {
     serverOwnSessionFile = data.sessionFile || serverOwnSessionFile;
     return;
   }
+  // The driven TUI rotated sessions (e.g. /new in the TUI): follow it so
+  // the banner, URL pin and file browser track the session actually driven.
+  if (fromUplink && data.sessionFile && uplinkTargetSessionFile && data.sessionFile !== uplinkTargetSessionFile) {
+    uplinkTargetSessionFile = data.sessionFile;
+    updateSessionHash(uplinkTargetSessionFile, true);
+    if (findSidebarSession(uplinkTargetSessionFile)) sidebar.setActive(uplinkTargetSessionFile);
+    renderSessionBanner();
+    syncUplinkControls();
+  }
   bindingEpoch++; // fresh binding; drop anything in flight from before
   cancelStreamSettle();
-  state.setStreaming(false);
+  // A sync replaces the whole view: drop stale tool state too, or tool
+  // updates land on orphaned (DOM-detached) cards and vanish silently.
+  state.reset();
+  toolCardRenderer.clear();
   showTypingIndicator(false);
   updateUI();
   activeStreamEpoch = -1;
@@ -2013,6 +2145,11 @@ function handleMirrorSync(data, fromUplink = false) {
   // Track the active session
   mirrorActiveSessionFile = data.sessionFile || null;
   viewingActiveSession = true;
+  // File browser follows the live session, but a background sync must not
+  // yank a browser the user deliberately drilled into a subdirectory.
+  if (!fileBrowser.currentPath || fileBrowser.sessionKey !== sessionKeyOf(data.sessionFile)) {
+    refreshFileBrowser(data.sessionFile, null, null, data.entries || []);
+  }
   updateMirrorInputState();
   updateMirrorLiveIndicator();
 
@@ -2416,6 +2553,12 @@ function renderSessionBanner() {
 // detach (or after wandering into history). Clears any frozen-detached or
 // preview state, then opens the server-owned session file read-write.
 async function backToLive(sessionFile) {
+  // Leaving a driven TUI for the server session ends the drive: prompts
+  // must not keep flowing to a TUI the view no longer shows.
+  if (uplinkActive) {
+    wsClient.send({ type: 'uplink_detach' });
+    uplinkActive = null;
+  }
   uplinkPreview = null;
   uplinkLastDetached = null;
   uplinkAttachError = null;
@@ -2427,7 +2570,21 @@ async function backToLive(sessionFile) {
   if (found) {
     sidebar.setActive(target);
     updateSessionHash(target, false);
+    const wasMirror = isMirrorMode;
     await switchSession(target, found.session, found.project);
+    // Fresh page (no sync seen yet): switchSession takes the legacy branch
+    // and never asks for live state — request it so the live tail loads.
+    if (!wasMirror) wsClient.send({ type: 'mirror_sync_request' });
+  } else if (target) {
+    // The server's session is listed nowhere (quiet sessions are filtered
+    // from the sidebar): drive the live view anyway. The sync carries the
+    // transcript; the instance record carries the directory.
+    sidebar.clearActive();
+    updateSessionHash(target, false);
+    messageRenderer.clear();
+    messageRenderer.renderSystemMessage('Loading live session...');
+    wsClient.send({ type: 'mirror_sync_request' });
+    refreshFileBrowser(target);
   } else {
     updateSessionHash(null);
     sidebar.clearActive();
@@ -2479,6 +2636,10 @@ async function previewAttach(port, pid, sessionFile, lastActive, opts = {}) {
   if (session && project && sidebar.activeSessionFile !== sessionFile) {
     sidebar.setActive(sessionFile);
     await switchSession(sessionFile, session, project, { preview: true });
+  } else if (session && project) {
+    // Already viewing it: still root the file browser (it may hold the
+    // server default or another session's directory).
+    refreshFileBrowser(sessionFile, session, project);
   } else if (!session || !project) {
     messageRenderer.renderSystemMessage('History unavailable for this session — you can still attach.');
   }
@@ -2677,6 +2838,10 @@ async function pollInstances() {
 // Poll every 5 seconds
 setInterval(pollInstances, 5000);
 pollInstances();
+
+// Hub pushes this when a TUI mirror connects/disconnects — refresh the LIVE
+// list immediately instead of waiting for the next 5s poll.
+wsClient.addEventListener('mirrorsChanged', () => { pollInstances(); });
 
 // Enable/disable input based on whether we're viewing the live session
 function updateMirrorInputState() {
@@ -3109,8 +3274,11 @@ function updateUI() {
     statusText.textContent = isStreaming ? 'Working...' : idleStatusText();
   }
 
-  messageInput.disabled = false;
   sendBtn.disabled = false;
+  // Preview / detached-frozen views are read-only, and updateUI runs on
+  // every stream transition — re-derive the input state instead of forcing
+  // it enabled (which briefly unlocked the input over read-only views).
+  updateMirrorInputState();
 
   if (isStreaming) {
     abortBtn.classList.remove('hidden');
@@ -3143,7 +3311,6 @@ const settingsClose = document.getElementById('settings-close');
 const themeGrid = document.getElementById('theme-grid');
 
 
-const toggleAutoCompact = document.getElementById('toggle-auto-compact');
 const toggleShowThinking = document.getElementById('toggle-show-thinking');
 
 // Settings tabs: one pane visible at a time so the panel stays short.
@@ -3215,23 +3382,6 @@ function formatUptime(ms) {
   if (h < 48) return `${h}h ${m % 60}m`;
   return `${Math.floor(h / 24)}d ${h % 24}h`;
 }
-
-  // Fetch current state for toggles
-  try {
-    const resp = await fetch('/api/rpc', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ type: 'get_state' }),
-    });
-    const data = await resp.json();
-    if (data.success && data.data) {
-      const s = data.data;
-      // Auto-compaction toggle
-      toggleAutoCompact.className = `settings-toggle${s.autoCompactionEnabled ? ' on' : ''}`;
-    }
-  } catch (e) {
-    // Silent
-  }
 }
 
 function closeSettings() {
@@ -3242,13 +3392,6 @@ function closeSettings() {
 settingsBtn.addEventListener('click', openSettings);
 settingsClose.addEventListener('click', closeSettings);
 settingsOverlay.addEventListener('click', closeSettings);
-
-// Auto-compaction toggle
-toggleAutoCompact.addEventListener('click', async () => {
-  const isOn = toggleAutoCompact.classList.contains('on');
-  toggleAutoCompact.className = `settings-toggle${isOn ? '' : ' on'}`;
-  await rpcCommand({ type: 'set_auto_compaction', enabled: !isOn });
-});
 
 // ─── Voice settings (text-to-speech) ───
 const toggleAutoRead = document.getElementById('toggle-auto-read');
@@ -3318,14 +3461,51 @@ toggleShowThinking.addEventListener('click', () => {
   localStorage.setItem('tau-show-thinking', !isOn);
 });
 
-// Log out this browser: clear the cookie session + cached creds, then prompt.
+// Log out this browser: clear the cookie session, then prompt.
 document.getElementById('btn-logout')?.addEventListener('click', async () => {
   try { await tauRawFetch('/api/logout', { method: 'POST' }); } catch {}
-  tauSetCreds(null);
   try { wsClient.disconnect(); } catch {}
   closeSettings();
   tauShowLogin('You have been logged out.');
 });
+// Press-and-hold to reveal the password (typo check), auto-hides on release.
+// Keyboard users get Enter/Space toggling; blur always re-hides.
+(() => {
+  const input = document.getElementById('login-pass');
+  const btn = document.getElementById('login-reveal');
+  if (!input || !btn) return;
+  const eye = btn.querySelector('.login-reveal-eye');
+  const eyeOff = btn.querySelector('.login-reveal-eye-off');
+  const setRevealed = (on) => {
+    input.type = on ? 'text' : 'password';
+    btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+    btn.setAttribute('aria-label', on ? 'Hide password' : 'Show password');
+    eye?.classList.toggle('hidden', on);
+    eyeOff?.classList.toggle('hidden', !on);
+  };
+  btn.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    setRevealed(true);
+    // Release anywhere (mouse or touch) hides it — no need to stay on the icon.
+    const done = () => {
+      setRevealed(false);
+      window.removeEventListener('pointerup', done);
+      window.removeEventListener('pointercancel', done);
+    };
+    window.addEventListener('pointerup', done);
+    window.addEventListener('pointercancel', done);
+  });
+  btn.addEventListener('blur', () => setRevealed(false));
+  btn.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      setRevealed(btn.getAttribute('aria-pressed') !== 'true');
+    }
+  });
+  document.getElementById('login-form')?.addEventListener('reset', () => setRevealed(false));
+  // Starting a fresh login always hides it again.
+  window.tauResetPasswordReveal = () => setRevealed(false);
+})();
 // Login form: verify via /api/login (cookie session), never the native prompt.
 document.getElementById('login-form')?.addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -3337,14 +3517,14 @@ document.getElementById('login-form')?.addEventListener('submit', async (e) => {
   if (!user || !pass) return;
   btn.disabled = true;
   try {
-    const basic = btoa(`${user}:${pass}`);
     const res = await tauRawFetch('/api/login', {
       method: 'POST',
-      headers: { Authorization: `Basic ${basic}` },
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user, pass }),
     });
     if (res.ok) {
-      tauSetCreds(basic);
       document.getElementById('login-pass').value = '';
+      try { window.tauResetPasswordReveal?.(); } catch {}
       await tauRefreshAfterLogin();
     } else {
       errEl?.classList.remove('hidden');
@@ -3668,11 +3848,11 @@ sidebar.loadSessions().then(() => {
 });
 initLauncher();
 
-// Service workers and HTTP Basic Auth don't mix: an installed worker can
-// serve the cached app shell without hitting the network, so the browser
-// never sees the 401 + WWW-Authenticate challenge that triggers its native
-// login dialog — APIs just fail. When auth is on, remove any stuck worker
-// and stay unregistered so logins prompt natively again.
+// Service workers and cookie auth don't mix: an installed worker can
+// serve the cached app shell without hitting the network, so the app
+// never learns the cookie session died — APIs just 401. When auth is on,
+// remove any stuck worker and stay unregistered so the inline login
+// overlay appears over a live shell instead.
 async function initServiceWorker() {
   if (!('serviceWorker' in navigator)) return;
   try {

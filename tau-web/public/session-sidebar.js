@@ -5,9 +5,12 @@
 import { icon } from './icons.js';
 
 export class SessionSidebar {
-  constructor(container, onSessionSelect) {
+  constructor(container, onSessionSelect, confirmFn = null) {
     this.container = container;
     this.onSessionSelect = onSessionSelect;
+    // Optional async (opts) => boolean confirm hook (themed modal). Falls
+    // back to native confirm() when the host app passes none.
+    this.confirmFn = confirmFn;
     this.activeSessionFile = null;
     this.projects = [];
     this.collapsedProjects = new Set();
@@ -225,8 +228,8 @@ export class SessionSidebar {
 
     const items = [
       { icon: isFav ? icon('star', 13) : icon('starOutline', 13), label: isFav ? 'Unfavourite' : 'Favourite', action: () => this.toggleFavourite(session.filePath) },
-      { icon: icon('pencil', 13), label: 'Rename', action: () => this.startRename(itemEl) },
-      { icon: icon('export', 13), label: 'Export HTML', action: () => this.exportSession(session) },
+      { icon: icon('pencil', 13), label: 'Rename', action: () => this.startRename(session, project, itemEl) },
+      { icon: icon('export', 13), label: 'Export HTML', action: () => this.exportSession(session, project) },
       { icon: icon('trash', 13), label: 'Delete', action: () => this.deleteSession(session, itemEl) },
     ];
 
@@ -262,7 +265,7 @@ export class SessionSidebar {
     }
   }
 
-  startRename(itemEl) {
+  startRename(session, project, itemEl) {
     const titleEl = itemEl.querySelector('.session-title');
     if (!titleEl) return;
     const currentName = titleEl.textContent;
@@ -277,12 +280,20 @@ export class SessionSidebar {
     const commit = async () => {
       const newName = input.value.trim();
       if (newName && newName !== currentName) {
+        // Rename the session FILE (server appends session_info), not the
+        // live TUI session — the old code called set_session_name, which
+        // renamed whatever session the server was running instead.
         try {
-          await fetch('/api/rpc', {
+          const res = await fetch('/api/sessions/rename', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ type: 'set_session_name', name: newName }),
+            body: JSON.stringify({ dirName: project?.dirName, file: session?.file, name: newName }),
           });
+          const data = await res.json().catch(() => null);
+          if (!res.ok) {
+            console.error('[Sidebar] Rename failed:', data?.error || res.status);
+          }
+          await this.loadSessions();
         } catch { /* silent */ }
       }
       const newTitle = document.createElement('div');
@@ -300,7 +311,11 @@ export class SessionSidebar {
   }
 
   async deleteSession(session, itemEl) {
-    if (!confirm(`Delete "${session.name || session.firstMessage || 'this session'}"?`)) return;
+    const title = session.name || session.firstMessage || 'this session';
+    const ok = this.confirmFn
+      ? await this.confirmFn({ title: 'Delete session', message: `Delete "${title}"?`, okLabel: 'Delete' })
+      : confirm(`Delete "${title}"?`);
+    if (!ok) return;
     try {
       const res = await fetch('/api/sessions/delete', {
         method: 'POST',
@@ -326,15 +341,21 @@ export class SessionSidebar {
     }
   }
 
-  async exportSession(session) {
+  async exportSession(session, project) {
     try {
-      const data = await (await fetch('/api/rpc', {
+      const res = await fetch('/api/sessions/export', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type: 'export_html' }),
-      })).json();
-      if (data?.success && data.data?.path) {
-        window.open(`/api/sessions/${encodeURIComponent(data.data.path)}`);
+        body: JSON.stringify({ dirName: project?.dirName, file: session?.file }),
+      });
+      const data = await res.json().catch(() => null);
+      if (res.ok && data?.success && data?.path) {
+        // The server exports the SELECTED history file via `pi --export`
+        // (the old code exported the server's own live session instead)
+        // and we download exactly what it produced.
+        window.open(`/api/file/download?path=${encodeURIComponent(data.path)}`, '_blank');
+      } else {
+        console.error('[Sidebar] Export failed:', data?.error || res.status);
       }
     } catch { /* silent */ }
   }
@@ -475,6 +496,7 @@ export class SessionSidebar {
   escapeHtml(text) {
     const div = document.createElement('div');
     div.textContent = text;
-    return div.innerHTML;
+    // innerHTML escapes &<>, but NOT quotes — attribute contexts need them too.
+    return div.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   }
 }

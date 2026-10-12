@@ -13,13 +13,14 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/deflating/tau.git"
+    "url": "https://github.com/ayayushsharma/pi-extensions.git",
+    "directory": "tau-web"
   },
   "pi": {
     "extensions": [
       "./extensions/mirror-server.ts"
     ],
-    "image": "https://raw.githubusercontent.com/deflating/tau/main/docs/images/dark.png"
+    "image": "https://raw.githubusercontent.com/ayayushsharma/pi-extensions/main/tau-web/docs/images/dark.png"
   },
   "dependencies": {
     "ws": "^8.16.0",

@@ -37,7 +37,7 @@ uplink proxy, serving one vanilla-JS UI.
                     │   (one tab /  │  phone + laptop stay independent
                     │    window)    │
                     └───────┬───────┘
-                            │ WS /ws  (Basic auth)
+                            │ WS /ws  (cookie; uplink dials use Basic)
               ┌─────────────▼─────────────┐
               │  mirror-server connection  │
               │  handlers                  │
@@ -97,7 +97,7 @@ uplink proxy, serving one vanilla-JS UI.
 
 Session switching bumps `bindingEpoch`; stream handlers capture the epoch at
 `message_start`/`agent_start` and drop anything stale. History renders the
-last 60 entries; the full log stays on disk.
+last 100 entries with a Load-earlier control; the full log stays on disk.
 
 ## Dialogs (ADR-007, no fallbacks, no two-drivers)
 
@@ -128,9 +128,11 @@ last 60 entries; the full log stays on disk.
 ## Security gates
 
 ```text
-  internet ─▶ cloudflared ─▶ 127.0.0.1:PORT ─▶ Basic auth (TAU_USER/TAU_PASS) ─▶ app
+  internet ─▶ cloudflared ─▶ 127.0.0.1:PORT ─▶ cookie-session auth (login form) ─▶ app
                                         ▲
-                                        │ never 0.0.0.0 without auth
+                                        │ never 0.0.0.0 without auth (browsers use the
+                                        │ HttpOnly tau_auth cookie; the WS handshake
+                                        │ cannot carry headers)
   uplink attach ─▶ instance registry ─▶ /api/health fingerprint (mode=mirror)
                 ─▶ /proc/<pid>/cmdline is pi ─▶ loopback-only ─▶ Basic re-auth
   headless files ─▶ resolved under ~/.pi/agent/sessions/, traversal rejected

@@ -9,7 +9,38 @@ export class DialogHandler {
     this.container = container;
     this.wsClient = wsClient;
     this.currentDialog = null;
+    this.currentRequestId = null;
+    this.currentRequest = null;
     this.timeoutId = null;
+    // Set by app.js: asked when the user hits "Abort run" on an agent
+    // dialog. Routes like any other control command (uplink → mirror →
+    // headless), which dialogs.js itself cannot decide.
+    this.onAbortRequest = null;
+  }
+
+  // Every agent dialog carries an Abort-run escape hatch (ADR-007): answer
+  // Cancel first so the parked waiter is released, then abort the run that
+  // asked — routed to the dialog's owner (uplink TUI / headless child /
+  // mirror session), never just the currently viewed backend.
+  abortActions() {
+    return `<button id="dialog-abort" class="dialog-abort">Abort run</button>`;
+  }
+  wireAbort(dialog, id) {
+    dialog.querySelector('#dialog-abort')?.addEventListener('click', () => {
+      const req = this.currentRequestId === id ? this.currentRequest : null;
+      this.respond(id, { cancelled: true });
+      try {
+        if (req?.uplink) {
+          this.wsClient.send({ type: 'uplink_command', command: { type: 'abort' } });
+        } else if (req?.headless) {
+          this.wsClient.send({ type: 'rpc_command', command: { type: 'abort' } });
+        } else if (typeof this.onAbortRequest === 'function') {
+          this.onAbortRequest();
+        } else {
+          this.wsClient.send({ type: 'abort' });
+        }
+      } catch {}
+    });
   }
 
   showSelect(request) {
@@ -24,6 +55,7 @@ export class DialogHandler {
       <div class="dialog-options" id="dialog-options"></div>
       <div class="dialog-actions">
         <button id="dialog-cancel">Cancel</button>
+        ${this.abortActions()}
       </div>
     `;
 
@@ -43,7 +75,7 @@ export class DialogHandler {
       this.respond(id, { cancelled: true });
     };
 
-    this.showDialog(dialog, timeout, id);
+    this.showDialog(dialog, timeout, id, request);
   }
 
   showConfirm(request) {
@@ -59,6 +91,7 @@ export class DialogHandler {
       <div class="dialog-actions">
         <button id="dialog-no">No</button>
         <button id="dialog-yes">Yes</button>
+        ${this.abortActions()}
       </div>
     `;
 
@@ -70,7 +103,7 @@ export class DialogHandler {
       this.respond(id, { confirmed: false });
     };
 
-    this.showDialog(dialog, timeout, id);
+    this.showDialog(dialog, timeout, id, request);
   }
 
   showInput(request) {
@@ -86,6 +119,7 @@ export class DialogHandler {
       <div class="dialog-actions">
         <button id="dialog-cancel">Cancel</button>
         <button id="dialog-submit">Submit</button>
+        ${this.abortActions()}
       </div>
     `;
 
@@ -105,7 +139,7 @@ export class DialogHandler {
       this.respond(id, { cancelled: true });
     };
 
-    this.showDialog(dialog, timeout, id);
+    this.showDialog(dialog, timeout, id, request);
     
     // Focus input after a short delay
     setTimeout(() => input.focus(), 100);
@@ -124,6 +158,7 @@ export class DialogHandler {
       <div class="dialog-actions">
         <button id="dialog-cancel">Cancel</button>
         <button id="dialog-save">Save</button>
+        ${this.abortActions()}
       </div>
     `;
 
@@ -138,7 +173,7 @@ export class DialogHandler {
       this.respond(id, { cancelled: true });
     };
 
-    this.showDialog(dialog, timeout, id);
+    this.showDialog(dialog, timeout, id, request);
     
     // Focus textarea after a short delay
     setTimeout(() => textarea.focus(), 100);
@@ -146,6 +181,7 @@ export class DialogHandler {
 
   showNotification(request) {
     const { message, notifyType } = request;
+    const sticky = notifyType && notifyType !== 'info';
     
     // Create a temporary notification element
     const notification = document.createElement('div');
@@ -159,14 +195,148 @@ export class DialogHandler {
       messagesContainer.appendChild(notification);
       messagesContainer.scrollTop = messagesContainer.scrollHeight;
       
-      // Remove after 5 seconds
-      setTimeout(() => {
-        notification.remove();
-      }, 5000);
+      // Info notices fade; warnings/errors persist (ADR-007: failures stay
+      // visible) and dismiss on tap.
+      if (!sticky) {
+        setTimeout(() => {
+          notification.remove();
+        }, 5000);
+      } else {
+        notification.style.cursor = 'pointer';
+        notification.title = 'Tap to dismiss';
+        notification.addEventListener('click', () => notification.remove());
+      }
     }
   }
 
-  showDialog(dialogElement, timeout, requestId) {
+  // Local (client-side) confirmation modal for UI-destructive actions
+  // (delete session, …). The agent-dialog methods above answer a parked
+  // server waiter; this one answers the caller — no WS traffic involved.
+  confirmLocal({ title, message, okLabel = 'Delete', cancelLabel = 'Cancel' } = {}) {
+    // A local confirm supersedes like any other dialog: an agent dialog on
+    // screen has a parked server waiter — answer it cancelled first, or the
+    // run hangs forever with an orphan spinner.
+    if (this.currentRequestId) {
+      try {
+        this.wsClient.send({ type: 'extension_ui_response', id: this.currentRequestId, cancelled: true, superseded: true });
+      } catch {}
+    }
+    this.clearCurrentDialog();
+    return new Promise((resolve) => {
+      const dialog = document.createElement('div');
+      dialog.className = 'dialog';
+      const titleEl = document.createElement('div');
+      titleEl.className = 'dialog-title';
+      titleEl.textContent = title || 'Confirm';
+      dialog.appendChild(titleEl);
+      if (message) {
+        const msgEl = document.createElement('div');
+        msgEl.className = 'dialog-message';
+        msgEl.textContent = message;
+        dialog.appendChild(msgEl);
+      }
+      const actions = document.createElement('div');
+      actions.className = 'dialog-actions';
+      const cancelBtn = document.createElement('button');
+      cancelBtn.textContent = cancelLabel;
+      const okBtn = document.createElement('button');
+      okBtn.textContent = okLabel;
+      okBtn.className = 'dialog-danger';
+      actions.appendChild(cancelBtn);
+      actions.appendChild(okBtn);
+      dialog.appendChild(actions);
+      const done = (value) => { this.clearCurrentDialog(); resolve(value); };
+      cancelBtn.addEventListener('click', () => done(false));
+      okBtn.addEventListener('click', () => done(true));
+      dialog.addEventListener('keydown', (e) => { if (e.key === 'Escape') done(false); });
+      this.currentDialog = dialog;
+      this.container.innerHTML = '';
+      this.container.appendChild(dialog);
+      this.container.classList.remove('hidden');
+      setTimeout(() => okBtn.focus(), 50);
+    });
+  }
+
+  // A lightweight in-browser prompt for tau-owned flows (New session). Unlike
+  // agent dialogs it never parks a server waiter, but it still supersedes any
+  // on-screen agent dialog for the same reason confirmLocal does.
+  promptLocal({ title, fields = [], okLabel = "Create", cancelLabel = "Cancel" } = {}) {
+    if (this.currentRequestId) {
+      try {
+        this.wsClient.send({ type: 'extension_ui_response', id: this.currentRequestId, cancelled: true, superseded: true });
+      } catch {}
+    }
+    this.clearCurrentDialog();
+    return new Promise((resolve) => {
+      const dialog = document.createElement('div');
+      dialog.className = 'dialog';
+      const titleEl = document.createElement('div');
+      titleEl.className = 'dialog-title';
+      titleEl.textContent = title || 'New session';
+      dialog.appendChild(titleEl);
+
+      const inputs = {};
+      for (const f of fields) {
+        const row = document.createElement('label');
+        row.className = 'dialog-field';
+        const label = document.createElement('span');
+        label.textContent = f.label || f.name;
+        row.appendChild(label);
+        const input = document.createElement(f.multiline ? 'textarea' : 'input');
+        input.className = 'dialog-input';
+        input.value = f.value || '';
+        if (f.placeholder) input.placeholder = f.placeholder;
+        if (f.multiline) input.rows = 3;
+        inputs[f.name] = input;
+        row.appendChild(input);
+        dialog.appendChild(row);
+      }
+
+      const actions = document.createElement('div');
+      actions.className = 'dialog-actions';
+      const cancelBtn = document.createElement('button');
+      cancelBtn.textContent = cancelLabel;
+      const okBtn = document.createElement('button');
+      okBtn.textContent = okLabel;
+      actions.appendChild(cancelBtn);
+      actions.appendChild(okBtn);
+      dialog.appendChild(actions);
+
+      const done = (value) => { this.clearCurrentDialog(); resolve(value); };
+      cancelBtn.addEventListener('click', () => done(null));
+      okBtn.addEventListener('click', () => {
+        const out = {};
+        for (const [k, el] of Object.entries(inputs)) out[k] = el.value;
+        done(out);
+      });
+      dialog.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') done(null);
+        else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) okBtn.click();
+      });
+
+      this.currentDialog = dialog;
+      this.container.innerHTML = '';
+      this.container.appendChild(dialog);
+      this.container.classList.remove('hidden');
+      const first = inputs[fields[0]?.name];
+      setTimeout(() => (first || okBtn).focus(), 50);
+    });
+  }
+
+  // ADR-007: dialogs queue one-at-a-time. A second request supersedes the
+  // first — but the first waiter's run is still parked on it, so answer
+  // `cancelled` for the displaced dialog instead of dropping it silently
+  // (a dropped dialog hangs the run forever with an orphan spinner).
+  showDialog(dialogElement, timeout, requestId, request = null) {
+    if (this.currentRequestId && this.currentRequestId !== requestId) {
+      try {
+        this.wsClient.send({ type: 'extension_ui_response', id: this.currentRequestId, cancelled: true, superseded: true });
+      } catch {}
+    }
+    this.clearCurrentDialog();
+    this.currentRequestId = requestId || null;
+    this.currentRequest = request;
+    this.wireAbort(dialogElement, this.currentRequestId);
     this.currentDialog = dialogElement;
     this.container.innerHTML = '';
     this.container.appendChild(dialogElement);
@@ -185,10 +355,11 @@ export class DialogHandler {
       clearTimeout(this.timeoutId);
       this.timeoutId = null;
     }
-    
     this.container.innerHTML = '';
     this.container.classList.add('hidden');
     this.currentDialog = null;
+    this.currentRequestId = null;
+    this.currentRequest = null;
   }
 
   respond(id, response) {
@@ -203,6 +374,7 @@ export class DialogHandler {
   escapeHtml(text) {
     const div = document.createElement('div');
     div.textContent = text;
-    return div.innerHTML;
+    // innerHTML escapes &<>, but NOT quotes — attribute contexts need them too.
+    return div.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   }
 }

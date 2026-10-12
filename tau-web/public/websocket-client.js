@@ -165,6 +165,10 @@ export class WebSocketClient extends EventTarget {
       case 'uplink_dead':
         this.dispatchEvent(new CustomEvent('uplinkDead', { detail: message }));
         break;
+      case 'mirrors_changed':
+        // Hub-only: a TUI mirror joined/left. Cheap to just re-poll the list.
+        this.dispatchEvent(new CustomEvent('mirrorsChanged', { detail: message }));
+        break;
       case 'session_ended':
         this.dispatchEvent(new CustomEvent('sessionEnded', { detail: message }));
         break;

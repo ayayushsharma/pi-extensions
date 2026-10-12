@@ -4,15 +4,18 @@
 const CACHE_NAME = 'tau-v4';
 
 // Served for navigations that hit an auth challenge: unregisters workers
-// and reloads without interception so the browser prompts for login.
+// and reloads without interception so the app shell can show the inline
+// login overlay (the server never sends WWW-Authenticate, so there is no
+// native browser prompt — APIs just 401, and the fetch wrapper raises the
+// overlay). Offline still falls back to cache.
 const TAU_AUTH_RECOVERY_PAGE = '<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width"><title>Tau \u2014 login required</title><style>body{display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;background:#131316;color:#fff;font-family:-apple-system,sans-serif}</style></head><body><p>Login required \u2014 refreshing\u2026</p><script>navigator.serviceWorker.getRegistrations().then(function(rs){return Promise.all(rs.map(function(r){return r.unregister();}));}).then(function(){location.reload();}).catch(function(){location.reload();});</script></body></html>';
 
 // Cache only the app shell on install
 self.addEventListener('install', (event) => {
   event.waitUntil(
     caches.open(CACHE_NAME).then((cache) => {
-      // Tolerate partial precache (e.g. HTTP Basic Auth challenges a
-      // subresource with 401) — a failed addAll must not kill install.
+      // Tolerate partial precache (e.g. a subresource 401s before login)
+      // — a failed addAll must not kill install.
       return cache.addAll([
         '/',
         '/style.css',
@@ -58,10 +61,10 @@ self.addEventListener('fetch', (event) => {
   }
 
   // Navigations need special care: only a real network navigation lets the
-  // browser show its native HTTP Basic Auth login dialog — a worker-served
-  // 401 never prompts, leaving the cached shell talking to failing APIs.
-  // On 401, serve a recovery page that drops stuck workers and reloads
-  // natively so the login prompt appears. Offline still falls back to cache.
+  // app shell observe the server's auth state — a worker-served page would
+  // leave the cached shell talking to failing APIs. On 401, serve a recovery
+  // page that drops stuck workers and reloads natively so the inline login
+  // overlay appears. Offline still falls back to cache.
   if (event.request.mode === 'navigate') {
     event.respondWith(
       fetch(event.request)

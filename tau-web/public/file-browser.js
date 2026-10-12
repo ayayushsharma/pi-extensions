@@ -8,6 +8,15 @@ export function getFileIcon(name, isDirectory) {
   return fileKindIcon(name || 'file', !!isDirectory);
 }
 
+function escHtml(s) {
+  return String(s ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 function formatSize(bytes) {
   if (bytes == null) return '';
   if (bytes < 1024) return `${bytes}B`;
@@ -22,6 +31,13 @@ export class FileBrowser {
     this.messageInput = messageInput;
     this.onFileInserted = onFileInserted;
     this.currentPath = null;
+    // Root directory the browser should show for the currently viewed
+    // session (set by the app on every view change); load() falls back to
+    // the server default when null.
+    this.pendingRoot = null;
+    // sessionKeyOf() the last file the browser was rooted for — lets the
+    // app skip reloads when a background sync re-announces the same file.
+    this.sessionKey = null;
 
     this.setupDropTarget();
   }
@@ -81,7 +97,7 @@ export class FileBrowser {
 
       el.innerHTML = `
         <span class="file-icon">${icon}</span>
-        <span class="file-name" title="${item.name}">${item.name}</span>
+        <span class="file-name" title="${escHtml(item.name)}">${escHtml(item.name)}</span>
         ${size ? `<span class="file-size">${size}</span>` : ''}
       `;
 

@@ -11,7 +11,7 @@ Everything customised for mobile (≤768px) compared to the desktop experience.
 - **Slide-over sidebar** — 80% width (max 320px) panel with dark overlay behind it, instead of persistent sidebar
 - **Swipe-from-edge gesture** — swipe right from the left 20px edge to open sidebar
 - **Sidebar tinted backgrounds** — per-theme tint (warm for Terracotta, green for Sage, cool for Clean, slightly lighter for dark themes)
-- **File browser as slide-over** — hidden panel and toggle both removed on mobile → now a right slide-over via the header 📁 column
+- **File browser as right slide-over** — shares the dim overlay with the left sidebar, one panel open at a time
 
 ## Header (taller 3-row grid)
 - **Info stack (column 1)** — model name / thinking level + session cost / token % + context size (`45% · 12.3k/200k`) in one column; empty rows collapse so the bar only grows as info arrives
@@ -19,7 +19,6 @@ Everything customised for mobile (≤768px) compared to the desktop experience.
 - **Slim nav column** — sidebar toggle over a dot-only connection indicator (text label hidden)
 - **Measured, never clipped** — header height is observed into `--header-height`; message list top padding follows it live
 - **Context popover goes full-width** — fixed below the header instead of overflowing the screen edge
-- **Files return on mobile** — right slide-over panel (mirrors the left sidebar), shares the dim overlay, one panel open at a time
 - **Desktop** — same flat flex row; session cost now sits with the thinking tag on the left instead of next to the token pill
 
 ## Session List

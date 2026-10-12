@@ -1,6 +1,8 @@
-# Tau Roadmap (historical)
+# Tau-web Roadmap (carried over from Tau)
 
-Tau is retired and no longer maintained. This roadmap is preserved as a historical record; unfinished items are not planned for implementation.
+Tau itself is retired and no longer maintained; this file came with the
+copy and describes the web UI as shipped unless marked otherwise.
+Unfinished ideas are not planned for implementation.
 
 Ideas and planned features. Nothing here is committed — just captured so it doesn't get lost.
 
@@ -45,7 +47,7 @@ Dusk (clean neutral dark, default), Dawn (warm blue dark), Midnight (OLED black)
 Both header and input area are `position: absolute` with `backdrop-filter: blur(40px) saturate(1.5)`. Messages scroll behind both for the frosted glass effect.
 
 ### Settings Panel
-Theme picker, auto-compaction toggle, thinking level, show/hide thinking blocks, push notification toggle.
+Theme picker, show/hide thinking blocks, voice settings, server info + log out. (There is no auto-compaction toggle: pi reads `compaction.enabled` from settings at load and the extension API cannot flip it at runtime.)
 
 ---
 
@@ -57,7 +59,7 @@ Theme picker, auto-compaction toggle, thinking level, show/hide thinking blocks,
 - Already have the tau icon in multiple sizes
 
 ### npm Publishing
-- `pi install npm:tau-mirror` for frictionless install
+- `pi install` the `tau-web` package for frictionless install
 - Needs npm account setup and packaging
 
 ---

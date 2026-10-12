@@ -13,6 +13,8 @@
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { WebSocketServer, WebSocket } from "ws";
 import { HeadlessRegistry } from "./headless-bridge.js";
+import { HubSocketServer, HubSocketClient, type MirrorRecord, type Frame } from "./lib/hub-socket.js";
+import { resolveRole, type TauRole } from "./lib/config.js";
 import * as http from "node:http";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -20,7 +22,7 @@ import * as os from "node:os";
 import QRCode from "qrcode";
 
 // Load tau settings from ~/.pi/agent/settings.json (falls back to env vars)
-function loadTauSettings(): { port: number; host: string; autoStart: boolean; user: string; pass: string; authEnabled?: boolean; projectsDir?: string } {
+function loadTauSettings(): { port: number; host: string; autoStart: boolean; user: string; pass: string; authEnabled?: boolean; projectsDir?: string; projects?: string[] } {
   let settings: any = {};
   try {
     const settingsPath = path.join(process.env.HOME || "~", ".pi/agent/settings.json");
@@ -40,7 +42,28 @@ function loadTauSettings(): { port: number; host: string; autoStart: boolean; us
     pass: process.env.TAU_PASS || settings.pass || "",
     authEnabled: settings.authEnabled,
     projectsDir: process.env.TAU_PROJECTS_DIR || settings.projectsDir,
+    projects: parseProjectsList(process.env.TAU_PROJECTS_JSON || process.env.TAU_PROJECTS || settings.projects),
   };
+}
+
+// `tau.projects` accepts an array, a JSON string, or a `:`/`,`-separated list.
+// These are explicit extra roots the hub may browse and start sessions in,
+// alongside `tau.projectsDir` and the user home.
+function parseProjectsList(raw: unknown): string[] | undefined {
+  if (!raw) return undefined;
+  try {
+    if (Array.isArray(raw)) return raw.filter((s) => typeof s === "string" && s.trim()).map((s) => String(s));
+    if (typeof raw === "string") {
+      const trimmed = raw.trim();
+      if (!trimmed) return undefined;
+      if (trimmed.startsWith("[")) {
+        const arr = JSON.parse(trimmed);
+        return Array.isArray(arr) ? arr.filter((s) => typeof s === "string" && s.trim()) : undefined;
+      }
+      return trimmed.split(/[:,]/).map((s) => s.trim()).filter(Boolean);
+    }
+  } catch { /* ignore malformed */ }
+  return undefined;
 }
 
 const TAU_SETTINGS = loadTauSettings();
@@ -53,9 +76,11 @@ const AUTH_CONFIGURED = !!(AUTH_USER && AUTH_PASS);
 let authEnabled = AUTH_CONFIGURED && TAU_SETTINGS.authEnabled !== false;
 // ─── tau-web inline login: cookie sessions ───
 // Browsers can't set headers on a WS handshake, so the login form mints an
-// HttpOnly cookie session after verifying Basic credentials. Tokens live in
+// HttpOnly cookie session after verifying JSON credentials. Tokens live in
 // memory only: a server restart invalidates them and the UI re-prompts.
 const authTokens = new Set<string>();
+// API access-log throttle (method+path -> last logged ms); diagnostics only.
+const apiAccessLog = new Map<string, number>();
 const AUTH_COOKIE = "tau_auth";
 let serverStartedAt = "";
 let tauWebVersion = "0.1.0";
@@ -237,7 +262,11 @@ function isZombieProcess(pid: number): boolean {
     const tty = execSync(`ps -o tty= -p ${pid}`, { encoding: "utf8" }).trim();
     return !tty || tty === "??" || tty === "-";
   } catch {
-    return true;
+    // Fail-safe: a process we cannot inspect must NOT be treated as a
+    // zombie — the caller SIGTERMs zombies, and killing a live TUI on a
+    // failed `ps` (missing toybox flags on Termux, permissions) would
+    // destroy the user's session.
+    return false;
   }
 }
 
@@ -265,26 +294,91 @@ function saveTauSetting(key: string, value: any) {
   } catch {}
 }
 
-function checkBasicCredentials(header: string | undefined): boolean {
-  if (!header?.startsWith("Basic ")) return false;
+function credentialsMatch(user: string, pass: string): boolean {
   try {
-    const decoded = Buffer.from(header.slice(6), "base64").toString();
-    const colon = decoded.indexOf(":");
-    if (colon === -1) return false;
-    return decoded.slice(0, colon) === AUTH_USER && decoded.slice(colon + 1) === AUTH_PASS;
+    const a = Buffer.from(`${user}:${pass}`);
+    const b = Buffer.from(`${AUTH_USER}:${AUTH_PASS}`);
+    if (a.length === 0 || a.length !== b.length) return false;
+    return require("node:crypto").timingSafeEqual(a, b);
   } catch { return false; }
 }
-function checkBasicAuth(req: http.IncomingMessage): boolean {
+// Browser auth is cookie-only: the login form POSTs JSON credentials once,
+// the server mints an HttpOnly cookie session, and every later fetch / WS
+// handshake carries the cookie. No WWW-Authenticate is ever sent, so the
+// browser's native login prompt can never appear. (Server-to-server uplink
+// dials still use the shared secret over Basic — cookie tokens live in this
+// process's memory and can't authenticate a different pi process.)
+function checkCookieAuth(req: http.IncomingMessage): boolean {
   if (!authEnabled) return true;
-  if (checkBasicCredentials(req.headers.authorization)) return true;
-  // Inline-login cookie session (minted by POST /api/login, memory-only).
   const token = parseAuthCookie(req);
   return !!token && authTokens.has(token);
+}
+// WS entry: browsers present the cookie session; server-to-server uplink
+// dials present the shared secret over Basic (cookie tokens live in the
+// dialing process's memory and can't authenticate a different pi process).
+// Shared-secret credentials from an Authorization: Basic header (server-
+// to-server uplink dials; the login endpoint's legacy fallback below).
+function parseBasicCredentials(header: string | undefined): { user: string; pass: string } | null {
+  try {
+    const m = (header || "").match(/^Basic\s+(.+)$/i);
+    if (!m) return null;
+    const decoded = Buffer.from(m[1], "base64").toString("utf8");
+    const idx = decoded.indexOf(":");
+    if (idx < 0) return null;
+    return { user: decoded.slice(0, idx), pass: decoded.slice(idx + 1) };
+  } catch { return null; }
+}
+function checkWsAuth(req: http.IncomingMessage): boolean {
+  if (!authEnabled) return true;
+  if (checkCookieAuth(req)) return true;
+  const creds = parseBasicCredentials(req.headers.authorization as string);
+  return !!creds && credentialsMatch(creds.user, creds.pass);
+}
+
+// ─── Anti-rebinding (ADR-010) ───
+// A page on an attacker origin can reach a loopback server after a DNS
+// rebind, and the browser will happily attach the tau_auth cookie to the WS
+// handshake. Cookie auth alone therefore does not stop it, so the WS upgrade
+// (and /api/*) also check the Host/Origin. Localhost, IP literals (LAN /
+// Tailscale 100.x) and *.ts.net are allowed; any other hostname must be
+// opted in via TAU_ALLOWED_HOSTS. TAU_ALLOW_ANY_HOST=1 disables the check.
+function hostnameOf(header: string | undefined): string {
+  if (!header) return "";
+  const h = header.trim().toLowerCase();
+  const m = h.match(/^\[([^\]]+)\](?::\d+)?$/) || h.match(/^([^:]+)(?::\d+)?$/);
+  return m ? m[1] : h;
+}
+function isAllowedHostName(hostname: string): boolean {
+  if (!hostname) return false;
+  if (hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1") return true;
+  // Bare IP literals: an attacker page cannot make the Host header an IP it
+  // does not control, and cookie auth still gates the socket.
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(hostname) || hostname.includes(":")) return true;
+  if (hostname.endsWith(".ts.net")) return true; // Tailscale Serve / MagicDNS
+  const extra = (process.env.TAU_ALLOWED_HOSTS || "")
+    .split(/[,\s]+/).map((s) => s.trim().toLowerCase()).filter(Boolean);
+  if (extra.includes(hostname)) return true;
+  const bind = hostnameOf(HOST);
+  return !!bind && bind === hostname;
+}
+function checkRequestOrigin(req: http.IncomingMessage): boolean {
+  if (process.env.TAU_ALLOW_ANY_HOST === "1") return true;
+  const host = req.headers["host"] as string | undefined;
+  if (!isAllowedHostName(hostnameOf(host))) return false;
+  const origin = req.headers["origin"] as string | undefined;
+  // Browsers always send Origin on WS + cross-origin fetches; a value that
+  // does not match the requested Host is the rebinding signature. Non-browser
+  // clients send none, and are not the threat model here.
+  if (origin) {
+    try {
+      if (hostnameOf(new URL(origin).host) !== hostnameOf(host)) return false;
+    } catch { return false; }
+  }
+  return true;
 }
 
 function sendAuthRequired(res: http.ServerResponse) {
   res.writeHead(401, {
-    "WWW-Authenticate": 'Basic realm="Tau"',
     "Content-Type": "application/json",
   });
   res.end(JSON.stringify({ error: "Unauthorized" }));
@@ -296,17 +390,20 @@ export default function (pi: ExtensionAPI) {
   // ─── tau-web unified: headless backends + uplink proxy + web dialogs ───
   const headless = new HeadlessRegistry({
     onEvent: (managed, event) => {
+      if (event && event.type === "extension_ui_request") {
+        // Dialogs travel the plain {type:"event"} path only. Sending the
+        // generic rpc_event copy as well made the browser render every
+        // headless dialog twice (the second render cancelled the first).
+        pendingDialogs.set(event.id, { kind: "headless", managed });
+        for (const client of managed.clients) {
+          // Tag the owner so the abort button can target this backend.
+          sendTo(client, { type: "event", event: { ...event, headless: true } });
+        }
+        return;
+      }
       // Forward headless events in pi-web envelope so one UI speaks both dialects.
       for (const client of managed.clients) {
         sendTo(client, { type: "rpc_event", event });
-      }
-      // extension_ui_request from `pi --mode rpc` children arrives here: surface it
-      // as a first-class dialog event too (failures never silent, ADR-007).
-      if (event && event.type === "extension_ui_request") {
-        pendingDialogs.set(event.id, { kind: "headless", managed });
-        for (const client of managed.clients) {
-          sendTo(client, { type: "event", event });
-        }
       }
     },
     onError: (managed, message) => {
@@ -322,10 +419,22 @@ export default function (pi: ExtensionAPI) {
     },
     log: tauLog,
   });
-  // uplink: browserWs -> { upstream: WebSocket, port, pid, failures, dead }
-  const uplinks = new Map<WebSocket, { upstream: WebSocket; port: number; pid: number; failures: number; dead: boolean }>();
   // pending dialogs: requestId -> { kind: 'mirror' } | { kind: 'headless', managed }
   const pendingDialogs = new Map<string, { kind: "mirror" } | { kind: "headless"; managed: any }>();
+
+  // ─── Hub role (ADR-010) ───
+  // The same package runs as control plane (hub: no TUI, owns sessions) or
+  // data plane (mirror: a TUI serving only its own session). The role decides
+  // which transport is active: hub listens on the private unix socket,
+  // mirror dials it. Direct browser access still works in both roles.
+  let role: TauRole = "mirror";
+  let boundPort = 0;
+  let hubSockets: HubSocketServer | null = null;
+  let hubForwarder: HubSocketClient | null = null;
+  // hub: browserWs -> mirror it is driving over the socket
+  const hubUplinkSubs = new Map<WebSocket, { mirrorId: string; pid: number; port: number }>();
+  // hub: dialog request id -> mirror id, so the response routes back
+  const hubDialogOwner = new Map<string, string>();
   // Wrap ctx.ui dialogs so the browser owns them when connected (full web dialogs, ADR-007).
   // No two-drivers: when browser clients exist, TUI shows a notice instead of a second prompt.
   const wrappedCtx = new WeakSet<object>();
@@ -340,16 +449,24 @@ export default function (pi: ExtensionAPI) {
       editor: ui.editor?.bind(ui),
     };
     const awaitBrowser = (method: string, payload: any): Promise<any> | null => {
-      if (clients.size === 0) return null;
+      // A dialog can be answered by a direct browser OR (mirror role) a
+      // browser attached through the hub. Neither present -> leave it to the
+      // TUI's native prompt.
+      const useLocal = clients.size > 0;
+      const useHub = role === "mirror" && !!hubForwarder?.connected;
+      if (!useLocal && !useHub) return null;
       const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
       const request = { type: "extension_ui_request", id, method, ...payload };
       pendingDialogs.set(id, { kind: "mirror" });
-      broadcast({ type: "event", event: request });
+      if (useLocal) broadcast({ type: "event", event: request });
+      if (useHub) hubForwarder!.push({ type: "dialog", request });
       try { ctx.ui.notify(`Dialog open in browser (${method}) — answer there.`, "info"); } catch {}
       return new Promise((resolve) => {
         const poll = () => {
-          // Browser vanished mid-dialog: release the TUI back to its native prompt.
-          if (clients.size === 0) { pendingDialogs.delete(id); resolve(undefined); return; }
+          // All answer channels gone mid-dialog: release the TUI to its native prompt.
+          const stillLocal = clients.size > 0;
+          const stillHub = role === "mirror" && !!hubForwarder?.connected;
+          if (!stillLocal && !stillHub) { pendingDialogs.delete(id); resolve(undefined); return; }
           const entry = (pendingDialogs as any).responses?.get?.(id);
           if (entry !== undefined) {
             (pendingDialogs as any).responses.delete(id);
@@ -424,8 +541,6 @@ export default function (pi: ExtensionAPI) {
   // ═══════════════════════════════════════
   function stopServer() {
     try { headless.shutdownAll(); } catch {}
-    for (const [bw, e] of uplinks) { try { (e as any).dead = true; e.upstream.close(); } catch {} }
-    uplinks.clear();
     if (heartbeatTimer) {
       clearInterval(heartbeatTimer);
       heartbeatTimer = null;
@@ -479,6 +594,18 @@ export default function (pi: ExtensionAPI) {
   // ═══════════════════════════════════════
   // /qr command — show QR code to connect
   // ═══════════════════════════════════════
+  // Open a URL with the platform opener. `exec("open ...")` was macOS-only
+  // and reported success before the command even ran.
+  function openUrlNative(url: string): Promise<void> {
+    const { execFile } = require("node:child_process");
+    const run = (cmd: string, args: string[]) => new Promise<void>((resolve, reject) => {
+      execFile(cmd, args, (err: any) => { if (err) reject(err); else resolve(); });
+    });
+    if (process.platform === "darwin") return run("open", [url]);
+    if (process.platform === "win32") return run("explorer", [url]);
+    return run("xdg-open", [url]).catch(() => run("termux-open", [url]));
+  }
+
   pi.registerCommand("tau", {
     description: "Open Tau web UI in browser",
     handler: async (_args, ctx) => {
@@ -486,9 +613,13 @@ export default function (pi: ExtensionAPI) {
         ctx.ui.notify("Mirror server not running yet", "warning");
         return;
       }
-      const { exec } = require("node:child_process");
-      exec(`open "${mirrorUrl}"`);
-      ctx.ui.notify(`Opened ${mirrorUrl}`, "info");
+      try {
+        await openUrlNative(mirrorUrl);
+        ctx.ui.notify(`Opened ${mirrorUrl}`, "info");
+      } catch {
+        // Headless hosts (Termux, SSH) have no opener — print the URL.
+        ctx.ui.notify(`Tau: ${mirrorUrl} (no browser opener on this host)`, "info");
+      }
     },
   });
 
@@ -500,10 +631,12 @@ export default function (pi: ExtensionAPI) {
         return;
       }
       const qrPageUrl = `${mirrorUrl}/api/qr`;
-      ctx.ui.notify(`Tau: ${mirrorUrl}  •  QR: ${qrPageUrl}`, "info");
-      // Open in default browser
-      const { exec } = require("node:child_process");
-      exec(`open "${qrPageUrl}"`);
+      try {
+        await openUrlNative(qrPageUrl);
+        ctx.ui.notify(`Tau: ${mirrorUrl}  •  QR: ${qrPageUrl}`, "info");
+      } catch {
+        ctx.ui.notify(`Tau: ${mirrorUrl}  •  QR: ${qrPageUrl} (no browser opener on this host)`, "info");
+      }
     },
   });
 
@@ -555,9 +688,21 @@ export default function (pi: ExtensionAPI) {
     pi.on(eventType as any, async (event: any, ctx: ExtensionContext) => {
       latestCtx = ctx;
 
-      // Forward event to all connected browser clients
-      // Wrap in { type: "event", event: ... } to match the existing frontend protocol
-      broadcast({ type: "event", event: normalizeForwardedEvent(eventType, event) });
+      // A hub owns no user-facing session of its own (its transcript comes
+      // from headless children), so never broadcast the hub process's events.
+      if (role !== "mirror") return;
+
+      const forwarded = normalizeForwardedEvent(eventType, event);
+      // Forward to all connected browser clients (direct access), wrapped in
+      // { type: "event", event } to match the frontend protocol.
+      broadcast({ type: "event", event: forwarded });
+      // …and to the hub over the socket, so browsers attached through the hub
+      // see the same live stream.
+      if (hubForwarder?.connected) hubForwarder.push({ type: "event", event: forwarded });
+      // Identity (model / streaming flag) changes matter to the hub's list.
+      if (eventType === "agent_start" || eventType === "agent_end" || eventType === "model_select") {
+        pushMirrorStatus();
+      }
     });
   }
 
@@ -691,11 +836,19 @@ export default function (pi: ExtensionAPI) {
   }
 
   // ═══════════════════════════════════════
-  // tau-web: session path resolution + uplink verification (L1, L6)
+  // tau-web: session path resolution (L6)
   // ═══════════════════════════════════════
   function cwdToSessionDir(cwd: string): string {
     const n = path.resolve(cwd).replace(/^[/\\]/, "").replace(/[/\\:]/g, "-");
     return `--${n}--`;
+  }
+  // Lossy display-only decode of a session dir name. The encoding maps
+  // every `/` to `-`, so literal dashes in project names (true-knowledge)
+  // cannot round-trip — NEVER use this where correctness matters (bind cwd,
+  // identity compares). Prefer the session header's `cwd` (parseSessionFile)
+  // or the live instance record; fall back to this for display only.
+  function lossyDecodeSessionDir(dirName: string): string {
+    return dirName.replace(/^--/, "/").replace(/--$/, "").replace(/-/g, "/");
   }
   function resolveHeadlessSessionPath(cwd: string, filename: string): string | null {
     if (!filename || filename.includes("/") || filename.includes("\\") || !filename.endsWith(".jsonl")) return null;
@@ -705,192 +858,274 @@ export default function (pi: ExtensionAPI) {
     if (!(abs === root || abs.startsWith(root + path.sep))) return null;
     return abs;
   }
-  function readTauCreds(): { user: string; pass: string } {
-    // Re-read per connect (L6); never log or forward.
-    try {
-      const p = path.join(USER_HOME, ".pi", "agent", "settings.json");
-      const s = JSON.parse(fs.readFileSync(p, "utf8")).tau || {};
-      return { user: process.env.TAU_USER || s.user || "", pass: process.env.TAU_PASS || s.pass || "" };
-    } catch { return { user: process.env.TAU_USER || "", pass: process.env.TAU_PASS || "" }; }
-  }
-  function verifyUplinkTarget(port: number, pid: number): { ok: boolean; error?: string } {
-    // L1: fingerprint + proc check + loopback-only.
-    if (!Number.isInteger(port) || port < 1 || port > 65535) return { ok: false, error: "bad port" };
-    // Never proxy our own process (self-loop) or its in-process ghost.
-    if (pid === process.pid) return { ok: false, error: "cannot attach to own server process" };
-    let info: any = null;
-    try {
-      const f = path.join(INSTANCES_DIR, `${pid}.json`);
-      info = JSON.parse(fs.readFileSync(f, "utf8"));
-    } catch { return { ok: false, error: "unknown instance" }; }
-    if (info.port !== port || info.pid !== pid) return { ok: false, error: "instance mismatch" };
-    try { process.kill(pid, 0); } catch { return { ok: false, error: "process gone" }; }
-    if (process.platform !== "win32") {
-      try {
-        const cmd = fs.readFileSync(`/proc/${pid}/cmdline`, "utf8").replace(/\0/g, " ");
-        if (!/pi/i.test(cmd)) return { ok: false, error: "not a pi process" };
-      } catch { return { ok: false, error: "proc check failed" }; }
-    }
-    return { ok: true };
-  }
-  function uplinkHealth(port: number): Promise<any> {
-    return new Promise((resolve) => {
-      const req = http.get({ host: "127.0.0.1", port, path: "/api/health", timeout: 3000 }, (res) => {
-        let body = "";
-        res.on("data", (c) => { body += c; });
-        res.on("end", () => { try { resolve(JSON.parse(body)); } catch { resolve(null); } });
-      });
-      req.on("error", () => resolve(null));
-      req.on("timeout", () => { try { req.destroy(); } catch {} resolve(null); });
+
+  // ═══════════════════════════════════════
+  // Hub role (ADR-010): control-plane socket + mirror forwarder
+  // ═══════════════════════════════════════
+
+  // A mirror accepts exactly these 4 commands from the hub. `drive` payloads
+  // are additionally checked against the session-lifecycle blocklist below, so
+  // the socket can steer a TUI but never start/close/switch sessions on it.
+  const HUB_DRIVE_DENY = new Set([
+    "start_session", "new_session", "close_session", "list_sessions",
+    "detach_session", "uplink_list", "uplink_attach", "uplink_detach", "uplink_command",
+  ]);
+
+  /** Hub: start the private listener and fan mirror traffic to browsers. */
+  function startHubSocket() {
+    if (hubSockets) return;
+    hubSockets = new HubSocketServer({
+      onHello: (rec) => {
+        tauLog(`[Hub] mirror connected pid=${rec.pid} cwd=${rec.cwd} port=${rec.port}`);
+        broadcast({ type: "mirrors_changed" });
+      },
+      onUpdate: () => broadcast({ type: "mirrors_changed" }),
+      onGone: (rec) => {
+        for (const [bw, sub] of hubUplinkSubs) {
+          if (sub.mirrorId !== rec.id) continue;
+          hubUplinkSubs.delete(bw);
+          sendTo(bw, { type: "uplink_dead", port: sub.port, pid: sub.pid, headlessContinue: true });
+        }
+        broadcast({ type: "mirrors_changed" });
+      },
+      onFrame: (rec, frame) => handleMirrorFrame(rec, frame),
+      onError: (e) => tauLog(`[Hub] socket error: ${e?.message || e}`),
     });
+    hubSockets.start();
   }
-  async function attachUplink(browserWs: WebSocket, port: number, pid: number) {
-    const v = verifyUplinkTarget(port, pid);
-    if (!v.ok) { sendTo(browserWs, { type: "error", message: `uplink rejected: ${v.error}` }); return; }
-    const health: any = await uplinkHealth(port);
-    // Fingerprint: must be a mirror. /api/health is auth-exempt; instances list is auth-gated.
-    if (!health || health.mode !== "mirror") {
-      sendTo(browserWs, { type: "error", message: "uplink rejected: bad fingerprint" });
+
+  /** Hub: route one frame from a mirror to the browsers driving it. */
+  function handleMirrorFrame(rec: MirrorRecord, frame: Frame) {
+    const port = rec.port;
+    if (frame.type === "event") {
+      for (const [bw, sub] of hubUplinkSubs) {
+        if (sub.mirrorId !== rec.id) continue;
+        sendTo(bw, { type: "rpc_event", event: frame.event, uplink: true, port });
+        if (frame.event?.type === "extension_ui_request" && frame.event?.id) {
+          hubDialogOwner.set(frame.event.id, rec.id);
+          pendingDialogs.set(frame.event.id, { kind: "mirror" });
+        }
+      }
       return;
     }
-    detachUplink(browserWs);
-    const creds = readTauCreds();
-    const auth = creds.user ? `Basic ${Buffer.from(`${creds.user}:${creds.pass}`).toString("base64")}` : undefined;
-    const upstream = new WebSocket(`ws://127.0.0.1:${port}/ws`, { headers: auth ? { Authorization: auth } : undefined } as any);
-    const entry = { upstream, port, pid, failures: 0, dead: false, sawSync: false, syncTimer: null as any };
-    uplinks.set(browserWs, entry);
-    let opened = false;
-    upstream.on("open", () => {
-      opened = true;
-      entry.failures = 0;
-      sendTo(browserWs, { type: "uplink_attached", port, pid });
-      // Mirror targets (tau) push an initial snapshot on connect. Only ask
-      // explicitly if none arrives shortly — the second snapshot would make the
-      // UI re-render the whole history twice back-to-back (visible flash).
-      entry.syncTimer = setTimeout(() => {
-        if (entry.dead || entry.sawSync) return;
-        try { (upstream as any).send(JSON.stringify({ type: "mirror_sync_request" })); } catch {}
-      }, 600);
+    if (frame.type === "snapshot" || frame.type === "response") {
+      for (const [bw, sub] of hubUplinkSubs) {
+        if (sub.mirrorId !== rec.id) continue;
+        const event = frame.type === "snapshot" ? { ...frame, type: "mirror_sync", uplink: true } : frame;
+        sendTo(bw, { type: "rpc_event", event, uplink: true, port });
+      }
+      return;
+    }
+    if (frame.type === "dialog") {
+      // A TUI wrapped by wrapUiDialogs pushes dialog requests here (not on the
+      // plain `event` path). Remember which mirror owns the id so the browser's
+      // extension_ui_response can be relayed back via `dialog_relay`, and hand
+      // the request to every browser driving this mirror as a normal UI event.
+      const request = frame.request;
+      if (request?.id) {
+        hubDialogOwner.set(request.id, rec.id);
+        pendingDialogs.set(request.id, { kind: "mirror" });
+      }
+      for (const [bw, sub] of hubUplinkSubs) {
+        if (sub.mirrorId !== rec.id) continue;
+        sendTo(bw, { type: "rpc_event", event: request, uplink: true, port });
+      }
+      return;
+    }
+  }
+
+  /** Hub: browser picks a live TUI from the shared mirror list. */
+  function hubAttachUplink(browserWs: WebSocket, pid: number) {
+    const rec = hubSockets?.get(String(pid));
+    if (!rec) {
+      sendTo(browserWs, { type: "error", message: "That session is not connected to the hub" });
+      return;
+    }
+    hubUplinkSubs.set(browserWs, { mirrorId: rec.id, pid: rec.pid, port: rec.port });
+    sendTo(browserWs, { type: "uplink_attached", port: rec.port, pid: rec.pid, sessionFile: rec.sessionFile, cwd: rec.cwd });
+    // Ask for a fresh snapshot so a browser joining mid-session is current.
+    hubSockets?.send(rec.id, { type: "snapshot" });
+  }
+
+  function hubDetachUplink(browserWs: WebSocket) {
+    if (hubUplinkSubs.delete(browserWs)) sendTo(browserWs, { type: "uplink_detached" });
+  }
+
+  function hubDrive(browserWs: WebSocket, command: any) {
+    const sub = hubUplinkSubs.get(browserWs);
+    if (!sub || !hubSockets) { sendTo(browserWs, { type: "error", message: "uplink not attached" }); return; }
+    hubSockets.send(sub.mirrorId, { type: "drive", command });
+  }
+
+  /** Mirror: dial the hub and announce ourselves. */
+  function startHubForwarder() {
+    if (hubForwarder) return;
+    hubForwarder = new HubSocketClient({
+      hello: () => ({
+        type: "hello",
+        pid: process.pid,
+        port: boundPort,
+        cwd: latestCtx?.cwd || process.cwd(),
+        sessionFile: latestCtx?.sessionManager.getSessionFile() || null,
+        sessionName: latestCtx ? pi.getSessionName() : null,
+        model: latestCtx?.model || null,
+        isStreaming: latestCtx ? !latestCtx.isIdle() : false,
+      }),
+      onCommand: (frame) => handleHubCommand(frame),
+      onError: () => { /* hub absent is normal — retry handles it */ },
     });
-    upstream.on("message", (data) => {
-      if (entry.dead) return;
-      try {
-        const msg = JSON.parse(data.toString());
-        if (msg.type === "mirror_sync") {
-          entry.sawSync = true;
-          if (entry.syncTimer) { clearTimeout(entry.syncTimer); entry.syncTimer = null; }
-        }
-        if (msg.type === "event") {
-          // Re-wrap to the unified envelope (ADR-004).
-          sendTo(browserWs, { type: "rpc_event", event: msg.event, uplink: true, port });
-          if (msg.event?.type === "extension_ui_request" && msg.event?.id) {
-            pendingDialogs.set(msg.event.id, { kind: "mirror" });
-            (pendingDialogs as any).responses = (pendingDialogs as any).responses || new Map();
-            // Track which uplink owns it so the response routes back.
-            (pendingDialogs as any).uplinkOwner = (pendingDialogs as any).uplinkOwner || new Map();
-            (pendingDialogs as any).uplinkOwner.set(msg.event.id, entry);
-          }
-        } else if (msg.type === "mirror_sync" || msg.type === "response" || msg.type === "state") {
-          sendTo(browserWs, { type: "rpc_event", event: msg, uplink: true, port });
-        } else {
-          sendTo(browserWs, { type: "rpc_event", event: msg, uplink: true, port });
-        }
-      } catch {}
-    });
-    const onDrop = () => {
-      if (entry.dead) return;
-      entry.failures++;
-      if (entry.failures > 8) {
-        entry.dead = true;
-        try { upstream.close(); } catch {}
-        uplinks.delete(browserWs);
-        // Give up ~2 min equivalent → offer headless-continue on same file (L5).
-        sendTo(browserWs, { type: "uplink_dead", port, pid, headlessContinue: true });
+    hubForwarder.start();
+  }
+
+  /** Mirror: a frame from the hub's 4-command allowlist. */
+  function handleHubCommand(frame: Frame) {
+    if (frame.type === "snapshot") {
+      if (latestCtx) {
+        // buildStateSnapshot yields a direct-browser `mirror_sync`; the hub
+        // rewrites our `snapshot` frame back to `mirror_sync` for browsers.
+        buildStateSnapshot(latestCtx).then((snap) => hubForwarder?.push({ ...snap, type: "snapshot" }));
+      } else {
+        hubForwarder?.push({ type: "snapshot", entries: [], total: 0, model: null });
+      }
+      return;
+    }
+    if (frame.type === "drive") {
+      const command = frame.command;
+      if (!command || typeof command.type !== "string" || HUB_DRIVE_DENY.has(command.type)) {
+        hubForwarder?.push({ type: "response", command: command?.type || "unknown", success: false, error: "command not allowed over hub socket", id: command?.id });
         return;
       }
-      const delay = Math.min(15000, 500 * Math.pow(2, entry.failures));
-      setTimeout(() => { if (!entry.dead && uplinks.get(browserWs) === entry && !opened) attachUplink(browserWs, port, pid); }, delay);
-    };
-    upstream.on("close", onDrop);
-    upstream.on("error", () => {});
+      // Reuse the full command handler via a socket-backed fake WS: one
+      // implementation, no dialect drift between direct and hub-driven paths.
+      handleCommand(hubSocketShim, command);
+      return;
+    }
+    if (frame.type === "dialog_relay") {
+      (pendingDialogs as any).responses = (pendingDialogs as any).responses || new Map();
+      const response = frame.response && Object.keys(frame.response).length > 0 ? frame.response : { cancelled: true };
+      (pendingDialogs as any).responses.set(frame.id, response);
+      return;
+    }
+    if (frame.type === "health") {
+      pushMirrorStatus();
+      return;
+    }
   }
-  function detachUplink(browserWs: WebSocket) {
-    const e = uplinks.get(browserWs);
-    if (!e) return;
-    e.dead = true;
-    if (e.syncTimer) { clearTimeout(e.syncTimer); e.syncTimer = null; }
-    try { e.upstream.close(); } catch {}
-    uplinks.delete(browserWs);
+
+  // Fake WS that makes the mirror's own reply frames travel to the hub instead
+  // of a browser socket. `readyState: 1` matches WebSocket.OPEN in sendTo().
+  const hubSocketShim: any = {
+    readyState: WebSocket.OPEN,
+    send: (payload: string) => {
+      try { hubForwarder?.push(JSON.parse(payload)); return true; } catch { return false; }
+    },
+    close: () => {}, ping: () => {}, terminate: () => {},
+  };
+
+  /** Mirror: tell the hub our current session identity (cheap, idempotent). */
+  function pushMirrorStatus() {
+    if (role !== "mirror" || !hubForwarder?.connected) return;
+    hubForwarder.push({
+      type: "status",
+      cwd: latestCtx?.cwd || process.cwd(),
+      sessionFile: latestCtx?.sessionManager.getSessionFile() || null,
+      sessionName: latestCtx ? pi.getSessionName() : null,
+      model: latestCtx?.model || null,
+      isStreaming: latestCtx ? !latestCtx.isIdle() : false,
+    });
   }
   // ═══════════════════════════════════════
   // Handle commands from browser clients
   // ═══════════════════════════════════════
   async function handleCommand(ws: WebSocket, command: any) {
     // ─── tau-web unified protocol (headless + uplink + dialogs) ───
-    if (command && typeof command.type === "string" && ["start_session", "detach_session", "rpc_command", "ping", "uplink_list", "uplink_attach", "uplink_detach", "uplink_command", "extension_ui_response"].includes(command.type)) {
+    // Lifecycle: sessions are PERSISTENT — browser close/reload only
+    // detaches (unbinds WS); the pi child keeps running. Kill only via
+    // close_session (bound session) or TTL opt-in. /new == new_session.
+    if (command && typeof command.type === "string" && ["start_session", "new_session", "close_session", "list_sessions", "detach_session", "rpc_command", "ping", "uplink_list", "uplink_attach", "uplink_detach", "uplink_command", "extension_ui_response"].includes(command.type)) {
       try {
         switch (command.type) {
           case "start_session": {
             const cwd = typeof command.cwd === "string" && command.cwd.trim() ? command.cwd : process.cwd();
             const file = typeof command.sessionFile === "string" && command.sessionFile ? command.sessionFile : null;
-            const managed = headless.attach(ws, cwd, file);
-            if (file) {
+            const fresh = command.fresh === true;
+            const managed = headless.attach(ws, cwd, file, { fresh });
+            if (file && !fresh) {
               const abs = resolveHeadlessSessionPath(managed.cwd, file);
               if (abs && fs.existsSync(abs)) headless.switchToFile(managed, abs);
             }
-            sendTo(ws, { type: "rpc_event", event: { type: "response", command: "start_session", success: true, data: { sessionKey: managed.id } }, id: command.id });
+            sendTo(ws, { type: "rpc_event", event: { type: "response", command: "start_session", success: true, data: { sessionKey: managed.id, cwd: managed.cwd } }, id: command.id });
+            return;
+          }
+          case "new_session": {
+            // /new semantics: old session keeps running detached, fresh
+            // empty session bound to this tab.
+            const cwd = typeof command.cwd === "string" && command.cwd.trim() ? command.cwd : undefined;
+            const managed = headless.newSession(ws, cwd);
+            sendTo(ws, { type: "rpc_event", event: { type: "response", command: "new_session", success: true, data: { sessionKey: managed.id, cwd: managed.cwd } }, id: command.id });
+            return;
+          }
+          case "close_session": {
+            const ok = headless.closeSession(ws);
+            sendTo(ws, { type: "rpc_event", event: { type: "response", command: "close_session", success: ok }, id: command.id });
+            return;
+          }
+          case "list_sessions": {
+            sendTo(ws, { type: "rpc_event", event: { type: "response", command: "list_sessions", success: true, data: { sessions: headless.listSessions() } }, id: command.id });
             return;
           }
           case "detach_session": {
             headless.detach(ws);
-            detachUplink(ws);
             sendTo(ws, { type: "rpc_event", event: { type: "response", command: "detach_session", success: true }, id: command.id });
             return;
           }
           case "rpc_command": {
-            // Route to uplink when attached (live TUI owns the run), else headless.
             // Inject the browser's request id so the backend's response resolves
             // the browser's pending control command (set_model, cycle_thinking…).
             const inner = command.command && typeof command.command === "object"
               ? { ...command.command, id: command.id }
               : command.command;
-            const up = uplinks.get(ws);
-            if (up && !up.dead) {
-              try { (up.upstream as any).send(JSON.stringify(inner)); } catch {}
-              return;
-            }
             const r = headless.command(ws, inner);
             if (!r.ok) sendTo(ws, { type: "error", message: r.error || "no active session" });
             return;
           }
           case "ping": { sendTo(ws, { type: "pong" }); return; }
           case "uplink_list": {
-            const list = getRunningInstances().filter((i) => i.pid !== process.pid);
+            // Hub: the shared mirror list (all TUIs that dialed hub.sock). A
+            // mirror does not proxy other TUIs (ADR-010) — cross-attach is
+            // hub-only — so it reports an empty list and the UI offers no
+            // Attach.
+            const list = role === "hub" && hubSockets
+              ? hubSockets.list().map((r) => ({
+                  port: r.port || r.pid, pid: r.pid, cwd: r.cwd, sessionFile: r.sessionFile,
+                  sessionName: r.sessionName, active: r.isStreaming, hub: true,
+                }))
+              : [];
             sendTo(ws, { type: "rpc_event", event: { type: "response", command: "uplink_list", success: true, data: { instances: list } }, id: command.id });
             return;
           }
           case "uplink_attach": {
-            await attachUplink(ws, Number(command.port), Number(command.pid));
+            if (role === "hub") hubAttachUplink(ws, Number(command.pid));
+            else sendTo(ws, { type: "error", message: "Cross-session attach is only available through the hub" });
             return;
           }
-          case "uplink_detach": { detachUplink(ws); sendTo(ws, { type: "uplink_detached" }); return; }
+          case "uplink_detach": {
+            if (role === "hub") hubDetachUplink(ws);
+            else sendTo(ws, { type: "uplink_detached" });
+            return;
+          }
           case "uplink_command": {
-            const up = uplinks.get(ws);
-            if (!up || up.dead) { sendTo(ws, { type: "error", message: "uplink not attached" }); return; }
-            // Same id injection as rpc_command: the upstream stamps its response
-            // with this id so the browser can match it to the pending command.
-            const inner = command.command && typeof command.command === "object"
-              ? { ...command.command, id: command.id }
-              : command.command;
-            try { (up.upstream as any).send(JSON.stringify(inner)); } catch {}
+            if (role === "hub") { hubDrive(ws, command.command); return; }
+            sendTo(ws, { type: "error", message: "No uplink on a mirror — attach through the hub" });
             return;
           }
           case "extension_ui_response": {
             const { id, ...rest } = command;
-            const owner = (pendingDialogs as any).uplinkOwner?.get?.(id);
-            if (owner && !owner.dead) {
-              try { (owner.upstream as any).send(JSON.stringify({ type: "extension_ui_response", id, ...rest })); } catch {}
-              (pendingDialogs as any).uplinkOwner.delete(id);
+            // Hub-routed dialog: relay back to the mirror that raised it.
+            const hubOwner = id ? hubDialogOwner.get(id) : undefined;
+            if (hubOwner && hubSockets) {
+              hubDialogOwner.delete(id);
+              hubSockets.send(hubOwner, { type: "dialog_relay", id, response: rest });
               pendingDialogs.delete(id);
               return;
             }
@@ -1035,7 +1270,6 @@ export default function (pi: ExtensionAPI) {
             isStreaming: !ctx.isIdle(),
             sessionFile: ctx.sessionManager.getSessionFile(),
             sessionName: pi.getSessionName(),
-            autoCompactionEnabled: true, // Extension can't easily check this
           };
           sendTo(ws, success("get_state", state));
           break;
@@ -1111,7 +1345,8 @@ export default function (pi: ExtensionAPI) {
 
         // ─── Thinking ───
         case "cycle_thinking_level": {
-          const levels = ["off", "minimal", "low", "medium", "high"];
+          // Canonical pi levels (matches the web header dropdown).
+          const levels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
           const current = pi.getThinkingLevel();
           const idx = levels.indexOf(current);
           const next = levels[(idx + 1) % levels.length];
@@ -1165,12 +1400,10 @@ export default function (pi: ExtensionAPI) {
           break;
         }
 
-        case "set_auto_compaction": {
-          // Extension can't easily toggle auto-compaction
-          // Just acknowledge
-          sendTo(ws, success("set_auto_compaction"));
-          break;
-        }
+        // `compaction.enabled` lives in pi settings and only takes effect on
+        // (re)load — the extension API cannot flip it at runtime. The old
+        // web toggle acked success while changing nothing, so it was removed
+        // (client + this case). Compaction itself is driven via `compact`.
 
         case "compact": {
           if (ctx) {
@@ -1200,11 +1433,16 @@ export default function (pi: ExtensionAPI) {
           try {
             const sessionFile = ctx.sessionManager.getSessionFile();
             if (!sessionFile) throw new Error("No session file to export");
-            const { execSync } = require("node:child_process");
-            const args = command.outputPath
-              ? `"${sessionFile}" "${command.outputPath}"`
-              : `"${sessionFile}"`;
-            const output = execSync(`pi --export ${args}`, { cwd: process.cwd(), timeout: 30000, encoding: "utf-8" });
+            // No shell: outputPath comes from the web client and must never
+            // reach a command line (quote-injection). execFile passes argv
+            // directly, so hostile characters are inert.
+            const { execFileSync } = require("node:child_process");
+            const piBin = process.env.PI_WEB_PI_BIN || process.env.TAU_PI_BIN || "pi";
+            const argv = ["--export", sessionFile];
+            if (typeof command.outputPath === "string" && command.outputPath.trim()) {
+              argv.push(command.outputPath.trim());
+            }
+            const output = execFileSync(piBin, argv, { cwd: process.cwd(), timeout: 30000, encoding: "utf-8" });
             // pi prints the output path
             const result = output.trim().split("\n").pop() || sessionFile.replace(".jsonl", ".html");
             sendTo(ws, success("export_html", { path: result }));
@@ -1259,15 +1497,44 @@ export default function (pi: ExtensionAPI) {
   function serveStaticFile(req: http.IncomingMessage, res: http.ServerResponse) {
     let urlPath = req.url || "/";
 
-    // Auth gate — exempt /api/health (monitoring) and /api/login + /api/logout (the login flow itself)
-    const authExempt = urlPath === "/api/health" || urlPath === "/api/login" || urlPath === "/api/logout";
-    if (authEnabled && !authExempt && !checkBasicAuth(req)) {
+    // Auth gate — API only. The static shell (index.html / app.js / style.css)
+    // MUST stay reachable without credentials: it renders the login overlay
+    // that mints the cookie session. Gating it would answer an unauthenticated
+    // navigation with a raw JSON 401 and the app could never load to log in.
+    // Everything sensitive is under /api/ (or the separately-gated /ws upgrade).
+    const isApi = urlPath.startsWith("/api/");
+    const authExempt = urlPath === "/api/health" || urlPath === "/api/login" || urlPath === "/api/logout" || urlPath === "/api/client-error";
+    // Throttled access log for /api/* — reveals exactly what a browser
+    // requests (method, path, credentials present) without flooding on the
+    // 1s instance poll. Keyed per method+path, one line / 10s.
+    if (isApi) {
+      try {
+        const key = `${req.method} ${urlPath}`;
+        const now = Date.now();
+        if (now - (apiAccessLog.get(key) || 0) > 10000) {
+          apiAccessLog.set(key, now);
+          tauLog(`[api] ${req.method} ${urlPath} auth=${authExempt ? "exempt" : (checkWsAuth(req) ? "yes" : "no")}`);
+        }
+      } catch {}
+    }
+    // HTTP APIs accept the same credentials as the WS upgrade: cookie session
+    // OR Authorization: Basic. Cached/legacy clients authenticate with Basic
+    // headers (no cookie mint yet) — rejecting them here made "logged in" UIs
+    // 401 on every call while /api/login was never even hit.
+    if (authEnabled && isApi && !authExempt && !checkWsAuth(req)) {
       sendAuthRequired(res);
+      return;
+    }
+    // Anti-rebinding: reject cross-origin / unlisted-host API calls outright.
+    if (isApi && !authExempt && !checkRequestOrigin(req)) {
+      tauLog(`[api] rejected host=${req.headers.host} origin=${req.headers.origin}`);
+      res.writeHead(403, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Forbidden" }));
       return;
     }
 
     // Handle API routes
-    if (urlPath.startsWith("/api/")) {
+    if (isApi) {
       handleApiRoute(req, res, urlPath);
       return;
     }
@@ -1297,6 +1564,27 @@ export default function (pi: ExtensionAPI) {
 
       const ext = path.extname(filePath).toLowerCase();
       const contentType = MIME_TYPES[ext] || "application/octet-stream";
+
+      // The app shell must never go stale. A cached old app.js talking to a
+      // newer server breaks badly (e.g. pre-cookie login flows that 401-loop),
+      // and with no Cache-Control/validators the browser had no way to
+      // revalidate. Serve validators + no-cache so it revalidates every load
+      // and gets a cheap 304 when unchanged (this is what made the
+      // Cloudflare-fronted origin keep an ancient client while LAN was fine).
+      const lastModified = stats.mtime.toUTCString();
+      const etag = `W/"${stats.size.toString(16)}-${Math.floor(stats.mtimeMs).toString(16)}"`;
+      res.setHeader("Cache-Control", "no-cache");
+      res.setHeader("Last-Modified", lastModified);
+      res.setHeader("ETag", etag);
+
+      const ims = req.headers["if-modified-since"];
+      const inm = req.headers["if-none-match"];
+      if ((typeof inm === "string" && inm === etag) ||
+          (typeof ims === "string" && new Date(ims).getTime() >= Math.floor(stats.mtimeMs / 1000) * 1000)) {
+        res.writeHead(304);
+        res.end();
+        return;
+      }
 
       res.writeHead(200, { "Content-Type": contentType });
       fs.createReadStream(filePath).pipe(res);
@@ -1343,32 +1631,75 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
       return;
     }
 
-    if (urlPath === "/api/health") {
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ status: "ok", mode: "mirror", mirrorUrl, tailscaleUrl: tailscaleUrl || undefined, platform: process.platform, authEnabled, startedAt: serverStartedAt || undefined, version: tauWebVersion }));
+    // Browser crash beacon: uncaught errors / rejections from the client are
+    // POSTed here so a failing app shell is visible in tau.log even when the
+    // browser console isn't being watched.
+    if (urlPath === "/api/client-error" && req.method === "POST") {
+      let body = "";
+      req.on("data", (c: Buffer) => { body += c.toString(); if (body.length > 8000) req.destroy(); });
+      req.on("end", () => {
+        try { tauLog(`[client] ${body}`); } catch {}
+        res.writeHead(204);
+        res.end();
+      });
       return;
     }
 
-    // Inline login: verify Basic credentials, mint an HttpOnly cookie session.
+    if (urlPath === "/api/health") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ status: "ok", mode: role, mirrorUrl, tailscaleUrl: tailscaleUrl || undefined, platform: process.platform, authEnabled, startedAt: serverStartedAt || undefined, version: tauWebVersion }));
+      return;
+    }
+
+    // Cookie-session login: JSON credentials in, HttpOnly cookie out.
     // The browser sends the cookie on fetches AND the WS handshake (which
-    // can't carry custom headers), so this replaces the native login prompt.
+    // can't carry custom headers). No Basic Auth anywhere client-side.
     if (urlPath === "/api/login" && req.method === "POST") {
       if (!authEnabled || !AUTH_CONFIGURED) {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ ok: true, authRequired: false }));
         return;
       }
-      if (checkBasicCredentials(req.headers.authorization)) {
-        const token = mintAuthToken();
-        res.writeHead(200, {
-          "Content-Type": "application/json",
-          "Set-Cookie": `${AUTH_COOKIE}=${token}; HttpOnly; SameSite=Lax; Path=/${cookieAttr(req)}; Max-Age=2592000`,
-        });
-        res.end(JSON.stringify({ ok: true }));
-      } else {
-        res.writeHead(401, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ ok: false, error: "Invalid username or password" }));
-      }
+      let body = "";
+      req.on("data", (chunk: Buffer) => { body += chunk.toString(); });
+      req.on("end", () => {
+        let user = "";
+        let pass = "";
+        try {
+          const parsed = JSON.parse(body);
+          // Usernames are trimmed (mobile keyboards add stray spaces and
+          // autocapitalize the first letter — the input also carries
+          // autocapitalize="off", this is the server-side belt). Passwords
+          // are never trimmed: spaces can be significant.
+          user = String(parsed.user || "").trim();
+          pass = String(parsed.pass || "");
+        } catch {}
+        // Legacy fallback: pre-cookie clients authenticate the login POST
+        // itself with an Authorization: Basic header and no JSON body.
+        // Accept it so a browser running cached pre-update files can still
+        // log in (it mints the same cookie session and self-heals).
+        if (!user) {
+          const legacy = parseBasicCredentials(req.headers.authorization as string);
+          if (legacy) { user = legacy.user; pass = legacy.pass; }
+        }
+        if (user && credentialsMatch(user, pass)) {
+          // Success audit (username only): distinguishes "POST never
+          // arrives" from "login ok but the browser drops the cookie".
+          try { tauLog(`[Mirror] login ok (user: "${user}")`); } catch {}
+          const token = mintAuthToken();
+          res.writeHead(200, {
+            "Content-Type": "application/json",
+            "Set-Cookie": `${AUTH_COOKIE}=${token}; HttpOnly; SameSite=Lax; Path=/${cookieAttr(req)}; Max-Age=2592000`,
+          });
+          res.end(JSON.stringify({ ok: true }));
+        } else {
+          // Log the attempted username (never the password): a loop of
+          // failures with "Ayush" vs "ayush" here means autocapitalize.
+          try { tauLog(`[Mirror] login failed (user: "${user}")`); } catch {}
+          res.writeHead(401, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: false, error: "Invalid username or password" }));
+        }
+      });
       return;
     }
 
@@ -1390,6 +1721,11 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
       if (!filePath) {
         res.writeHead(400, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: "path required" }));
+        return;
+      }
+      if (!isPathAllowed(filePath)) {
+        res.writeHead(403, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Path outside allowed roots" }));
         return;
       }
       const IMAGE_PREVIEW_MIMES: Record<string, string> = {
@@ -1419,8 +1755,18 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
       res.writeHead(200, { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" });
       // Flag in-process instances (the old-tau ghost rides along in every pi
       // process): the UI tags them `local` and offers no Attach for them.
-      const list = getRunningInstances().map((i) => ({ ...i, local: i.pid === process.pid }));
-      res.end(JSON.stringify({ instances: list }));
+      const local = getRunningInstances().map((i) => ({ ...i, local: i.pid === process.pid }));
+      // On the hub, also surface socket-registered mirrors that never started
+      // their own HTTP server (TAU_DISABLED), so the Live list is complete.
+      const mirrors = role === "hub" && hubSockets
+        ? hubSockets.list().map((r) => ({
+            port: r.port || r.pid, pid: r.pid, cwd: r.cwd, sessionFile: r.sessionFile,
+            sessionName: r.sessionName, active: r.isStreaming, local: false, hub: true,
+          }))
+        : [];
+      const byPid = new Map<string, any>();
+      for (const i of [...local, ...mirrors]) byPid.set(String(i.pid), { ...byPid.get(String(i.pid)), ...i });
+      res.end(JSON.stringify({ instances: [...byPid.values()] }));
       return;
     }
 
@@ -1430,6 +1776,12 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
     }
 
     if (urlPath === "/api/projects/launch" && req.method === "POST") {
+      // iTerm2 automation is macOS-only — say so instead of failing obscurely.
+      if (process.platform !== "darwin") {
+        res.writeHead(501, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Project launch is only supported on macOS (iTerm2)" }));
+        return;
+      }
       let body = "";
       req.on("data", (chunk: Buffer) => { body += chunk.toString(); });
       req.on("end", () => {
@@ -1497,7 +1849,9 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
       return;
     }
 
-    // File browser: open file natively
+    // File browser: open file natively (awaits the result — the old code
+    // answered ok:true before the opener even ran, so Android (no xdg-open)
+    // silently did nothing).
     if (urlPath === "/api/open" && req.method === "POST") {
       let body = "";
       req.on("data", (chunk: Buffer) => { body += chunk.toString(); });
@@ -1509,21 +1863,29 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
             res.end(JSON.stringify({ error: "filePath required" }));
             return;
           }
+          if (!isPathAllowed(fp)) {
+            res.writeHead(403, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "Path outside allowed roots" }));
+            return;
+          }
           const { execFile } = await import("node:child_process");
-          if (process.platform === "win32") {
-            const { exec } = await import("node:child_process");
-            const safe = fp.replace(/'/g, "''").replace(/"/g, '');
-            exec(`powershell -NoProfile -WindowStyle Hidden -Command "& { $wsh = New-Object -ComObject WScript.Shell; $wsh.Run('explorer \\"${safe}\\"', 1, $false) }"`, (err) => {
-              if (err) tauLog("[Mirror] open failed:", err.message);
-            });
-          } else if (process.platform === "darwin") {
-            execFile("open", [fp], (err) => {
-              if (err) tauLog("[Mirror] open failed:", err.message);
-            });
-          } else {
-            execFile("xdg-open", [fp], (err) => {
-              if (err) tauLog("[Mirror] open failed:", err.message);
-            });
+          const run = (cmd: string, args: string[]) => new Promise<void>((resolve, reject) => {
+            execFile(cmd, args, (err) => { if (err) reject(err); else resolve(); });
+          });
+          try {
+            if (process.platform === "win32") {
+              await run("explorer", [fp]);
+            } else if (process.platform === "darwin") {
+              await run("open", [fp]);
+            } else {
+              try { await run("xdg-open", [fp]); }
+              catch { await run("termux-open", [fp]); }
+            }
+          } catch (err: any) {
+            tauLog("[Mirror] open failed:", err.message);
+            res.writeHead(500, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: `No file opener on this host (${err.message})` }));
+            return;
           }
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ ok: true }));
@@ -1549,6 +1911,17 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
       req.on("end", async () => {
         try {
           const command = JSON.parse(body);
+          // Binding/routing commands need a real browser WS: the fake socket
+          // below never closes, so start_session would leak a headless
+          // backend (persistent now — no TTL to save us) and
+          // uplink_attach would leak a proxied TUI connection. The UI speaks
+          // these over /ws; over HTTP they are rejected, never half-run.
+          if (command && typeof command.type === "string" &&
+            ["start_session", "new_session", "close_session", "list_sessions", "detach_session", "rpc_command", "uplink_attach", "uplink_detach", "uplink_command", "extension_ui_response", "ping"].includes(command.type)) {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ success: false, error: `${command.type} requires a WebSocket connection`, id: command.id }));
+            return;
+          }
           // Create a fake WebSocket-like object to capture the response
           const responsePromise = new Promise<any>((resolve) => {
             const fakeWs = {
@@ -1575,7 +1948,8 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
       return;
     }
 
-    // Session delete
+    // Session delete — constrained to the session store. The old code
+    // unlinked any path the client named.
     if (urlPath === "/api/sessions/delete" && req.method === "POST") {
       let body = "";
       req.on("data", (chunk: Buffer) => { body += chunk.toString(); });
@@ -1587,12 +1961,24 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
             res.end(JSON.stringify({ error: "filePath required" }));
             return;
           }
-          if (!fs.existsSync(filePath)) {
+          const root = path.resolve(SESSIONS_DIR);
+          const abs = path.resolve(filePath);
+          if ((!abs.startsWith(root + path.sep) && abs !== root) || !abs.endsWith(".jsonl")) {
+            res.writeHead(403, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "Only session files can be deleted" }));
+            return;
+          }
+          if (getRunningInstances().some((i) => i.sessionFile === abs)) {
+            res.writeHead(409, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "Session is owned by a live TUI" }));
+            return;
+          }
+          if (!fs.existsSync(abs)) {
             res.writeHead(404, { "Content-Type": "application/json" });
             res.end(JSON.stringify({ error: "Session not found" }));
             return;
           }
-          fs.unlinkSync(filePath);
+          fs.unlinkSync(abs);
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ success: true }));
         } catch (err: any) {
@@ -1600,6 +1986,150 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
           res.end(JSON.stringify({ error: err.message }));
         }
       });
+      return;
+    }
+
+    // Session rename — appends a session_info entry, mirroring what pi does
+    // when a live session is renamed. History files only: the server's own
+    // live session renames via pi.setSessionName, and files owned by another
+    // live TUI are refused (ADR-003: never write a live session's file from
+    // a second process).
+    if (urlPath === "/api/sessions/rename" && req.method === "POST") {
+      let body = "";
+      req.on("data", (chunk: Buffer) => { body += chunk.toString(); });
+      req.on("end", () => {
+        try {
+          const { dirName, file, name } = JSON.parse(body);
+          const clean = typeof name === "string" ? name.trim().slice(0, 120) : "";
+          if (!clean) {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "Name cannot be empty" }));
+            return;
+          }
+          if (typeof dirName !== "string" || typeof file !== "string" || !file.endsWith(".jsonl")) {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "dirName and a .jsonl file are required" }));
+            return;
+          }
+          const root = path.resolve(SESSIONS_DIR);
+          const abs = path.resolve(path.join(SESSIONS_DIR, dirName, file));
+          if (abs !== root && !abs.startsWith(root + path.sep)) {
+            res.writeHead(403, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "Forbidden" }));
+            return;
+          }
+          if (!fs.existsSync(abs)) {
+            res.writeHead(404, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "Session not found" }));
+            return;
+          }
+          const liveOwner = getRunningInstances().find((i) => i.sessionFile === abs);
+          if (liveOwner) {
+            if (latestCtx && liveOwner.pid === process.pid) {
+              const ownFile = latestCtx.sessionManager.getSessionFile();
+              if (ownFile === abs) {
+                pi.setSessionName(clean);
+                res.writeHead(200, { "Content-Type": "application/json" });
+                res.end(JSON.stringify({ success: true, name: clean }));
+                return;
+              }
+            }
+            res.writeHead(409, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "Session is owned by a live TUI — rename it there" }));
+            return;
+          }
+          // parentId = id of the last entry, so the tree stays well-formed.
+          let parentId: string | null = null;
+          try {
+            const stat = fs.statSync(abs);
+            const fd = fs.openSync(abs, "r");
+            const tail = Buffer.alloc(Math.min(4096, stat.size));
+            fs.readSync(fd, tail, 0, tail.length, Math.max(0, stat.size - tail.length));
+            fs.closeSync(fd);
+            const lines = tail.toString("utf8").split("\n").filter((l) => l.trim());
+            for (let k = lines.length - 1; k >= 0; k--) {
+              try { const e = JSON.parse(lines[k]); if (e && typeof e.id === "string") { parentId = e.id; break; } } catch {}
+            }
+          } catch {}
+          const entry = { type: "session_info", id: require("node:crypto").randomUUID(), parentId, timestamp: new Date().toISOString(), name: clean };
+          fs.appendFileSync(abs, JSON.stringify(entry) + "\n", "utf8");
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ success: true, name: clean }));
+        } catch (err: any) {
+          res.writeHead(500, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: err.message }));
+        }
+      });
+      return;
+    }
+
+    // Export a history session to HTML. The WS `export_html` command only
+    // knows the server's OWN live session (ctx), so the sidebar's per-item
+    // Export button needs this: same `pi --export` CLI pointed at the
+    // selected history file. Read-only — safe on any file, live-owned or not.
+    if (urlPath === "/api/sessions/export" && req.method === "POST") {
+      let body = "";
+      req.on("data", (chunk: Buffer) => { body += chunk.toString(); });
+      req.on("end", () => {
+        try {
+          const { dirName, file } = JSON.parse(body);
+          if (typeof dirName !== "string" || typeof file !== "string" || !file.endsWith(".jsonl")) {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "dirName and a .jsonl file are required" }));
+            return;
+          }
+          const root = path.resolve(SESSIONS_DIR);
+          const abs = path.resolve(path.join(SESSIONS_DIR, dirName, file));
+          if (abs !== root && !abs.startsWith(root + path.sep)) {
+            res.writeHead(403, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "Forbidden" }));
+            return;
+          }
+          if (!fs.existsSync(abs)) {
+            res.writeHead(404, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "Session not found" }));
+            return;
+          }
+          // Explicit output next to the input (inside the session store, so
+          // /api/file/download can serve it). No shell: argv only.
+          const outAbs = abs.replace(/\.jsonl$/, ".html");
+          const { execFileSync } = require("node:child_process");
+          const piBin = process.env.PI_WEB_PI_BIN || process.env.TAU_PI_BIN || "pi";
+          execFileSync(piBin, ["--export", abs, outAbs], { cwd: process.cwd(), timeout: 60000, encoding: "utf-8" });
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ success: true, path: outAbs }));
+        } catch (err: any) {
+          res.writeHead(500, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: err.message }));
+        }
+      });
+      return;
+    }
+
+    // Download for files the server itself produced (export_html output).
+    // Constrained to .html under the session store — not a general file pipe.
+    if ((urlPath === "/api/file/download" || urlPath.startsWith("/api/file/download?")) && req.method === "GET") {
+      try {
+        const dlUrl = new URL(`http://localhost${req.url}`);
+        const qp = dlUrl.searchParams.get("path") || "";
+        const root = path.resolve(SESSIONS_DIR);
+        const abs = path.resolve(qp);
+        if (!qp || (!abs.startsWith(root + path.sep) && abs !== root) || path.extname(abs).toLowerCase() !== ".html") {
+          res.writeHead(403, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "Only exported HTML under the session store can be downloaded" }));
+          return;
+        }
+        const stat = fs.statSync(abs);
+        if (!stat.isFile()) throw new Error("Not a file");
+        res.writeHead(200, {
+          "Content-Type": "text/html; charset=utf-8",
+          "Content-Disposition": `attachment; filename="${path.basename(abs).replace(/"/g, "")}"`,
+        });
+        fs.createReadStream(abs).pipe(res);
+      } catch (err: any) {
+        res.writeHead(404, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: err?.message || "Not found" }));
+      }
       return;
     }
 
@@ -1639,67 +2169,86 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
     }
   }
 
-  function serveProjectsList(res: http.ServerResponse) {
-    const projectsDir = TAU_SETTINGS.projectsDir;
-    if (!projectsDir) {
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ projects: [] }));
-      return;
+  // The explorer's root set: `tau.projectsDir` (every subdir is a project)
+  // plus any explicit `tau.projects[]` entries (which may live anywhere).
+  function resolveProjectsRoots(): { dir: string | null; extras: string[] } {
+    const expand = (p: string) => (p.startsWith("~") ? path.join(process.env.HOME || "", p.slice(1)) : p);
+    const rawDir = TAU_SETTINGS.projectsDir;
+    return {
+      dir: rawDir ? expand(rawDir) : null,
+      extras: (TAU_SETTINGS.projects || []).map(expand),
+    };
+  }
+
+  // Session counts + recency per project path, built once per request.
+  function buildSessionInfoMap(): Map<string, { count: number; lastActive: number }> {
+    const map = new Map<string, { count: number; lastActive: number }>();
+    if (!fs.existsSync(SESSIONS_DIR)) return map;
+    for (const dir of fs.readdirSync(SESSIONS_DIR, { withFileTypes: true })) {
+      if (!dir.isDirectory()) continue;
+      const sessionDir = path.join(SESSIONS_DIR, dir.name);
+      let files: string[] = [];
+      try { files = fs.readdirSync(sessionDir).filter((f) => f.endsWith(".jsonl")); } catch { continue; }
+      let lastMtime = 0;
+      for (const f of files) {
+        try {
+          const stat = fs.statSync(path.join(sessionDir, f));
+          if (stat.mtimeMs > lastMtime) lastMtime = stat.mtimeMs;
+        } catch {}
+      }
+      // Key by both the encoded dir name and the lossy-decoded path so an
+      // exact candidate match wins and a cross-version dir still lines up.
+      const info = { count: files.length, lastActive: lastMtime };
+      map.set(dir.name, info);
+      const decoded = lossyDecodeSessionDir(dir.name);
+      if (!map.has(decoded)) map.set(decoded, info);
     }
+    return map;
+  }
 
-    const resolved = projectsDir.startsWith("~")
-      ? path.join(process.env.HOME || "", projectsDir.slice(1))
-      : projectsDir;
-
-    if (!fs.existsSync(resolved)) {
+  function serveProjectsList(res: http.ServerResponse) {
+    const { dir, extras } = resolveProjectsRoots();
+    if (!dir && extras.length === 0) {
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ projects: [], error: "Directory not found" }));
+      res.end(JSON.stringify({ projects: [], roots: [] }));
       return;
     }
 
     try {
-      const entries = fs.readdirSync(resolved, { withFileTypes: true });
       const instances = getRunningInstances();
+      const sessionInfo = buildSessionInfoMap();
+      const projects: any[] = [];
+      const seen = new Set<string>();
 
-      // Build session count + recency map from session history
-      const sessionInfo = new Map<string, { count: number; lastActive: number }>();
-      if (fs.existsSync(SESSIONS_DIR)) {
-        for (const dir of fs.readdirSync(SESSIONS_DIR, { withFileTypes: true })) {
-          if (!dir.isDirectory()) continue;
-          const decodedPath = dir.name.replace(/^--/, "/").replace(/--$/, "").replace(/-/g, "/");
-          // Check if this session dir maps to a subdirectory of the projects folder
-          if (!decodedPath.startsWith(resolved + "/") && !decodedPath.startsWith(resolved)) continue;
+      const addProject = (fullPath: string, name: string) => {
+        const key = path.resolve(fullPath);
+        if (seen.has(key)) return;
+        seen.add(key);
+        const info = sessionInfo.get(cwdToSessionDir(fullPath)) || sessionInfo.get(key) || { count: 0, lastActive: 0 };
+        projects.push({
+          name,
+          path: fullPath,
+          sessionCount: info.count,
+          lastActive: info.lastActive || null,
+          active: instances.some((i) => i.cwd === fullPath),
+        });
+      };
 
-          const sessionDir = path.join(SESSIONS_DIR, dir.name);
-          const files = fs.readdirSync(sessionDir).filter(f => f.endsWith(".jsonl"));
-          let lastMtime = 0;
-          for (const f of files) {
-            try {
-              const stat = fs.statSync(path.join(sessionDir, f));
-              if (stat.mtimeMs > lastMtime) lastMtime = stat.mtimeMs;
-            } catch {}
+      if (dir && fs.existsSync(dir)) {
+        try {
+          for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+            if (e.isDirectory() && !e.name.startsWith(".")) addProject(path.join(dir, e.name), e.name);
           }
-          sessionInfo.set(decodedPath, { count: files.length, lastActive: lastMtime });
-        }
+        } catch {}
+      }
+      for (const p of extras) {
+        try {
+          if (fs.existsSync(p) && fs.statSync(p).isDirectory()) addProject(p, path.basename(p) || p);
+        } catch {}
       }
 
-      const projects = entries
-        .filter(e => e.isDirectory() && !e.name.startsWith("."))
-        .map(e => {
-          const fullPath = path.join(resolved, e.name);
-          const info = sessionInfo.get(fullPath) || { count: 0, lastActive: 0 };
-          const isActive = instances.some(i => i.cwd === fullPath);
-          return {
-            name: e.name,
-            path: fullPath,
-            sessionCount: info.count,
-            lastActive: info.lastActive || null,
-            active: isActive,
-          };
-        });
-
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ projects }));
+      res.end(JSON.stringify({ projects, roots: [dir, ...extras].filter(Boolean) }));
     } catch (e: any) {
       res.writeHead(500, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: e.message }));
@@ -1724,7 +2273,8 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
 
         const projectDir = path.join(SESSIONS_DIR, dir.name);
         const files = fs.readdirSync(projectDir).filter(f => f.endsWith(".jsonl"));
-        const decodedPath = dir.name.replace(/^--/, "/").replace(/--$/, "").replace(/-/g, "/");
+        // Display fallback only — the authoritative project path comes from
+        // the session headers' cwd below (the dir encoding is lossy).
 
         const sessions: any[] = [];
 
@@ -1743,7 +2293,19 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
         sessions.sort((a, b) => b.mtime - a.mtime);
 
         if (sessions.length > 0) {
-          projects.push({ path: decodedPath, dirName: dir.name, sessions });
+          // Project path = most common header cwd across its sessions
+          // (exact even when the project name contains dashes); the lossy
+          // dir decode is only the last-resort fallback.
+          const cwdCounts = new Map<string, number>();
+          for (const s of sessions) {
+            if (s.cwd && typeof s.cwd === "string") cwdCounts.set(s.cwd, (cwdCounts.get(s.cwd) || 0) + 1);
+          }
+          let bestCwd: string | null = null;
+          let bestN = 0;
+          for (const [c, n] of cwdCounts) {
+            if (n > bestN) { bestN = n; bestCwd = c; }
+          }
+          projects.push({ path: bestCwd || lossyDecodeSessionDir(dir.name), dirName: dir.name, sessions });
         }
       }
 
@@ -1765,7 +2327,21 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
   // Session file endpoint
   // ═══════════════════════════════════════
   function serveSessionFile(res: http.ServerResponse, dirName: string, file: string) {
-    const filePath = path.join(SESSIONS_DIR, dirName, file);
+    // Traversal rejection: dirName/file come from the URL. `..` segments
+    // would otherwise escape SESSIONS_DIR (e.g. reading settings.json,
+    // which may hold tau credentials).
+    if (!file.endsWith(".jsonl")) {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Not a session file" }));
+      return;
+    }
+    const root = path.resolve(SESSIONS_DIR);
+    const filePath = path.resolve(path.join(SESSIONS_DIR, dirName, file));
+    if (filePath !== root && !filePath.startsWith(root + path.sep)) {
+      res.writeHead(403, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Forbidden" }));
+      return;
+    }
 
     if (!fs.existsSync(filePath)) {
       res.writeHead(404, { "Content-Type": "application/json" });
@@ -1865,8 +2441,33 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
     ".pi", "coverage", ".nyc_output", ".parcel-cache",
   ]);
 
+  // File browsing is allowlisted (AGENTS.md: no unauthenticated filesystem
+  // exposure). Roots are the user home, the configured project roots, and any
+  // explicit TAU_FS_ROOTS. Session-driven browsing always lands inside these.
+  function fsAllowedRoots(): string[] {
+    const roots: string[] = [];
+    if (process.env.HOME) roots.push(process.env.HOME);
+    const { dir, extras } = resolveProjectsRoots();
+    if (dir) roots.push(dir);
+    roots.push(...extras);
+    for (const r of (process.env.TAU_FS_ROOTS || "").split(/[:,]/)) {
+      if (r.trim()) roots.push(r.trim());
+    }
+    return [...new Set(roots.map((r) => path.resolve(r)))];
+  }
+
+  function isPathAllowed(target: string): boolean {
+    const resolved = path.resolve(target);
+    return fsAllowedRoots().some((root) => resolved === root || resolved.startsWith(root + path.sep));
+  }
+
   function serveFileList(res: http.ServerResponse, dirPath: string) {
     try {
+      if (!isPathAllowed(dirPath)) {
+        res.writeHead(403, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Path outside allowed roots", roots: fsAllowedRoots() }));
+        return;
+      }
       if (!fs.existsSync(dirPath) || !fs.statSync(dirPath).isDirectory()) {
         res.writeHead(400, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: "Not a directory" }));
@@ -1901,7 +2502,7 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
       });
 
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ path: dirPath, items }));
+      res.end(JSON.stringify({ path: dirPath, parent: path.dirname(dirPath), items }));
     } catch (err: any) {
       res.writeHead(500, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: err.message }));
@@ -1938,7 +2539,7 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
         if (results.length >= MAX_RESULTS) break;
 
         const projectDir = path.join(SESSIONS_DIR, dir.name);
-        const decodedPath = dir.name.replace(/^--/, "/").replace(/--$/, "").replace(/-/g, "/");
+        const decodedPath = lossyDecodeSessionDir(dir.name);
         const files = fs.readdirSync(projectDir).filter(f => f.endsWith(".jsonl"));
 
         for (const file of files) {
@@ -1952,6 +2553,7 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
             let sessionId = "";
             let sessionName = "";
             let sessionTimestamp = "";
+            let sessionCwd = "";
             let firstMessage = "";
             const matches: any[] = [];
 
@@ -1963,6 +2565,7 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
                 if (entry.type === "session") {
                   sessionId = entry.id;
                   sessionTimestamp = entry.timestamp || "";
+                  if (typeof entry.cwd === "string" && entry.cwd) sessionCwd = entry.cwd;
                 }
                 if (entry.type === "session_info" && entry.name) {
                   sessionName = entry.name;
@@ -2003,7 +2606,7 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
             if (matches.length > 0) {
               results.push({
                 filePath,
-                project: decodedPath,
+                project: sessionCwd || decodedPath,
                 sessionId,
                 sessionName,
                 sessionTimestamp,
@@ -2036,8 +2639,14 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
     wss = new WebSocketServer({ noServer: true });
 
     server.on("upgrade", (request, socket, head) => {
-      if (authEnabled && !checkBasicAuth(request)) {
-        socket.write("HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"Tau\"\r\n\r\n");
+      if (!checkRequestOrigin(request)) {
+        tauLog(`[tau-web] WS upgrade rejected (host=${request.headers.host} origin=${request.headers.origin})`);
+        socket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
+        socket.destroy();
+        return;
+      }
+      if (!checkWsAuth(request)) {
+        socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
         socket.destroy();
         return;
       }
@@ -2060,10 +2669,13 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
       });
 
       // Send initial state
-      sendTo(ws, { type: "state", isStreaming: false, mode: "mirror" });
+      sendTo(ws, { type: "state", isStreaming: false, mode: role });
 
-      // Immediately send state snapshot
-      if (latestCtx) {
+      // Immediately send state snapshot. In hub role this process owns no
+      // session of its own — the browser's transcript comes from a headless
+      // child (rpc_command) or a hub-attached mirror, so an empty hub
+      // snapshot would just flash a bogus session.
+      if (latestCtx && role === "mirror") {
         buildStateSnapshot(latestCtx).then((snapshot) => {
           sendTo(ws, snapshot);
         });
@@ -2082,16 +2694,14 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
         tauDebug("[Mirror] Browser client disconnected");
         clients.delete(ws);
         try { headless.detach(ws); } catch {}
-        try {
-          const e = uplinks.get(ws);
-          if (e) { (e as any).dead = true; try { e.upstream.close(); } catch {} uplinks.delete(ws); }
-        } catch {}
+        hubDetachUplink(ws);
       });
 
       ws.on("error", (e) => {
         tauLog("[Mirror] Client error:", e);
         clients.delete(ws);
         try { headless.detach(ws); } catch {}
+        hubDetachUplink(ws);
       });
     });
 
@@ -2106,6 +2716,7 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
         if (!(client as any).isAlive) {
           try { client.terminate(); } catch {}
           clients.delete(client);
+          hubDetachUplink(client);
           continue;
         }
 
@@ -2143,6 +2754,10 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
     };
 
     const onListening = (port: number) => {
+      boundPort = port;
+      // Announce ourselves to the hub now that the port is known (a hello
+      // sent before listen would carry port 0).
+      pushMirrorStatus();
       const isLoopback = HOST === "127.0.0.1" || HOST === "::1" || HOST === "localhost";
 
       let localIp = "localhost";
@@ -2224,6 +2839,7 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
   // ═══════════════════════════════════════
   pi.on("session_start", async (_event, ctx) => {
     latestCtx = ctx;
+    role = resolveRole(ctx);
     try { wrapUiDialogs(ctx); } catch (e) { tauLog("[tau-web] wrapUiDialogs failed:", (e as any)?.message || e); }
 
     // Skip mirror startup in subagent child processes
@@ -2234,10 +2850,17 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
       return;
     }
 
+    // Role transport (ADR-010): the hub listens on the private socket, a
+    // mirror dials it. Started only when this process is a real server — a
+    // headless child (`TAU_DISABLED=1`) must never bind hub.sock or the
+    // registry, or it would fight the hub that spawned it.
     if (!TAU_AUTO_START) {
       tauDebug("[Mirror] Tau auto-start disabled (TAU_DISABLED=1). Use /tau-start to start manually.");
       return;
     }
+
+    if (role === "hub") startHubSocket();
+    else startHubForwarder();
 
     startServer(ctx);
   });
@@ -2246,6 +2869,12 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
   // Cleanup on shutdown
   // ═══════════════════════════════════════
   pi.on("session_shutdown", async () => {
+    try { hubSockets?.stop(); } catch {}
+    hubSockets = null;
+    try { hubForwarder?.stop(); } catch {}
+    hubForwarder = null;
+    hubUplinkSubs.clear();
+    hubDialogOwner.clear();
     stopServer();
     tauDebug("[Mirror] Server shut down");
   });

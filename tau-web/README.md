@@ -3,7 +3,7 @@
 Unified Pi web UI: **live TUI mirror + headless sessions in one package, one port**.
 Drive the terminal session from the browser, attach to any other live TUI on the
 box, or run headless `pi --mode rpc` backends per browser connection — with full
-web dialogs (`select` / `confirm` / `input` / `editor`) and Tau Basic auth throughout.
+web dialogs (`select` / `confirm` / `input` / `editor`) and Tau cookie-session auth throughout.
 
 Started as a copy of `tau`; `tau/` stays untouched until tau-web passes the harness
 below. See `docs/adr/` for the accepted decisions.
@@ -103,10 +103,16 @@ Unified envelope: every backend event arrives as `{type: "rpc_event", event, upl
 | legacy `prompt` `/reload` | built-in `/reload` command reloads extensions/skills/prompts |
 | legacy mirror commands | unchanged (`prompt`, `abort`, `get_commands`, `mirror_sync_request`, …) |
 
-HTTP auth endpoints: `POST /api/login` (Basic → HttpOnly `tau_auth` cookie,
+HTTP auth endpoints: `POST /api/login` (JSON credentials → HttpOnly `tau_auth` cookie,
 works for fetches **and** the WS handshake, which can't carry headers) and
-`POST /api/logout`. Any API 401 raises the inline login overlay — the native
-browser prompt is never used. Settings shows server version + uptime (from
+`POST /api/logout`. Session rename (`POST /api/sessions/rename`, history files
+only — live sessions rename in their own TUI), per-item export
+(`POST /api/sessions/export`, same `pi --export` CLI pointed at the selected
+history file — the WS `export_html` command only knows the server's own
+session), and export download
+(`GET /api/file/download?path=`, HTML under the session store only) are
+traversal-guarded. Any API 401 raises the inline login overlay — the server never
+sends `WWW-Authenticate`, so the native browser prompt cannot appear. Settings shows server version + uptime (from
 `/api/health`) and a Log-out button. `Ctrl/⌘+K` toggles the command palette.
 
 Prompt routing in the UI: attached uplink first (the TUI owns the run), then the
@@ -128,11 +134,14 @@ fallback anywhere — failures surface as UI errors, and a dead uplink offers
 |---|---|---|
 | `TAU_MIRROR_PORT` / `PI_WEB_PORT` | `8192` | listen port (dev: use `8199`) |
 | `TAU_HOST` / `PI_WEB_HOST` | `127.0.0.1` | bind address — never `0.0.0.0` without auth |
-| `TAU_USER` / `TAU_PASS` | — | Basic auth (HTTP + WS); gate first, expose second |
+| `TAU_USER` / `TAU_PASS` | — | Cookie-session auth (HTTP + WS); gate first, expose second |
 | `TAU_STATIC_DIR` | bundled `public/` | static override for UI work |
 | `TAU_DISABLED` | — | `=1` disables the server (injected into headless children) |
 | `PI_WEB_PI_BIN` / `TAU_PI_BIN` | `pi` | binary spawned for headless backends |
-| `PI_WEB_TTL_MS` / `TAU_HEADLESS_TTL_MS` | `900000` (15 min) | idle reap of headless backends |
+| `PI_WEB_TTL_MS` / `TAU_HEADLESS_TTL_MS` | `0` (never — persistent) | idle reap of headless backends; set positive ms to opt back in |
+| `TAU_MAX_HEADLESS` / `PI_WEB_MAX_HEADLESS` | `0` (unlimited) | hard cap on concurrent headless children; LRU-evicts the least-recently-active idle session (never a running agent) |
+| `TAU_ALLOWED_HOSTS` | — | extra `Host` names allowed on WS/API (anti-rebinding); localhost, IP literals and `*.ts.net` are always allowed |
+| `TAU_ALLOW_ANY_HOST` | — | `=1` disables the Host/Origin check (dev only) |
 
 ## UI notes
 
@@ -149,7 +158,10 @@ fallback anywhere — failures surface as UI errors, and a dead uplink offers
 
 ## Security
 
-Same rules as `tau`: loopback bind by default, Basic auth before any internet
-exposure, uplink targets verified (instance registry + `/api/health` fingerprint
-+ `/proc/<pid>/cmdline` + loopback-only + Basic re-auth), headless session files
-resolved under `~/.pi/agent/sessions/` with traversal rejection.
+Same rules as `tau`: loopback bind by default, cookie-session auth before any internet
+exposure, and the hub↔mirror link is a `~/.pi/tau/hub.sock` unix socket (0700 dir) —
+kernel UID perms are the auth, so there is no unauthenticated TCP port and no PSK.
+Mirrors serve only their own session; cross-session attach/drive is hub-only (ADR-010).
+WS upgrades and `/api/*` additionally enforce a Host/Origin allowlist against DNS
+rebinding (localhost, IP literals, `*.ts.net`, plus `TAU_ALLOWED_HOSTS`). Headless
+session files are resolved under `~/.pi/agent/sessions/` with traversal rejection.

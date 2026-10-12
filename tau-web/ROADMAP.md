@@ -27,7 +27,7 @@ Styled dropdown with search/filter, keyboard support, frosted glass menu. Replac
 Manual compact command broadcasts start/end events to Tau. Shows compaction status in the conversation.
 
 ### Voice Input
-Mic button inside the input bubble. Uses Web Speech API (on-device dictation). Live transcription into the textarea. Pulses red while recording. Hidden if browser doesn't support it.
+Mic button inside the input bubble. Uses Web Speech API (on-device dictation). Live transcription into the textarea. Pulses red while recording. Hidden if browser doesn't support it. Transcripts rebuild from the cumulative result list each event and collapse Chrome's repeated interim/final overlap (no duplicated words); script + worker cache-busted on fix.
 
 ### Diff Viewer
 Edit tool cards render a proper inline diff with red/green lines instead of raw JSON args. Works for both live and history cards.

@@ -3473,50 +3473,91 @@ if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
   recognition.interimResults = true;
   recognition.lang = 'en-AU';
 
+  let baseText = '';
   let finalTranscript = '';
   let interimTranscript = '';
 
-  recognition.addEventListener('result', (e) => {
-    interimTranscript = '';
-    for (let i = e.resultIndex; i < e.results.length; i++) {
-      if (e.results[i].isFinal) {
-        finalTranscript += e.results[i][0].transcript;
-      } else {
-        interimTranscript += e.results[i][0].transcript;
-      }
+  // Chain-safe append: strips any prefix of b already present as a tail of
+  // a (some Chrome builds emit cumulative segments per index AND repeat
+  // confirmed words at the head of the next interim). Never cuts mid-word.
+  function appendSpeech(a, b) {
+    const A = String(a ?? '');
+    const B = String(b ?? '');
+    if (!A) return B.replace(/^\s+/, '');
+    if (!B) return A;
+    const max = Math.min(A.length, B.length);
+    let k = 0;
+    for (let n = max; n > 0; n--) {
+      if (A.slice(-n) === B.slice(0, n)) { k = n; break; }
     }
-    // Show live transcription in the input
-    messageInput.value = finalTranscript + interimTranscript;
-    messageInput.dispatchEvent(new Event('input'));
-  });
+    while (k > 0 && k < B.length && /\S/.test(B[k - 1]) && /\S/.test(B[k])) k--;
+    const tail = B.slice(k).replace(/^\s+/, '');
+    if (!tail) return A.replace(/\s+$/, '');
+    return /\s$/.test(A) ? A + tail : A + ' ' + tail;
+  }
 
-  recognition.addEventListener('end', () => {
+  function joinSpeech(base, chunk) {
+    return appendSpeech(base, chunk);
+  }
+
+  // Mobile Chrome often re-emits confirmed words at the head of the next
+  // interim (final="this", interim="this is") and may emit cumulative
+  // segments per index. Naive final+interim then renders "thisthis is".
+  // Every boundary goes through appendSpeech so repeats collapse.
+
+  // Property assignment (not addEventListener): re-evaluating this script
+  // must not stack a second handler and double-write every word.
+  console.log('[Voice] stt chain-fix v4');
+  recognition.onresult = (e) => {
+    // e.results is cumulative: it re-emits previously-finalised results on
+    // every event. Rebuild from index 0 each time — incrementally appending
+    // from e.resultIndex double-counts finals and duplicates words.
+    let final = '';
+    let interim = '';
+    for (let i = 0; i < e.results.length; i++) {
+      const t = e.results[i][0].transcript;
+      if (e.results[i].isFinal) final = appendSpeech(final, t);
+      else interim = appendSpeech(interim, t);
+    }
+    finalTranscript = final;
+    interimTranscript = interim;
+    // Show live transcription in the input
+    messageInput.value = appendSpeech(appendSpeech(baseText, final), interim);
+    messageInput.dispatchEvent(new Event('input'));
+  };
+
+  recognition.onend = () => {
     if (isRecording) {
       // Stopped unexpectedly — clean up
       stopRecording();
     }
-  });
+  };
 
-  recognition.addEventListener('error', (e) => {
+  recognition.onerror = (e) => {
     console.error('[Voice] Error:', e.error);
     stopRecording();
-  });
+  };
 
-  micBtn.addEventListener('click', () => {
-    if (isRecording) {
-      stopRecording();
-    } else {
-      startRecording();
-    }
-  });
+  if (!micBtn.dataset.voiceWired) {
+    micBtn.dataset.voiceWired = '1';
+    micBtn.addEventListener('click', () => {
+      if (isRecording) {
+        stopRecording();
+      } else {
+        startRecording();
+      }
+    });
+  }
 
   function startRecording() {
-    finalTranscript = messageInput.value; // Append to existing text
+    if (isRecording) return; // ignore double-tap: reset would orphan in-flight results
+    baseText = messageInput.value; // Append to existing text
+    finalTranscript = '';
     interimTranscript = '';
     isRecording = true;
     micBtn.classList.add('recording');
     micBtn.title = 'Stop recording';
-    recognition.start();
+    try { recognition.start(); } catch {}
     messageInput.focus();
   }
 
@@ -3525,8 +3566,10 @@ if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
     micBtn.classList.remove('recording');
     micBtn.title = 'Voice input';
     try { recognition.stop(); } catch {}
-    // Commit final transcript
-    messageInput.value = finalTranscript;
+    // Commit whatever is on screen (final + last interim) — overwriting
+    // with finalTranscript alone drops the trailing words and can
+    // re-introduce a stale prefix as a duplicate.
+    messageInput.value = appendSpeech(appendSpeech(baseText, finalTranscript), interimTranscript);
     messageInput.dispatchEvent(new Event('input'));
     messageInput.focus();
   }

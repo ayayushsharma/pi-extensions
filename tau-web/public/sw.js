@@ -1,7 +1,7 @@
 // Tau Service Worker — minimal, just enables PWA install
 // No aggressive caching since Tau connects to a live local server
 
-const CACHE_NAME = 'tau-v2';
+const CACHE_NAME = 'tau-v4';
 
 // Served for navigations that hit an auth challenge: unregisters workers
 // and reloads without interception so the browser prompts for login.

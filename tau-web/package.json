@@ -23,7 +23,10 @@
     "image": "https://raw.githubusercontent.com/ayayushsharma/pi-extensions/main/tau-web/docs/images/dark.png"
   },
   "dependencies": {
-    "ws": "^8.16.0",
-    "qrcode": "^1.5.0"
+    "ws": "^8.16.0"
+  },
+  "scripts": {
+    "test:e2e": "node tests/run.mjs",
+    "test:e2e:p0": "node tests/run.mjs --filter H1,H2,H3,H4,H5,H6,H7,H8,H9,H10"
   }
 }

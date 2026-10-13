@@ -280,9 +280,8 @@ export class SessionSidebar {
     const commit = async () => {
       const newName = input.value.trim();
       if (newName && newName !== currentName) {
-        // Rename the session FILE (server appends session_info), not the
-        // live TUI session — the old code called set_session_name, which
-        // renamed whatever session the server was running instead.
+        // Rename the session FILE (server appends session_info) — never
+        // the hub's own running session.
         try {
           const res = await fetch('/api/sessions/rename', {
             method: 'POST',
@@ -351,7 +350,6 @@ export class SessionSidebar {
       const data = await res.json().catch(() => null);
       if (res.ok && data?.success && data?.path) {
         // The server exports the SELECTED history file via `pi --export`
-        // (the old code exported the server's own live session instead)
         // and we download exactly what it produced.
         window.open(`/api/file/download?path=${encodeURIComponent(data.path)}`, '_blank');
       } else {

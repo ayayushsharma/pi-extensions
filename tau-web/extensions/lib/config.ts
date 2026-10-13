@@ -1,11 +1,12 @@
 /**
- * config — role resolution for tau-web (ADR-010).
+ * config — role resolution for tau-web (ADR-012).
  *
  * One package, two roles:
- *   hub    — control plane. Runs headless (`pi -e tau-web --mode rpc`),
- *            owns the session switchboard, serves the browser port.
- *   mirror — data plane. A live TUI. Serves its own session and dials the
- *            hub over the private socket so browsers can drive it.
+ *   hub    — the daemon. Runs headless (`pi -e tau-web --mode rpc`),
+ *            owns sessions via headless children, serves the only
+ *            browser port. There is no flow from the Hub to a live TUI.
+ *   mirror — inert. Any other process (live TUI, headless child) resolves
+ *            here and starts nothing: no server, no dial-out.
  *
  * Role is inferred from the pi mode: rpc has no terminal UI, so it is the
  * hub; everything interactive is a mirror. TAU_ROLE forces a role for

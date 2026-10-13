@@ -1,9 +1,11 @@
 # tau-web
 
-Unified Pi web UI: **live TUI mirror + headless sessions in one package, one port**.
-Drive the terminal session from the browser, attach to any other live TUI on the
-box, or run headless `pi --mode rpc` backends per browser connection — with full
-web dialogs (`select` / `confirm` / `input` / `editor`) and Tau cookie-session auth throughout.
+Unified Pi web UI: **sessions in one package, one port**. The hub owns
+headless `pi --mode rpc` backends per browser connection — and relays
+live terminal sessions through the attach path (ADR-014): mirrors dial
+the hub over `~/.pi/tau/hub.sock`, browsers preview-then-drive them, no
+per-TUI port. Full web dialogs (`select` / `confirm` / `input` /
+`editor`) and Tau cookie-session auth throughout.
 
 Started as a copy of `tau`; `tau/` stays untouched until tau-web passes the harness
 below. See `docs/adr/` for the accepted decisions.
@@ -11,34 +13,36 @@ below. See `docs/adr/` for the accepted decisions.
 ## Status
 
 Implemented end to end and harness-verified (P0–P2 core): headless bridge,
-uplink proxy, unified `{type: rpc_event}` envelope, epoch-guarded streaming,
-windowed history render, Live section with preview-then-attach (ADR-009), prompt
-routing (uplink → mirror-live → headless → direct). The header follows the
-attached backend: model, thinking level, session cost and effective context
-window come from the live session (not the web server), and model/thinking can
-be changed from the web UI while driving. Compaction (manual, threshold and
-overflow) is a first-class UI state: an amber **Compacting…** pill plus an inline
-transcript message that resolves to the summary, a cancellation, or the failure —
-headless sessions are covered by tau-web itself; attached live TUIs forward it once
-the TUI runs the patched `tau` extension. History renders the last 100 entries with
-an incremental **Load earlier messages** control (window grows 100 at a time, scroll
-anchor preserved); the full session stays in memory and on disk. The active session
-is encoded in the URL (`#session=<file-basename>&drive=1`), so a reload re-attaches
-the same session and separate tabs drive separate sessions independently. Messages
-queued while a run is in flight are forwarded immediately as `steer` prompts — pi
-holds them in its own queue and delivers them after the current turn; a rejected
-prompt is surfaced instead of failing silently. Harness: **ALL PASS**
-(health, authed WS, ping/pong, `uplink_list` discovery of live tau, `start_session`
-+ headless `HEADLESS-OK` round-trip, uplink attach/detach + live `mirror_sync`).
+attach relay for live sessions, unified `{type: rpc_event}` envelope,
+epoch-guarded streaming, windowed history render, prompt routing
+(uplink → headless → direct). The header follows the
+bound backend: model, thinking level, session cost and effective context
+window come from the headless session (not the hub process), and
+model/thinking can be changed from the web UI. Compaction (manual,
+threshold and overflow) is a first-class UI state: an amber **Compacting…**
+pill plus an inline transcript message that resolves to the summary, a
+cancellation, or the failure. History renders the last 100 entries with an
+incremental **Load earlier messages** control (window grows 100 at a time,
+scroll anchor preserved); the full session stays in memory and on disk. The
+active session is encoded in the URL (`#session=<file-basename>`), so a
+reload resumes the same session and separate tabs run separate sessions
+independently. Messages queued while a run is in flight are forwarded
+immediately as `steer` prompts — pi holds them in its own queue and delivers
+them after the current turn; a rejected prompt is surfaced instead of failing
+silently. Harness: **ALL PASS** (health, authed WS, ping/pong,
+`start_session` + headless `HEADLESS-OK` round-trip).
+Test design: `docs/testing.md` (layers, doubles, P0–P2 matrix).
 
 ## Layout
 
 ```text
 tau-web/
-  extensions/mirror-server.ts   # HTTP+WS server: mirror + headless + uplink + dialogs
+  extensions/mirror-server.ts   # HTTP+WS hub server: headless backends + dialogs
   extensions/headless-bridge.ts # HeadlessRegistry: one `pi --mode rpc` child per WS
   public/                       # vanilla JS UI (app.js, dialogs.js, websocket-client.js, …)
-  docs/adr/                     # 001 base on tau … 007 full dialogs, no fallbacks
+  docs/adr/                     # 001 base on tau … 011 hub-only, 013 live-processes, 014 attach-relay
+                              # (012 headless-only: superseded, kept as history)
+  docs/testing.md               # e2e test design: layers, doubles, P0–P2 matrix
 ```
 
 ## Run
@@ -53,7 +57,7 @@ TAU_MIRROR_PORT=8199 TAU_HOST=127.0.0.1 TAU_STATIC_DIR=$(pwd)/public pi -e .
 
 `.ts` changes: `rm -rf $TMPDIR/jiti`, restart Pi. `public/` changes: browser reload.
 
-`TAU_DISABLED=1` disables the mirror server (headless children always run with it).
+`TAU_DISABLED=1` disables the server (headless children always run with it).
 
 ## tau supersession
 
@@ -88,20 +92,21 @@ port (e.g. `8199`) and leave live tau untouched.
 
 ## Protocol (browser ↔ server, WS `/ws`)
 
-Unified envelope: every backend event arrives as `{type: "rpc_event", event, uplink?, port?}`.
+Unified envelope: every backend event arrives as `{type: "rpc_event", event}`.
 
 | Client → server | Effect |
 |---|---|
 | `start_session {cwd?, sessionFile?}` | bind (or rejoin) headless backend; ack `{sessionKey}` |
 | `rpc_command {command}` | forward to headless stdin (e.g. `{type:"prompt"}`, `{type:"abort"}`) |
-| `detach_session` | release headless binding (TTL would reap it anyway) |
-| `uplink_list` | list verified live Tau instances `{instances:[{port,pid,sessionFile,cwd}]}` |
-| `uplink_attach {port,pid}` | proxy a live TUI (fingerprint + `/proc` check + loopback-only) |
-| `uplink_detach` / `uplink_command {command}` | leave / drive the attached TUI |
-| `extension_ui_response {id, …}` | answer a dialog; routed to uplink owner, headless child, or mirror waiter |
+| `detach_session` | release headless binding (persistent by default — TTL only if configured) |
+| `uplink_list` | list live TUIs dialed in over hub.sock (relay) |
+| `uplink_attach {port, pid}` | previewed → drive the live TUI; answers `uplink_attached` |
+| `uplink_detach` | stop driving (frozen view + Drive-again banner) |
+| `uplink_command {command}` | route a command to the driven TUI (prompt, abort, …) |
+| `extension_ui_response {id, …}` | answer a dialog; routed to headless child, driven TUI, or hub waiter |
 | `ping` | `pong` |
 | legacy `prompt` `/reload` | built-in `/reload` command reloads extensions/skills/prompts |
-| legacy mirror commands | unchanged (`prompt`, `abort`, `get_commands`, `mirror_sync_request`, …) |
+| legacy commands | unchanged (`prompt`, `abort`, `get_commands`, …) |
 
 HTTP auth endpoints: `POST /api/login` (JSON credentials → HttpOnly `tau_auth` cookie,
 works for fetches **and** the WS handshake, which can't carry headers) and
@@ -111,22 +116,31 @@ only — live sessions rename in their own TUI), per-item export
 history file — the WS `export_html` command only knows the server's own
 session), and export download
 (`GET /api/file/download?path=`, HTML under the session store only) are
-traversal-guarded. Any API 401 raises the inline login overlay — the server never
+traversal-guarded. `GET /api/instances` lists live TUIs dialed in over
+hub.sock (ADR-014). Any API 401 raises the inline login overlay — the server never
 sends `WWW-Authenticate`, so the native browser prompt cannot appear. Settings shows server version + uptime (from
-`/api/health`) and a Log-out button. `Ctrl/⌘+K` toggles the command palette.
+`/api/health`), a Log-out button, and a **Live pi processes** block (`GET /api/processes` →
+per-row Kill via `POST /api/processes/kill {pid}`): read-only visibility into terminal sessions
+and hub backends on the box plus an on-demand kill switch. Hub-owned pids retire through the
+headless registry; live pids get SIGTERM then SIGKILL. Killing frees resources — session files
+stay on disk. Process management only: no transcript proxy, no session driving (ADR-013).
+`Ctrl/⌘+K` toggles the command palette.
 
-Prompt routing in the UI: attached uplink first (the TUI owns the run), then the
-mirror-live session, then the headless backend, then legacy direct send.
+Prompt routing in the UI: the driven live TUI (uplink) first, then the
+bound headless backend, then legacy direct send. Driving is
+preview-first: read-only history with a confirm banner, then "Drive
+this TUI" wires the uplink (ADR-009); detaching freezes the view with a
+Drive-again affordance instead of resuming the file headless (two
+writers on one file, ADR-003).
 One WS = one headless backend (server keys by connection); a second browser
 tab/window gets its own backend, so phone + laptop stay independent.
 Session switching bumps a binding epoch — stale stream events from the old
 session are dropped. History renders the last 100 entries with an incremental
 **Load earlier messages** control; full history stays in memory and on disk.
-Per-tab sessions: `#session=<file-basename>` pins the view (add `&drive=1` to
-auto-attach a live TUI); the key is never a filesystem path.
+Per-tab sessions: `#session=<file-basename>` pins the view; the key is never
+a filesystem path.
 Command palette (`/` browsing + fuzzy search) with unknown-slash guard; no `ttyd`
-fallback anywhere — failures surface as UI errors, and a dead uplink offers
-**Continue headless** on the same file.
+fallback anywhere — failures surface as UI errors.
 
 ## Config (env, then `~/.pi/agent/settings.json` `tau` block)
 
@@ -147,8 +161,8 @@ fallback anywhere — failures surface as UI errors, and a dead uplink offers
 
 - No emoji anywhere: all glyphs are inline SVG (`public/icons.js`), so themes
   apply via `currentColor` and phones render identically.
-- Thinking level is a header dropdown (off…max); attaching shows the driven
-  session's model/thinking/context window, re-polled every 60s.
+- Thinking level is a header dropdown (off…max); the header shows the bound
+  session's model/thinking/context window.
 - Tool cards carry light start-time/duration stamps; Edit diffs render
   GitHub-style (gutter + line numbers) and never trap vertical touch scroll.
 - Settings is tabbed (Appearance/Agent/Voice/Server); auth has no toggle —
@@ -159,9 +173,12 @@ fallback anywhere — failures surface as UI errors, and a dead uplink offers
 ## Security
 
 Same rules as `tau`: loopback bind by default, cookie-session auth before any internet
-exposure, and the hub↔mirror link is a `~/.pi/tau/hub.sock` unix socket (0700 dir) —
-kernel UID perms are the auth, so there is no unauthenticated TCP port and no PSK.
-Mirrors serve only their own session; cross-session attach/drive is hub-only (ADR-010).
+exposure — so there is no unauthenticated TCP port and no PSK.
+All browser UI goes through the hub port — mirrors serve nothing
+directly (no per-TUI port, ADR-011/014). The hub never injects into a
+foreign process except through an explicitly attached drive (uplink) or
+TERM/KILL from the auth-gated live-process kill switch (ADR-013) —
+never anything else, never without the user asking.
 WS upgrades and `/api/*` additionally enforce a Host/Origin allowlist against DNS
 rebinding (localhost, IP literals, `*.ts.net`, plus `TAU_ALLOWED_HOSTS`). Headless
 session files are resolved under `~/.pi/agent/sessions/` with traversal rejection.

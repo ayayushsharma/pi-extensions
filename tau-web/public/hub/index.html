@@ -112,8 +112,10 @@
         </div>
         <!-- Title bar: which session this view is showing (below the tabs) -->
         <div class="title-bar hidden" id="title-bar">
-          <span class="tb-title" id="tb-title"></span>
-          <span class="tb-state" id="tb-state"></span>
+          <div class="tb-row">
+            <span class="tb-title" id="tb-title"></span>
+            <span class="tb-state" id="tb-state"></span>
+          </div>
         </div>
       </div>
 
@@ -317,6 +319,14 @@
         <div class="settings-row">
           <span class="settings-label">This browser</span>
           <button class="settings-value-btn" id="btn-logout">Log out</button>
+        </div>
+        <div class="settings-section-title">Live pi processes</div>
+        <div class="proc-note">Terminal sessions and hub backends on this box. Killing one frees its resources; session files stay on disk.</div>
+        <div class="proc-error hidden" id="proc-error"></div>
+        <div class="proc-list" id="proc-list"></div>
+        <div class="settings-row">
+          <span class="settings-label" id="proc-count">—</span>
+          <button class="settings-value-btn" id="btn-proc-refresh">Refresh</button>
         </div>
       </div>
     </div>

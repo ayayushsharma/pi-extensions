@@ -1,33 +1,32 @@
 # tau-web architecture
 
-One package, one port: a live-TUI mirror plus headless backends plus an
-uplink proxy, serving one vanilla-JS UI.
+One package, one port: a hub serving one vanilla-JS UI, owning headless
+backends — and relaying live terminal sessions dialed in over hub.sock
+(ADR-014). Mirrors serve nothing directly (no per-TUI port, ADR-011).
 
 ## Big picture
 
 ```text
                     ┌──────────────────────────────────────────────────┐
-                    │  tau-web pi extension (pi -e ./tau-web)          │
+                    │  tau-web hub (pi -e ./tau-web --mode rpc)         │
                     │  extensions/mirror-server.ts  ·  ONE PORT        │
                     │                                                  │
-  browser ──HTTP──▶ │  static public/  +  /api/*                       │
+  browser ──HTTP──▶ │  static public/hub/  +  /api/*                   │
          ──WS /ws─▶ │                                                  │
-                    │   ┌────────────┐   ┌───────────────┐               │
-                    │   │  mirror    │   │  headless     │   ┌────────┐  │
-                    │   │  (own TUI  │   │  registry     │   │ uplink │  │
-                    │   │   session) │   │  (spawned     │   │ proxy  │  │
-                    │   └────────────┘   │  pi --mode    │   └────────┘  │
-                    │                    │  rpc children)│      │       │
-                    │                    └───────────────┘      │       │
-                    └──────────────────────────────────────────┼───────┘
-                             ▲                                 │ loopback WS
-                             │ owns                  ┌─────────▼─────────┐
-                    ┌──────────┴─────────┐           │ other live TUIs   │
-                    │ own TUI session    │           │ (tau :12045, …)   │
-                    │ (drivable)         │           │ driving their own │
-                    └────────────────────┘           │ terminal sessions │
-                                                     └───────────────────┘
+                    │   ┌───────────────┐    ┌──────────────────┐       │
+                    │   │  headless     │    │  attach relay    │◀──────┼── live TUIs
+                    │   │  registry     │    │  (hub.sock +     │  dial-in
+                    │   │  (spawned     │    │  uplink proxy)   │       │
+                    │   │  pi --mode    │    └──────────────────┘       │
+                    │   │  rpc children)│                              │
+                    │   └───────────────┘                              │
+                    └──────────────────────────────────────────────────┘
 ```
+
+Role split: the hub owns the port and serves browsers; headless
+children run sessions (one per WS); live TUIs ("mirrors") dial the hub
+over `~/.pi/tau/hub.sock` and execute relayed drive commands. A mirror
+never serves a browser directly.
 
 ## Connections per browser client
 
@@ -37,24 +36,24 @@ uplink proxy, serving one vanilla-JS UI.
                     │   (one tab /  │  phone + laptop stay independent
                     │    window)    │
                     └───────┬───────┘
-                            │ WS /ws  (cookie; uplink dials use Basic)
+                            │ WS /ws (cookie)
               ┌─────────────▼─────────────┐
               │  mirror-server connection  │
               │  handlers                  │
-              └──┬──────────┬──────────┬───┘
-                 │          │          │
-        headless │ uplink   │ mirror   │ legacy
-        backend  │ proxy    │ session  │ commands
-           │         │          │       (get_commands,
-           ▼         ▼          ▼        files, …)
-      ┌────────┐ ┌────────┐ ┌────────┐
-      │pi --mode│ │live TUI│ │own TUI │
-      │rpc child│ │:12045  │ │session │
-      │(TAU_    │ │(WS     │ │(ctx    │
-      │DISABLED │ │proxy)  │ │events) │
-      │=1)      │ │        │ │        │
-      └────────┘ └────────┘ └────────┘
-      keyed by WS · TTL-reaped
+              └──┬──────────┬──────────────┘
+                 │          │
+        headless │ legacy   │
+        backend  │ commands │
+           │     │ (get_commands,
+           ▼     │  files, …)
+      ┌────────┐ │
+      │pi --mode│ │
+      │rpc child│ │
+      │(TAU_    │ │
+      │DISABLED │ │
+      │=1)      │ │
+      └────────┘ │
+      keyed by WS · persistent
 ```
 
 ## Prompt routing (client decides, server executes)
@@ -64,13 +63,8 @@ uplink proxy, serving one vanilla-JS UI.
        │
        ▼
   ┌────────────────┐  yes   ┌─────────────────────────────┐
-  │ uplink attached?├──────▶ │ {type:"uplink_command"}      │──▶ live TUI owns the run
-  └───────┬────────┘        └─────────────────────────────┘
-          │ no
-          ▼
-  ┌────────────────┐  yes   ┌─────────────────────────────┐
-  │ viewing mirror │──────▶ │ {type:"prompt"} (direct)      │──▶ own TUI session
-  │ live session?  │        └─────────────────────────────┘
+  │ driving a live │──────▶ │ {type:"uplink_command"}       │──▶ relayed to the
+  │ TUI (uplink)?  │        └─────────────────────────────┘    driven TUI
   └───────┬────────┘
           │ no
           ▼
@@ -79,39 +73,48 @@ uplink proxy, serving one vanilla-JS UI.
   └───────┬────────┘        └─────────────────────────────┘
           │ no (fallback)
           ▼
-        direct send (legacy mirror path)
+        direct send (hub's own pi process)
 ```
+
+Driving is preview-first (ADR-009): picking a live session loads its
+history read-only with a confirm banner; only "Drive this TUI" wires
+the uplink (`uplink_attach` → `uplink_attached`). Detach freezes the
+view with a Drive-again banner — the file is never resumed headless
+while its TUI runs (two writers, ADR-003).
 
 ## Event flow (server → browser, ADR-004 unified envelope)
 
 ```text
-  mirror ctx events ──┐
-                      ├─▶ broadcast / sendTo ─▶ {type:"rpc_event", event} ─▶ UI rpcEvent path
-  headless child ─────┤                              ▲
-  stdout (LF JSONL) ──┘                              │
-  uplink upstream WS ── re-wrap {type:"event"} ──────┘  (+ uplink:true, port)
+  headless child stdout (LF JSONL) ──▶ broadcast / sendTo ─▶ {type:"rpc_event", event} ─▶ UI rpcEvent path
 
-  responses (start_session / uplink_list acks) ─▶ {type:"rpc_event", event:{type:"response"}, id}
-                                                        └─▶ correlated by id (pendingRpc map)
+  responses (start_session acks) ─▶ {type:"rpc_event", event:{type:"response"}, id}
+                                        └─▶ correlated by id (pendingRpc map)
 ```
 
 Session switching bumps `bindingEpoch`; stream handlers capture the epoch at
 `message_start`/`agent_start` and drop anything stale. History renders the
 last 100 entries with a Load-earlier control; the full log stays on disk.
 
+Mirror frames (hub.sock → browser): a dialed-in TUI's live state
+arrives as hello/status/snapshot/event frames over the socket and is
+forwarded to attached browsers as `mirror_sync` snapshots and
+`uplink_attached` / `uplink_detached` / `uplink_dead` / `mirrors_changed`
+frames; the Live section (`/api/instances` + `uplink_list`) is the
+human-visible side of the same data.
+
 ## Dialogs (ADR-007, no fallbacks, no two-drivers)
 
 ```text
-  TUI session needs select/confirm/input/editor
+  hub session needs select/confirm/input/editor
        │
        ▼
   ┌──────────────────┐   no browsers?   ┌──────────────────┐
-  │ browser clients? ├─────────────────▶ │ native TUI prompt │
+  │ browser clients? ├─────────────────▶ │ native prompt     │
   └───────┬──────────┘                   └──────────────────┘
           │ browsers connected
           ▼
   broadcast {type:"event", event:{type:"extension_ui_request", id, method, …}}
-  + TUI shows "Dialog open in browser" notice (it does NOT also prompt)
+  + hub shows "Dialog open in browser" notice (it does NOT also prompt)
           │
           ▼
   browser dialogs.js renders modal ─▶ user answers
@@ -119,10 +122,9 @@ last 100 entries with a Load-earlier control; the full log stays on disk.
           ▼
   {type:"extension_ui_response", id, …}
           │
-          ├─ id owned by uplink? ──▶ forward to upstream TUI
           ├─ id owned by headless child? ──▶ write to child stdin
-          └─ else (mirror) ──▶ resolve wrapUiDialogs waiter
-          (browser gone mid-dialog → TUI waiter released back to native)
+          └─ else (hub's own ctx) ──▶ resolve wrapUiDialogs waiter
+          (browser gone mid-dialog → waiter released back to native)
 ```
 
 ## Security gates
@@ -133,7 +135,16 @@ last 100 entries with a Load-earlier control; the full log stays on disk.
                                         │ never 0.0.0.0 without auth (browsers use the
                                         │ HttpOnly tau_auth cookie; the WS handshake
                                         │ cannot carry headers)
-  uplink attach ─▶ instance registry ─▶ /api/health fingerprint (mode=mirror)
-                ─▶ /proc/<pid>/cmdline is pi ─▶ loopback-only ─▶ Basic re-auth
   headless files ─▶ resolved under ~/.pi/agent/sessions/, traversal rejected
 ```
+
+## Live processes (ADR-013)
+
+Observability without driving: `GET /api/processes` scans `/proc` for
+argv[0]/exe basename exactly `pi` (self excluded, hub children labeled
+`hub`, everything else `live`) and the Settings → Server pane renders
+one row per process with a Kill button. `POST /api/processes/kill`
+retires hub-owned pids through the headless registry (bindings die
+together) and TERM→KILLs live pids after a kill-time re-fingerprint —
+bad pid `400`, stale pid `404`, hub-self `400`. Killed terminal
+sessions keep their files; resume stays a headless `start_session`.

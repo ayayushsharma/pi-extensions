@@ -6,14 +6,16 @@
  */
 
 export function createSessionActions(deps) {
-  const { sendRpc, dialogConfirm, onFresh, onClosed, getCwd } = deps;
+  const { sendRpc, dialogConfirm, onFresh, onClosed, onTimeout, getCwd } = deps;
 
   /** /new semantics: old session keeps running detached, fresh bound. */
   async function newSessionInCwd(cwd) {
     const payload = { type: "new_session" };
     if (cwd) payload.cwd = cwd;
     const data = await sendRpc(payload);
+    // A dropped ack must never be silent: the view stays put, so say why.
     if (data && !data.timeout) onFresh?.(data);
+    else if (data?.timeout) onTimeout?.("new_session");
     return data;
   }
 
@@ -25,7 +27,7 @@ export function createSessionActions(deps) {
   async function closeCurrentSession() {
     const ok = await dialogConfirm?.({
       title: "Kill session",
-      message: "Terminate the running pi backend for this view? The transcript file stays on disk; the live process dies.",
+      message: "Terminate the running pi backend for this view? The transcript file stays on disk; the process dies.",
       okLabel: "Kill",
     });
     if (!ok) return false;

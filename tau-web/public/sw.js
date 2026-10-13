@@ -1,7 +1,9 @@
 // Tau Service Worker — minimal, just enables PWA install
 // No aggressive caching since Tau connects to a live local server
 
-const CACHE_NAME = 'tau-v4';
+// Bumped on the ADR-011 hub-only cut: the old shell cached `/` (the deleted
+// mirror entry). A new version forces supporting browsers to drop it.
+const CACHE_NAME = 'tau-v5';
 
 // Served for navigations that hit an auth challenge: unregisters workers
 // and reloads without interception so the app shell can show the inline
@@ -16,8 +18,10 @@ self.addEventListener('install', (event) => {
     caches.open(CACHE_NAME).then((cache) => {
       // Tolerate partial precache (e.g. a subresource 401s before login)
       // — a failed addAll must not kill install.
+      // Hub-only (ADR-011): the hub shell is the only entry point.
       return cache.addAll([
-        '/',
+        '/hub/',
+        '/hub/hub.css',
         '/style.css',
         '/app.js',
         '/state.js',

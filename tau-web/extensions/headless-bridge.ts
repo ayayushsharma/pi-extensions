@@ -80,6 +80,10 @@ export class RpcSession {
     }
   }
 
+  get pid(): number | undefined {
+    try { return this.proc.pid; } catch { return undefined; }
+  }
+
   send(command: any): void {
     if (this.killed || !this.proc.stdin.writable) return;
     this.proc.stdin.write(JSON.stringify(command) + "\n", "utf-8");
@@ -142,14 +146,24 @@ export class HeadlessRegistry {
     return { isActive: false, isWorking: false };
   }
 
-  attach(ws: any, cwdRaw?: string, sessionFileRaw?: string | null, opts?: { fresh?: boolean }): ManagedHeadless {
+  attach(ws: any, cwdRaw?: string, sessionFileRaw?: string | null, opts?: { fresh?: boolean; sessionKey?: string | null }): ManagedHeadless {
     const cwd = cwdRaw && cwdRaw.trim().length > 0 ? resolve(cwdRaw) : this.homeDir;
     const sessionFile = sessionFileRaw && sessionFileRaw.length > 0 ? basename(sessionFileRaw) : null;
     // One backend per session (shared across tabs on the same file).
     // opts.fresh (web /new) always spawns a new backend, never rejoins —
     // the old session keeps running detached, like pi's /new keeps the old file.
     let managed: ManagedHeadless | undefined;
-    if (sessionFile && !opts?.fresh) {
+    // Exact rejoin (reload-proof): the client names the backend id from its
+    // last start_session ack. Matched against live registry ids only, so a
+    // stale key can never attach a wrong or recycled session — it just
+    // misses and falls through to the file scan below.
+    const wantKey = opts?.sessionKey;
+    if (wantKey && !opts?.fresh) {
+      for (const m of this.sessions.values()) {
+        if (!m.isClosing && m.id === wantKey) { managed = m; break; }
+      }
+    }
+    if (!managed && sessionFile && !opts?.fresh) {
       for (const m of this.sessions.values()) {
         if (!m.isClosing && m.cwd === cwd && (m.sessionFile === sessionFile || m.discoveredFile === sessionFile)) {
           managed = m;
@@ -322,15 +336,43 @@ export class HeadlessRegistry {
   closeSession(ws: any): boolean {
     const current = this.socketBinding.get(ws);
     if (!current) return false;
-    current.isClosing = true;
-    if (current.idleTimer) { clearTimeout(current.idleTimer); current.idleTimer = null; }
-    this.sessions.delete(current.id);
-    try { current.rpc.kill(); } catch {}
-    for (const client of current.clients) {
-      if (this.socketBinding.get(client) === current) this.socketBinding.delete(client);
-    }
-    current.clients.clear();
+    this.retire(current);
     return true;
+  }
+
+  /** Explicit kill from the web UI by OS pid (ADR-013): same teardown as
+   *  closeSession so WS bindings never dangle. */
+  closeByPid(pid: number): boolean {
+    for (const m of this.sessions.values()) {
+      if (!m.isClosing && m.rpc.pid === pid) {
+        this.retire(m);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** Pids of live headless children — marks `owner: "hub"` rows in
+   *  /api/processes so the UI can tell backends from terminal sessions. */
+  childPids(): Set<number> {
+    const out = new Set<number>();
+    for (const m of this.sessions.values()) {
+      if (m.isClosing) continue;
+      const pid = m.rpc.pid;
+      if (typeof pid === "number") out.add(pid);
+    }
+    return out;
+  }
+
+  private retire(managed: ManagedHeadless): void {
+    managed.isClosing = true;
+    if (managed.idleTimer) { clearTimeout(managed.idleTimer); managed.idleTimer = null; }
+    this.sessions.delete(managed.id);
+    try { managed.rpc.kill(); } catch {}
+    for (const client of managed.clients) {
+      if (this.socketBinding.get(client) === managed) this.socketBinding.delete(client);
+    }
+    managed.clients.clear();
   }
 
   listSessions(): Array<{ id: string; cwd: string; sessionFile: string | null; discoveredFile: string | null; clients: number; isAgentRunning: boolean; lastActiveMs: number }> {

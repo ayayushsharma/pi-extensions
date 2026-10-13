@@ -4,6 +4,14 @@
    The hub keeps the mirror engine (app.js) but swaps the chrome:
    a slim session-tab bar on top + a search-first "home" overlay, with the
    session list demoted to an off-canvas drawer.
+
+   Responsiveness contract: the hub keeps the SAME single-row layout
+   (tab bar, composer row, session bar) on desktop and mobile — small
+   screens only relax sizes/caps at one breakpoint (768px, matching
+   style.css). style.css's mobile rules target the pre-hub header
+   (model/thinking/token grid, 44px minima, full-width model button);
+   the overrides at the bottom of this file neutralize the ones that
+   would otherwise leak into hub chrome and split mobile behaviour.
    ═══════════════════════════════════════════════════════════════════════ */
 
 .hub-shell {
@@ -164,7 +172,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  height: 32px;
+  min-height: 32px;
   padding: 0 14px;
   border-top: 1px solid var(--border);
   font-size: 13px;
@@ -190,13 +198,28 @@
   background: var(--bg-glass-active);
 }
 .tb-state:empty { display: none; }
+/* Title + state badge never split: one shrinking row, the badge keeps its
+   size while the title ellipsizes. */
+.tb-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+@media (max-width: 768px) {
+  .title-bar { flex-wrap: wrap; row-gap: 4px; padding: 3px 14px 6px; }
+}
 
 /* ─── Keep the message list clear of the single top bar ─────────────── */
+/* Same +12px breathing room on every width (only the side gutters and
+   bottom clearance differ — those inherit from style.css, including its
+   mobile values, so there is no second hub-specific offset to drift). */
 .hub-shell .messages {
-  padding-top: calc(var(--header-height, 46px) + 18px);
+  padding-top: calc(var(--header-height, 68px) + 12px);
 }
 .hub-shell .session-banner {
-  margin-top: calc(var(--header-height, 46px) + 10px);
+  margin-top: calc(var(--header-height, 68px) + 12px);
 }
 .hub-shell .welcome { padding-top: 28px; }
 
@@ -257,13 +280,20 @@
 .hub-shell .composer-row {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 4px 8px 8px;
+  gap: 8px;
+  /* Symmetric 12px gutters match the bubble-actions bottom rhythm (12px);
+     the textarea's own 12px bottom padding supplies the row separation. */
+  padding: 0 12px 12px;
   min-height: 38px;
 }
-.hub-shell .input-left-actions { flex-direction: row; gap: 2px; align-self: center; }
-.hub-shell .composer-controls { display: flex; align-items: center; gap: 4px; min-width: 0; }
-.hub-shell .input-actions { align-self: center; }
+/* Flex items must be allowed to shrink so the single row survives narrow
+   windows: the model pill takes the shrink (label ellipsizes), the thinking
+   tag and icon buttons keep their size. */
+.hub-shell #model-dropdown { min-width: 0; }
+.hub-shell .thinking-dropdown { flex-shrink: 0; }
+.hub-shell .input-left-actions { flex-direction: row; gap: 4px; align-self: center; flex-shrink: 0; }
+/* Model + thinking live on the right; the icon buttons stay left. */
+.hub-shell .composer-controls { display: flex; align-items: center; gap: 4px; min-width: 0; margin-left: auto; }
 .hub-shell .input-mic-btn {
   position: static;
   transform: none;
@@ -279,9 +309,8 @@
   bottom: calc(100% + 8px);
 }
 
-@media (max-width: 900px) {
-  .hub-shell .tabbar .status { display: none; }
-}
+/* Connection status keeps its dot on small screens: style.css already hides
+   .status-text below 768px, so the hub needs no breakpoint of its own here. */
 /* ─── Session home / search overlay ─────────────────────────────────── */
 .session-home {
   position: fixed;
@@ -391,6 +420,7 @@
   color: var(--text-dim);
   font-variant-numeric: tabular-nums;
 }
+
 .sh-item-tag {
   flex-shrink: 0;
   font-size: 9.5px;
@@ -425,12 +455,43 @@
 }
 .sh-new:hover { background: var(--bg-glass-hover); }
 
-/* ─── Small screens: keep tabs usable, drop max-width centering ─────── */
+/* ─── Small screens: same layout, relaxed sizes ────────────────────────
+   Single breakpoint (768px, matching style.css). The tab bar, composer row
+   and session bar keep their desktop single-row layout — only touch sizes
+   grow and fixed caps shrink. */
 @media (max-width: 768px) {
   .hub-shell { --hub-max: 100%; }
   .tab { max-width: 150px; }
+
+  /* Uniform 36px touch targets across the tab bar. Without this, the 44px
+     minima in style.css stretch only .sidebar-toggle/.icon-btn/.settings-btn
+     and leave home/new at 30px — same bar, three different button sizes. */
+  .hub-shell .tabbar-home,
+  .hub-shell .tab-new,
+  .hub-shell .tabbar .sidebar-toggle,
+  .hub-shell .tabbar .icon-btn,
+  .hub-shell .tabbar .settings-btn {
+    width: 36px;
+    height: 36px;
+    min-width: 36px;
+    min-height: 36px;
+  }
+
+  /* Same for the composer row: .input-icon-btn would jump 30→44px on phones
+     while mic/send stay put. */
+  .hub-shell .composer-row .input-icon-btn,
+  .hub-shell .input-mic-btn {
+    width: 36px;
+    height: 36px;
+    min-width: 36px;
+    min-height: 36px;
+  }
+
+  /* style.css stretches .model-dropdown-btn to width:100% on phones (there it
+     sits in the old header grid). In the hub composer it stays a shrinkable
+     pill with an ellipsized label. */
+  .hub-shell .model-dropdown-btn { width: auto; max-width: 34vw; }
+
   .session-home { padding-top: 10vh; }
-  .title-bar { height: 30px; padding: 0 12px; }
-  .session-bar { gap: 10px; }
   .session-bar .sb-text { max-width: 40vw; }
 }

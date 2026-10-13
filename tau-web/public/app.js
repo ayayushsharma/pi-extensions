@@ -407,9 +407,14 @@ wsClient.addEventListener('connected', async () => {
   if (pinned?.key) {
     await ensureSessionsLoaded();
     const found = findSidebarSession(pinned.key);
-    bindHeadless(found?.project?.path || null, pinnedLive ? null : pinned.key);
+    // Same-file reload replays the backend id (exact rejoin); a live-owned
+    // file or a different file binds by path and lets the server resolve.
+    const sameFile = !pinnedLive && (headlessBinding?.sessionFile || null) === pinned.key;
+    bindHeadless(found?.project?.path || null, pinnedLive ? null : pinned.key,
+      sameFile ? headlessBinding?.sessionKey || null : null);
   } else {
-    bindHeadless(headlessBinding?.cwd || null, headlessBinding?.sessionFile || null);
+    bindHeadless(headlessBinding?.cwd || null, headlessBinding?.sessionFile || null,
+      headlessBinding?.sessionKey || null);
   }
   // The server detaches uplinks on WS close; re-drive the same TUI.
   if (uplinkActive) attachUplink(uplinkActive.port, uplinkActive.pid, uplinkTargetSessionFile);
@@ -540,8 +545,13 @@ wsClient.addEventListener('sessionFile', (e) => {
   const pinned = parseSessionHash();
   const key = sessionKeyOf(file);
   if (pinned?.key && pinned.key !== key) return;
-  if (!headlessBinding) headlessBinding = { cwd: e.detail?.cwd || null, sessionFile: null };
-  headlessBinding = { cwd: headlessBinding.cwd || e.detail?.cwd || null, sessionFile: key };
+  if (!headlessBinding) headlessBinding = { cwd: e.detail?.cwd || null, sessionFile: null, sessionKey: null };
+  // Keep the backend id only when this discovery belongs to the bound file
+  // (or the file is still unknown) — a late event for a previous session
+  // must not label the new one.
+  const prevFile = headlessBinding.sessionFile || null;
+  const keepKey = !prevFile || prevFile === key ? headlessBinding.sessionKey || null : null;
+  headlessBinding = { cwd: headlessBinding.cwd || e.detail?.cwd || null, sessionFile: key, sessionKey: keepKey };
   persistBinding();
   updateSessionHash(file, false);
 });
@@ -972,8 +982,13 @@ chatForm.addEventListener('submit', (e) => {
 });
 
 messageInput.addEventListener('keydown', (e) => {
-  // Enter sends, Shift+Enter inserts newline
+  // Enter sends on desktop, Shift+Enter inserts a newline everywhere.
+  // On touch devices (coarse pointer = virtual keyboard) Enter inserts a
+  // newline too — send via the send button instead.
   if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+    const touchKeyboard = typeof window.matchMedia === 'function'
+      && window.matchMedia('(pointer: coarse)').matches;
+    if (touchKeyboard) return; // let the newline through
     e.preventDefault();
     sendMessage();
   }
@@ -1894,11 +1909,20 @@ const sessionActions = createSessionActions({
   getCwd: () => headlessBinding?.cwd || fileBrowser.currentPath || null,
   onFresh: (data) => applyFreshSession(data),
   onClosed: () => { newSession(); },
+  onTimeout: () => messageRenderer.renderSystemMessage('New session timed out — the server did not answer. Check the backend connection and try again.'),
 });
 // Decoupled hook for the hub shell: `+` / Ctrl+T dispatch `tau:new-session`
 // (instant, same project) so hub.js never reaches into app.js internals.
 // The directory-picker modal stays on the sidebar's New button.
-window.addEventListener('tau:new-session', () => { sessionActions.newSessionSameProject(); });
+// Fail fast when the socket is down: without this the click sits silent until
+// the 15s RPC timeout (the classic "new tab button does nothing" report).
+window.addEventListener('tau:new-session', () => {
+  if (!wsClient.ws || wsClient.ws.readyState !== WebSocket.OPEN) {
+    messageRenderer.renderSystemMessage('Not connected to the backend — start (or wait for) the server before opening a new session.');
+    return;
+  }
+  sessionActions.newSessionSameProject();
+});
 // Header Kill button. Placed on the current-session card so it is visually
 // attached to the session it terminates (no ambiguity about which one dies).
 (function initKillButton() {
@@ -2001,7 +2025,7 @@ async function resetToScratchView() {
 async function applyFreshSession(data) {
   const cwd = data?.data?.cwd || null;
   headlessSessionKey = data?.data?.sessionKey || 'bound';
-  headlessBinding = { cwd, sessionFile: null };
+  headlessBinding = { cwd, sessionFile: null, sessionKey: data?.data?.sessionKey || null };
   persistBinding();
   await resetToScratchView();
   if (cwd) {
@@ -2023,6 +2047,10 @@ async function promptNewSession() {
     okLabel: 'Start',
   });
   if (!result) return;
+  if (!wsClient.ws || wsClient.ws.readyState !== WebSocket.OPEN) {
+    messageRenderer.renderSystemMessage('Not connected to the backend — start (or wait for) the server before opening a new session.');
+    return;
+  }
   await sessionActions.newSessionInCwd(result.cwd?.trim() || null);
   const starter = result.prompt?.trim();
   if (starter) sendMessage(starter);
@@ -2284,7 +2312,9 @@ function currentConnectionInfo() {
   if (headlessSessionKey && boundKey && boundKey === sessionKeyOf(activeFile)) {
     return { state: 'headless', label: 'Headless runner' };
   }
-  if (viewingActiveSession) return { state: 'server', label: 'This server' };
+  // The hub has no session of its own — never label its view "This server".
+  // (Mirror-direct mode keeps the label: there the page IS the TUI's view.)
+  if (serverMode === 'mirror' && viewingActiveSession) return { state: 'server', label: 'This server' };
   if (activeFile) return { state: 'headless', label: 'Headless runner' };
   return { state: 'none', label: 'No session' };
 }
@@ -2479,15 +2509,31 @@ function routeCommand(cmd) {
   }
   wsClient.send(cmd);
 }
-function bindHeadless(cwd, sessionFile) {
+function bindHeadless(cwd, sessionFile, sessionKey = null) {
   headlessSessionKey = null; // cleared until the ack re-arms it
-  headlessBinding = (cwd || sessionFile) ? { cwd: cwd || null, sessionFile: sessionFile || null } : null;
+  // Reload-proof rejoin: name the exact backend from the last ack. A caller
+  // key wins; otherwise keep the stored key when the file is unchanged, so a
+  // plain history reselect doesn't lose the id. A stale key only misses —
+  // the server falls back to the cwd+file scan, never to a wrong backend.
+  const prev = headlessBinding;
+  const file = sessionFile || null;
+  const key = sessionKey ?? (prev && (prev.sessionFile || null) === file ? prev.sessionKey || null : null);
+  headlessBinding = (cwd || file) ? { cwd: cwd || null, sessionFile: file, sessionKey: key || null } : null;
   persistBinding();
   const payload = { type: 'start_session' };
   if (cwd) payload.cwd = cwd;
-  if (sessionFile) payload.sessionFile = sessionFile;
+  if (file) payload.sessionFile = file;
+  if (key) payload.sessionKey = key;
   sendRpc(payload).then((data) => {
-    if (data && !data.timeout) headlessSessionKey = data?.data?.sessionKey || 'bound';
+    if (data && !data.timeout) {
+      headlessSessionKey = data?.data?.sessionKey || 'bound';
+      // Learn the backend id — but only if the tab hasn't moved on to
+      // another file while the ack was in flight.
+      if (data?.data?.sessionKey && headlessBinding && (headlessBinding.sessionFile || null) === file) {
+        headlessBinding.sessionKey = data.data.sessionKey;
+        persistBinding();
+      }
+    }
   });
 }
 async function refreshUplinkList() {
@@ -2659,7 +2705,6 @@ function renderSessionBanner() {
     html = `<span class="sb-dot"></span>
       <span class="sb-text"><strong>Detached${detName ? ` from “${esc(detName)}”` : ''} · :${uplinkLastDetached.port}</strong><span class="sb-hint">View is frozen; the TUI keeps running</span></span>
       <button class="sb-btn primary" data-action="retry" data-port="${uplinkLastDetached.port}" data-pid="${uplinkLastDetached.pid}">Drive again</button>
-      <button class="sb-btn" data-action="live" title="Back to this server's live session">This server</button>
       <button class="sb-btn svg-btn" data-action="dismiss" aria-label="Dismiss">${icon('x', 12)}</button>`;
   }
   // Anti-flicker: only touch the DOM when the rendered banner actually
@@ -2866,7 +2911,10 @@ function offerHeadlessContinue(detail) {
 function renderLiveSection(instances) {
   const host = document.getElementById('live-section');
   if (!host) return;
-  const others = (instances || []).filter((i) => i.pid !== undefined);
+  // The hub never shows its own process: it connects browsers to OTHER pi
+  // sessions, never to itself. (Mirror-direct mode keeps its own row — that
+  // row is the page's own TUI view, not a drive target.)
+  const others = (instances || []).filter((i) => i.pid !== undefined && (serverMode === 'mirror' || !i.local));
   if (others.length === 0 && !uplinkActive) {
     // Signature-guarded clear: rebuilding innerHTML restarts dot pulses.
     if (host.dataset.sig !== 'empty') {
@@ -3424,10 +3472,6 @@ function updateUI() {
 // WebSocket session switch handler
 // ═══════════════════════════════════════
 
-wsClient.addEventListener('sessionSwitch', () => {
-  console.log('[App] Session switched');
-});
-
 // ═══════════════════════════════════════
 // Theme / Settings
 // ═══════════════════════════════════════
@@ -3502,6 +3546,100 @@ async function openSettings() {
       document.getElementById('server-uptime').textContent = h.startedAt ? formatUptime(Date.now() - new Date(h.startedAt).getTime()) : '—';
     }
   } catch {}
+  // Live pi processes (ADR-013): refresh every time the panel opens so a
+  // kill from another tab never shows a stale row. Refresh button bound once.
+  const procRefresh = document.getElementById('btn-proc-refresh');
+  if (procRefresh && !procRefresh.dataset.bound) {
+    procRefresh.dataset.bound = '1';
+    procRefresh.addEventListener('click', () => loadProcesses());
+  }
+  loadProcesses();
+function procDisplayName(p) {
+  const hint = typeof p.sessionHint === 'string' && p.sessionHint ? p.sessionHint.split('/').pop() : '';
+  if (hint) return hint;
+  if (typeof p.cwd === 'string' && p.cwd) {
+    const base = p.cwd.replace(/\/$/, '').split('/').pop();
+    if (base) return base;
+  }
+  const args = Array.isArray(p.argv) ? p.argv.slice(1, 4).join(' ') : '';
+  return args ? `pi ${args}` : 'pi';
+}
+
+function procMetaLine(p) {
+  const parts = [`pid ${p.pid}`];
+  if (typeof p.rssKb === 'number') parts.push(p.rssKb >= 1024 ? `${(p.rssKb / 1024).toFixed(0)}M` : `${p.rssKb}K`);
+  if (typeof p.ageSec === 'number') parts.push(formatUptime(p.ageSec * 1000));
+  return parts.join(' · ');
+}
+
+// Live pi processes (ADR-013): read-only list + on-demand kill. Rows are
+// OS processes, not sessions — killing frees resources, files stay on disk.
+async function loadProcesses() {
+  const list = document.getElementById('proc-list');
+  const count = document.getElementById('proc-count');
+  const errBox = document.getElementById('proc-error');
+  if (!list) return;
+  if (errBox) { errBox.textContent = ''; errBox.classList.add('hidden'); }
+  list.innerHTML = '<div class="proc-empty">Scanning…</div>';
+  let data = null;
+  try {
+    const r = await tauRawFetch('/api/processes');
+    data = await r.json();
+  } catch { data = null; }
+  list.textContent = '';
+  const rows = data && Array.isArray(data.processes) ? data.processes : null;
+  if (!rows) {
+    list.innerHTML = '<div class="proc-empty">Process list unavailable.</div>';
+    if (count) count.textContent = '—';
+    return;
+  }
+  if (data.unsupported) {
+    list.innerHTML = '<div class="proc-empty">Process listing is unsupported on this platform.</div>';
+    if (count) count.textContent = '—';
+    return;
+  }
+  if (count) count.textContent = rows.length === 1 ? '1 live process' : `${rows.length} live processes`;
+  if (rows.length === 0) {
+    list.innerHTML = '<div class="proc-empty">No live pi processes — nothing to kill.</div>';
+    return;
+  }
+  for (const p of rows) {
+    const row = document.createElement('div');
+    row.className = 'proc-row';
+    row.dataset.pid = String(p.pid);
+    const name = procDisplayName(p);
+    const owner = p.owner === 'hub' ? 'hub backend' : 'terminal';
+    row.innerHTML = '' +
+      '<div class="proc-main">' +
+        `<div class="proc-name"></div>` +
+        `<div class="proc-meta"></div>` +
+      '</div>' +
+      `<span class="proc-tag proc-tag-${p.owner === 'hub' ? 'hub' : 'live'}">${owner}</span>` +
+      '<button class="proc-kill">Kill</button>';
+    row.querySelector('.proc-name').textContent = name;
+    row.querySelector('.proc-meta').textContent = procMetaLine(p);
+    row.querySelector('.proc-kill').addEventListener('click', () => killProcess(p.pid, name));
+    list.appendChild(row);
+  }
+}
+
+async function killProcess(pid, label) {
+  const errBox = document.getElementById('proc-error');
+  const showErr = (m) => { if (errBox) { errBox.textContent = m; errBox.classList.remove('hidden'); } };
+  if (!window.confirm(`Kill pi process ${pid} (${label})?\n\nFrees its resources. Session files stay on disk.`)) return;
+  try {
+    const r = await tauRawFetch('/api/processes/kill', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pid }),
+    });
+    const j = await r.json().catch(() => null);
+    if (!r.ok || !j || j.ok !== true) throw new Error((j && j.error) || `kill failed (${r.status})`);
+    await loadProcesses();
+  } catch (e) {
+    showErr((e && e.message) || 'kill failed');
+  }
+}
 function formatUptime(ms) {
   if (ms < 0) return '—';
   const s = Math.floor(ms / 1000);

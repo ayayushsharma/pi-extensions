@@ -147,9 +147,6 @@ export class WebSocketClient extends EventTarget {
       case 'error':
         this.dispatchEvent(new CustomEvent('serverError', { detail: message }));
         break;
-      case 'session_switch':
-        this.dispatchEvent(new CustomEvent('sessionSwitch'));
-        break;
       case 'mirror_sync':
         this.dispatchEvent(new CustomEvent('mirrorSync', { detail: message }));
         break;
@@ -166,7 +163,7 @@ export class WebSocketClient extends EventTarget {
         this.dispatchEvent(new CustomEvent('uplinkDead', { detail: message }));
         break;
       case 'mirrors_changed':
-        // Hub-only: a TUI mirror joined/left. Cheap to just re-poll the list.
+        // A TUI mirror joined/left. Cheap to just re-poll the list.
         this.dispatchEvent(new CustomEvent('mirrorsChanged', { detail: message }));
         break;
       case 'session_ended':

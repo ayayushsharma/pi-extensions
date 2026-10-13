@@ -1,25 +1,28 @@
 /**
- * Mirror Server Extension
- * 
- * Starts a WebSocket + HTTP server inside the running Pi process,
- * allowing a browser to connect and mirror the TUI session in real-time.
- * 
- * - Forwards all Pi events to connected browser clients
+ * Tau Hub Extension
+ *
+ * Runs a headless-first Hub daemon inside a Pi process (`pi -e tau-web
+ * --mode rpc`): an HTTP+WS server that serves the browser UI and owns
+ * sessions through spawned headless backends. Browsers also attach to
+ * live TUI mirrors through the hub relay (ADR-014); mirrors never serve
+ * browsers directly (no per-TUI port, no "go to live server").
+ *
+ * - Spawns/manages headless pi children per session (persistent backends)
  * - Accepts commands from the browser and executes them via the extension API
+ * - Relays attach/drive between browsers and live TUI mirrors (hub.sock)
  * - Serves static files for the Tau web UI
- * - Sends full state snapshot on client connect (messages, model, etc.)
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { WebSocketServer, WebSocket } from "ws";
 import { HeadlessRegistry } from "./headless-bridge.js";
-import { HubSocketServer, HubSocketClient, type MirrorRecord, type Frame } from "./lib/hub-socket.js";
 import { resolveRole, type TauRole } from "./lib/config.js";
+import { HubSocketServer, HubSocketClient, type MirrorRecord, type Frame } from "./lib/hub-socket.js";
+import { scanPiProcesses, killLivePiProcess, ProcessKillError } from "./lib/processes.js";
 import * as http from "node:http";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
-import QRCode from "qrcode";
 
 // Load tau settings from ~/.pi/agent/settings.json (falls back to env vars)
 function loadTauSettings(): { port: number; host: string; autoStart: boolean; user: string; pass: string; authEnabled?: boolean; projectsDir?: string; projects?: string[] } {
@@ -149,7 +152,8 @@ function findPublicDir(): string {
     addCandidate(path.resolve(process.cwd(), "node_modules/tau-mirror/public"));
 
     for (const candidate of candidates) {
-      if (fs.existsSync(path.join(candidate, "index.html"))) return candidate;
+      // Hub-only (ADR-011): the hub shell is the only entry point.
+      if (fs.existsSync(path.join(candidate, "hub", "index.html"))) return candidate;
     }
 
     // Keep previous fallback behavior
@@ -179,7 +183,6 @@ function tauDebug(...args: any[]) {
 }
 
 // Tau's own slash commands — never exposed to remote web clients.
-const MIRROR_OWN_COMMANDS = new Set(["tau", "taustart", "taustop", "qr"]);
 
 // Instance registry — tracks all running Tau servers
 function registerInstance(port: number, sessionFile: string, cwd: string) {
@@ -289,7 +292,7 @@ function isZombieProcess(pid: number): boolean {
     return !tty || tty === "??" || tty === "-";
   } catch {
     // Fail-safe: a process we cannot inspect must NOT be treated as a
-    // zombie — the caller SIGTERMs zombies, and killing a live TUI on a
+    // zombie — the caller SIGTERMs zombies, and killing a live session on a
     // failed `ps` (missing toybox flags on Termux, permissions) would
     // destroy the user's session.
     return false;
@@ -331,19 +334,16 @@ function credentialsMatch(user: string, pass: string): boolean {
 // Browser auth is cookie-only: the login form POSTs JSON credentials once,
 // the server mints an HttpOnly cookie session, and every later fetch / WS
 // handshake carries the cookie. No WWW-Authenticate is ever sent, so the
-// browser's native login prompt can never appear. (Server-to-server uplink
-// dials still use the shared secret over Basic — cookie tokens live in this
-// process's memory and can't authenticate a different pi process.)
+// browser's native login prompt can never appear.)
 function checkCookieAuth(req: http.IncomingMessage): boolean {
   if (!authEnabled) return true;
   const token = parseAuthCookie(req);
   return !!token && authTokens.has(token);
 }
-// WS entry: browsers present the cookie session; server-to-server uplink
-// dials present the shared secret over Basic (cookie tokens live in the
-// dialing process's memory and can't authenticate a different pi process).
-// Shared-secret credentials from an Authorization: Basic header (server-
-// to-server uplink dials; the login endpoint's legacy fallback below).
+// WS entry: browsers present the cookie session (cookie tokens live in this
+// process's memory and can't authenticate a different pi process).
+// Shared-secret credentials from an Authorization: Basic header (the login
+// endpoint's legacy fallback below).
 function parseBasicCredentials(header: string | undefined): { user: string; pass: string } | null {
   try {
     const m = (header || "").match(/^Basic\s+(.+)$/i);
@@ -435,7 +435,7 @@ function sendAuthRequired(res: http.ServerResponse) {
 export default function (pi: ExtensionAPI) {
   let server: http.Server | null = null;
   let wss: WebSocketServer | null = null;
-  // ─── tau-web unified: headless backends + uplink proxy + web dialogs ───
+  // ─── tau-web: headless backends + web dialogs ───
   const headless = new HeadlessRegistry({
     onEvent: (managed, event) => {
       if (event && event.type === "extension_ui_request") {
@@ -478,13 +478,13 @@ export default function (pi: ExtensionAPI) {
   // pending dialogs: requestId -> { kind: 'mirror' } | { kind: 'headless', managed }
   const pendingDialogs = new Map<string, { kind: "mirror" } | { kind: "headless"; managed: any }>();
 
-  // ─── Hub role (ADR-010) ───
+  // ─── Hub role (ADR-010, relay restored ADR-014) ───
   // The same package runs as control plane (hub: no TUI, owns sessions) or
-  // data plane (mirror: a TUI serving only its own session). The role decides
-  // which transport is active: hub listens on the private unix socket,
-  // mirror dials it. Direct browser access still works in both roles.
+  // data plane (mirror: a live TUI dialing the hub over hub.sock). The role
+  // decides which transport is active: hub listens on the private unix
+  // socket, mirror dials it. Mirrors never serve browsers directly (no
+  // per-TUI port) — attach/drive flows through the hub relay only.
   let role: TauRole = "mirror";
-  let boundPort = 0;
   let hubSockets: HubSocketServer | null = null;
   let hubForwarder: HubSocketClient | null = null;
   // hub: browserWs -> mirror it is driving over the socket
@@ -564,6 +564,20 @@ export default function (pi: ExtensionAPI) {
 
   // Store latest context reference for use in command handlers
   let latestCtx: ExtensionContext | null = null;
+  // The event ctx goes stale after session replacement (/new, fork,
+  // switch, reload) — pi throws on any touch past that point. Validate on
+  // every read: a stale ctx is cleared (the next event re-arms it) and
+  // callers degrade to their existing no-ctx paths instead of throwing.
+  function liveCtx(): ExtensionContext | null {
+    if (!latestCtx) return null;
+    try {
+      void latestCtx.sessionManager.getSessionFile();
+      return latestCtx;
+    } catch {
+      latestCtx = null;
+      return null;
+    }
+  }
 
   // Pending RPC-style requests from browser (id -> resolver)
   const pendingRequests = new Map<string, (response: any) => void>();
@@ -618,85 +632,10 @@ export default function (pi: ExtensionAPI) {
     tailscaleUrl = "";
   }
 
-  // ═══════════════════════════════════════
-  // /tau-stop and /tau-start commands
-  // ═══════════════════════════════════════
-  pi.registerCommand("taustop", {
-    description: "Stop the Tau mirror server",
-    handler: async (_args, ctx) => {
-      if (!server) {
-        ctx.ui.notify("Tau is not running", "warning");
-        return;
-      }
-      stopServer();
-      ctx.ui.setStatus("mirror", "");
-      ctx.ui.notify("Tau mirror server stopped", "info");
-      tauLog("[Mirror] Server stopped via /taustop");
-    },
-  });
+  // The /tau, /taustart, /taustop and /qr commands controlled the per-TUI
+  // mirror server, which no longer exists (ADR-014: hub-relayed attach
+  // only, no per-TUI port). Do not re-add without a hub-side equivalent.
 
-  pi.registerCommand("taustart", {
-    description: "Start the Tau mirror server",
-    handler: async (_args, ctx) => {
-      if (server) {
-        ctx.ui.notify(`Tau is already running at ${mirrorUrl}`, "warning");
-        return;
-      }
-      startServer(ctx);
-      ctx.ui.notify("Tau mirror server starting...", "info");
-    },
-  });
-
-  // ═══════════════════════════════════════
-  // /qr command — show QR code to connect
-  // ═══════════════════════════════════════
-  // Open a URL with the platform opener. `exec("open ...")` was macOS-only
-  // and reported success before the command even ran.
-  function openUrlNative(url: string): Promise<void> {
-    const { execFile } = require("node:child_process");
-    const run = (cmd: string, args: string[]) => new Promise<void>((resolve, reject) => {
-      execFile(cmd, args, (err: any) => { if (err) reject(err); else resolve(); });
-    });
-    if (process.platform === "darwin") return run("open", [url]);
-    if (process.platform === "win32") return run("explorer", [url]);
-    return run("xdg-open", [url]).catch(() => run("termux-open", [url]));
-  }
-
-  pi.registerCommand("tau", {
-    description: "Open Tau web UI in browser",
-    handler: async (_args, ctx) => {
-      if (!mirrorUrl) {
-        ctx.ui.notify("Mirror server not running yet", "warning");
-        return;
-      }
-      try {
-        await openUrlNative(mirrorUrl);
-        ctx.ui.notify(`Opened ${mirrorUrl}`, "info");
-      } catch {
-        // Headless hosts (Termux, SSH) have no opener — print the URL.
-        ctx.ui.notify(`Tau: ${mirrorUrl} (no browser opener on this host)`, "info");
-      }
-    },
-  });
-
-  pi.registerCommand("qr", {
-    description: "Show QR code for Tau mirror URL",
-    handler: async (_args, ctx) => {
-      if (!mirrorUrl) {
-        ctx.ui.notify("Mirror server not running yet", "warning");
-        return;
-      }
-      const qrPageUrl = `${mirrorUrl}/api/qr`;
-      try {
-        await openUrlNative(qrPageUrl);
-        ctx.ui.notify(`Tau: ${mirrorUrl}  •  QR: ${qrPageUrl}`, "info");
-      } catch {
-        ctx.ui.notify(`Tau: ${mirrorUrl}  •  QR: ${qrPageUrl} (no browser opener on this host)`, "info");
-      }
-    },
-  });
-
-  // ═══════════════════════════════════════
   // Event forwarding — subscribe to all Pi events
   // ═══════════════════════════════════════
   const eventTypes = [
@@ -864,7 +803,32 @@ export default function (pi: ExtensionAPI) {
   }
 
   // ═══════════════════════════════════════
-  // Build state snapshot for new connections
+  // tau-web: session path resolution (L6)
+  // ═══════════════════════════════════════
+  function cwdToSessionDir(cwd: string): string {
+    const n = path.resolve(cwd).replace(/^[/\\]/, "").replace(/[/\\:]/g, "-");
+    return `--${n}--`;
+  }
+  // Lossy display-only decode of a session dir name. The encoding maps
+  // every `/` to `-`, so literal dashes in project names (true-knowledge)
+  // cannot round-trip — NEVER use this where correctness matters (bind cwd,
+  // identity compares). Prefer the session header's `cwd` (parseSessionFile)
+  // or the live instance record; fall back to this for display only.
+  function lossyDecodeSessionDir(dirName: string): string {
+    return dirName.replace(/^--/, "/").replace(/--$/, "").replace(/-/g, "/");
+  }
+  function resolveHeadlessSessionPath(cwd: string, filename: string): string | null {
+    if (!filename || filename.includes("/") || filename.includes("\\") || !filename.endsWith(".jsonl")) return null;
+    const dir = path.join(SESSIONS_DIR, cwdToSessionDir(cwd));
+    const abs = path.resolve(path.join(dir, filename));
+    const root = path.resolve(SESSIONS_DIR);
+    if (!(abs === root || abs.startsWith(root + path.sep))) return null;
+    return abs;
+  }
+
+  // ═══════════════════════════════════════
+  // Hub relay (ADR-010, restored ADR-014): private-socket listener on the
+  // hub, dial-out forwarder on mirrors, uplink attach/drive fan-out.
   // ═══════════════════════════════════════
   async function buildStateSnapshot(ctx: ExtensionContext) {
     // Get session entries for message history
@@ -992,13 +956,18 @@ export default function (pi: ExtensionAPI) {
 
   /** Hub: browser picks a live TUI from the shared mirror list. */
   function hubAttachUplink(browserWs: WebSocket, pid: number) {
+    // Never drive the hub itself, even if a stale client names its pid.
+    if (Number(pid) === process.pid) {
+      sendTo(browserWs, { type: "error", message: "The hub session cannot be driven — attach another session" });
+      return;
+    }
     const rec = hubSockets?.get(String(pid));
     if (!rec) {
       sendTo(browserWs, { type: "error", message: "That session is not connected to the hub" });
       return;
     }
-    hubUplinkSubs.set(browserWs, { mirrorId: rec.id, pid: rec.pid, port: rec.port });
-    sendTo(browserWs, { type: "uplink_attached", port: rec.port, pid: rec.pid, sessionFile: rec.sessionFile, cwd: rec.cwd });
+    hubUplinkSubs.set(browserWs, { mirrorId: rec.id, pid: rec.pid, port: rec.port || rec.pid });
+    sendTo(browserWs, { type: "uplink_attached", port: rec.port || rec.pid, pid: rec.pid, sessionFile: rec.sessionFile, cwd: rec.cwd });
     // Ask for a fresh snapshot so a browser joining mid-session is current.
     hubSockets?.send(rec.id, { type: "snapshot" });
   }
@@ -1017,16 +986,19 @@ export default function (pi: ExtensionAPI) {
   function startHubForwarder() {
     if (hubForwarder) return;
     hubForwarder = new HubSocketClient({
-      hello: () => ({
-        type: "hello",
-        pid: process.pid,
-        port: boundPort,
-        cwd: latestCtx?.cwd || process.cwd(),
-        sessionFile: latestCtx?.sessionManager.getSessionFile() || null,
-        sessionName: latestCtx ? pi.getSessionName() : null,
-        model: latestCtx?.model || null,
-        isStreaming: latestCtx ? !latestCtx.isIdle() : false,
-      }),
+      hello: () => {
+        const c = liveCtx();
+        return {
+          type: "hello",
+          pid: process.pid,
+          port: 0, // No per-TUI port (ADR-014: hub-relayed attach only)
+          cwd: c?.cwd || process.cwd(),
+          sessionFile: c?.sessionManager.getSessionFile() || null,
+          sessionName: c ? pi.getSessionName() : null,
+          model: c?.model || null,
+          isStreaming: c ? !c.isIdle() : false,
+        };
+      },
       onCommand: (frame) => handleHubCommand(frame),
       onError: () => { /* hub absent is normal — retry handles it */ },
     });
@@ -1036,10 +1008,14 @@ export default function (pi: ExtensionAPI) {
   /** Mirror: a frame from the hub's 4-command allowlist. */
   function handleHubCommand(frame: Frame) {
     if (frame.type === "snapshot") {
-      if (latestCtx) {
+      const c = liveCtx();
+      if (c) {
         // buildStateSnapshot yields a direct-browser `mirror_sync`; the hub
         // rewrites our `snapshot` frame back to `mirror_sync` for browsers.
-        buildStateSnapshot(latestCtx).then((snap) => hubForwarder?.push({ ...snap, type: "snapshot" }));
+        buildStateSnapshot(c).then(
+          (snap) => hubForwarder?.push({ ...snap, type: "snapshot" }),
+          () => hubForwarder?.push({ type: "snapshot", entries: [], total: 0, model: null }),
+        );
       } else {
         hubForwarder?.push({ type: "snapshot", entries: [], total: 0, model: null });
       }
@@ -1081,13 +1057,14 @@ export default function (pi: ExtensionAPI) {
   /** Mirror: tell the hub our current session identity (cheap, idempotent). */
   function pushMirrorStatus() {
     if (role !== "mirror" || !hubForwarder?.connected) return;
+    const c = liveCtx();
     hubForwarder.push({
       type: "status",
-      cwd: latestCtx?.cwd || process.cwd(),
-      sessionFile: latestCtx?.sessionManager.getSessionFile() || null,
-      sessionName: latestCtx ? pi.getSessionName() : null,
-      model: latestCtx?.model || null,
-      isStreaming: latestCtx ? !latestCtx.isIdle() : false,
+      cwd: c?.cwd || process.cwd(),
+      sessionFile: c?.sessionManager.getSessionFile() || null,
+      sessionName: c ? pi.getSessionName() : null,
+      model: c?.model || null,
+      isStreaming: c ? !c.isIdle() : false,
     });
   }
   // ═══════════════════════════════════════
@@ -1105,7 +1082,7 @@ export default function (pi: ExtensionAPI) {
             const cwd = typeof command.cwd === "string" && command.cwd.trim() ? command.cwd : process.cwd();
             const file = typeof command.sessionFile === "string" && command.sessionFile ? command.sessionFile : null;
             const fresh = command.fresh === true;
-            const managed = headless.attach(ws, cwd, file, { fresh });
+            const managed = headless.attach(ws, cwd, file, { fresh, sessionKey: typeof command.sessionKey === "string" ? command.sessionKey : undefined });
             if (file && !fresh) {
               const abs = resolveHeadlessSessionPath(managed.cwd, file);
               if (abs && fs.existsSync(abs)) headless.switchToFile(managed, abs);
@@ -1205,7 +1182,7 @@ export default function (pi: ExtensionAPI) {
       }
     }
     const id = command.id;
-    const ctx = latestCtx;
+    const ctx = liveCtx(); // stale (post-replacement) ctx reads as null — every branch below already handles that
 
     const success = (cmd: string, data?: any) => {
       const resp: any = { type: "response", command: cmd, success: true, id };
@@ -1302,11 +1279,9 @@ export default function (pi: ExtensionAPI) {
         // ─── State ───
         case "get_commands": {
           try {
-            // Hide Tau's own commands — running them remotely is risky or
-            // pointless (e.g. /taustop would kill the server the web UI
-            // itself is connected through; /tau and /qr open a browser on
-            // the host machine). They remain available in the terminal TUI.
-            const cmds = pi.getCommands().filter((c: any) => !MIRROR_OWN_COMMANDS.has(c.name));
+            // Hub-only (ADR-011): Tau's own server-control commands are gone
+            // (no per-TUI server to stop/start/QR). List everything else.
+            const cmds = pi.getCommands();
             sendTo(ws, success("get_commands", { commands: cmds }));
           } catch (e: any) {
             sendTo(ws, error("get_commands", e.message || String(e)));
@@ -1509,17 +1484,6 @@ export default function (pi: ExtensionAPI) {
         }
 
         // ─── Commands & Files ───
-        // ─── Sync ───
-        case "mirror_sync_request": {
-          if (ctx) {
-            const snapshot = await buildStateSnapshot(ctx);
-            sendTo(ws, snapshot);
-          } else {
-            sendTo(ws, { type: "mirror_sync", entries: [], model: null });
-          }
-          break;
-        }
-
         // ─── Auth ───
         case "get_auth": {
           sendTo(ws, success("get_auth", { configured: AUTH_CONFIGURED, enabled: authEnabled }));
@@ -1599,8 +1563,7 @@ export default function (pi: ExtensionAPI) {
     urlPath = urlPath.split("?")[0];
 
     // Hub shell is mounted at /hub/ (public/hub/index.html) so the URL stays
-    // clean and the mirror shell stays at /. A hub redirects its root there;
-    // a mirror keeps serving its own shell at /.
+    // clean. The hub redirects its root there.
     if (role === "hub" && (urlPath === "/" || urlPath === "/index.html")) {
       res.writeHead(302, { Location: "/hub/" });
       res.end();
@@ -1667,31 +1630,6 @@ export default function (pi: ExtensionAPI) {
     if (req.method === "OPTIONS") {
       res.writeHead(200);
       res.end();
-      return;
-    }
-
-    if (urlPath === "/api/qr") {
-      if (!mirrorUrl) {
-        res.writeHead(503, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "Server not ready" }));
-        return;
-      }
-      const qrPromises = [QRCode.toDataURL(mirrorUrl, { width: 256, margin: 2 })];
-      if (tailscaleUrl) qrPromises.push(QRCode.toDataURL(tailscaleUrl, { width: 256, margin: 2 }));
-      Promise.all(qrPromises).then((dataUrls: string[]) => {
-        const tsSection = tailscaleUrl && dataUrls[1]
-          ? `<p style="margin-top:24px;color:rgba(255,255,255,0.3);font-size:11px">TAILSCALE</p><img src="${dataUrls[1]}" width="256" height="256" alt="Tailscale QR"><a href="${tailscaleUrl}">${tailscaleUrl}</a>`
-          : "";
-        res.writeHead(200, { "Content-Type": "text/html" });
-        res.end(`<!DOCTYPE html>
-<html><head><meta name="viewport" content="width=device-width"><title>Tau — Connect</title>
-<style>body{display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;margin:0;background:#131316;color:#fff;font-family:-apple-system,sans-serif}
-img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rgba(255,255,255,0.5);font-size:13px;margin-top:8px}</style>
-</head><body><p style="color:rgba(255,255,255,0.3);font-size:11px">LAN</p><img src="${dataUrls[0]}" width="256" height="256" alt="QR Code"><a href="${mirrorUrl}">${mirrorUrl}</a>${tsSection}<p style="margin-top:16px">Scan to open Tau on your phone</p></body></html>`);
-      }).catch((e: any) => {
-        res.writeHead(500, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: e.message }));
-      });
       return;
     }
 
@@ -1822,7 +1760,12 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
       // would advertise Attach buttons for servers this process cannot drive.
       // Scope a mirror to its own row; the hub still sees every instance.
       const registry = getRunningInstances();
-      const visible = role === "hub" ? registry : registry.filter((i) => i.pid === process.pid);
+      // The hub is a switchboard, never a session: its own pi process is not
+      // listed, so no browser can navigate into or drive the hub itself. A
+      // mirror keeps its own-row-only scope (that row IS its session view).
+      const visible = role === "hub"
+        ? registry.filter((i) => i.pid !== process.pid)
+        : registry.filter((i) => i.pid === process.pid);
       // Flag in-process instances (the old-tau ghost rides along in every pi
       // process): the UI tags them `local` and offers no Attach for them.
       const local = visible.map((i) => ({ ...i, local: i.pid === process.pid }));
@@ -1891,6 +1834,49 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
       return;
     }
 
+    // Live pi processes on this box (ADR-013): read-only visibility +
+    // on-demand kill so the browser can free resources. Process
+    // management only — no transcript proxy, no session driving, no
+    // file writes. Same auth + origin gates as every other /api/* route.
+    if (urlPath === "/api/processes" && req.method === "GET") {
+      try {
+        const { processes, unsupported } = scanPiProcesses(process.pid, headless.childPids());
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ processes, unsupported }));
+      } catch (e: any) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: e?.message || "process scan failed" }));
+      }
+      return;
+    }
+    if (urlPath === "/api/processes/kill" && req.method === "POST") {
+      let body = "";
+      req.on("data", (chunk: Buffer) => { body += chunk.toString(); });
+      req.on("end", async () => {
+        try {
+          const { pid } = JSON.parse(body);
+          // Hub-owned children go through the registry so WS bindings and
+          // bookkeeping retire together (never a raw signal under the hub).
+          if (typeof pid === "number" && headless.childPids().has(pid)) {
+            const closed = headless.closeByPid(pid);
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ ok: closed, pid, owner: "hub", exited: closed }));
+            return;
+          }
+          const result = await killLivePiProcess(pid, process.pid, headless.childPids());
+          // Best-effort: drop the stale tau-instances row for a reaped pid.
+          try { fs.unlinkSync(path.join(INSTANCES_DIR, `${result.pid}.json`)); } catch {}
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify(result));
+        } catch (e: any) {
+          const status = e instanceof ProcessKillError ? e.status : 400;
+          res.writeHead(status, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: e?.message || "kill failed" }));
+        }
+      });
+      return;
+    }
+
     // Full-text search across sessions
     if (urlPath.startsWith("/api/search") && req.method === "GET") {
       const searchUrl = new URL(`http://localhost${req.url}`);
@@ -1906,9 +1892,10 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
         const filesUrl = new URL(`http://localhost${req.url}`);
         const explicitPath = filesUrl.searchParams.get("path");
         let dirPath = explicitPath || process.cwd();
-        if (!explicitPath && latestCtx) {
+        const fc = liveCtx();
+        if (!explicitPath && fc) {
           try {
-            const entries = latestCtx.sessionManager.getEntries();
+            const entries = fc.sessionManager.getEntries();
             const sessionEntry = entries.find((e: any) => e.type === "session");
             if (sessionEntry?.cwd) dirPath = sessionEntry.cwd;
           } catch {}
@@ -2049,13 +2036,6 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
       return;
     }
 
-    // Session switch — in mirror mode, this is a no-op (session is controlled by TUI)
-    if (urlPath === "/api/sessions/switch" && req.method === "POST") {
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ success: true, mirror: true, note: "Session switching is controlled by the TUI in mirror mode" }));
-      return;
-    }
-
     // Session delete — constrained to the session store. The old code
     // unlinked any path the client named.
     if (urlPath === "/api/sessions/delete" && req.method === "POST") {
@@ -2098,10 +2078,9 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
     }
 
     // Session rename — appends a session_info entry, mirroring what pi does
-    // when a live session is renamed. History files only: the server's own
-    // live session renames via pi.setSessionName, and files owned by another
-    // live TUI are refused (ADR-003: never write a live session's file from
-    // a second process).
+    // when a session is renamed. History files only: files owned by
+    // another running session are refused (ADR-003: never write a live
+    // session's file from a second process).
     if (urlPath === "/api/sessions/rename" && req.method === "POST") {
       let body = "";
       req.on("data", (chunk: Buffer) => { body += chunk.toString(); });
@@ -2133,8 +2112,9 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
           }
           const liveOwner = getRunningInstances().find((i) => i.sessionFile === abs);
           if (liveOwner) {
-            if (latestCtx && liveOwner.pid === process.pid) {
-              const ownFile = latestCtx.sessionManager.getSessionFile();
+            const rc = liveCtx();
+            if (rc && liveOwner.pid === process.pid) {
+              const ownFile = rc.sessionManager.getSessionFile();
               if (ownFile === abs) {
                 pi.setSessionName(clean);
                 res.writeHead(200, { "Content-Type": "application/json" });
@@ -2172,9 +2152,9 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
     }
 
     // Export a history session to HTML. The WS `export_html` command only
-    // knows the server's OWN live session (ctx), so the sidebar's per-item
+    // knows the hub process's own session (ctx), so the sidebar's per-item
     // Export button needs this: same `pi --export` CLI pointed at the
-    // selected history file. Read-only — safe on any file, live-owned or not.
+    // selected history file. Read-only — safe on any file.
     if (urlPath === "/api/sessions/export" && req.method === "POST") {
       let body = "";
       req.on("data", (chunk: Buffer) => { body += chunk.toString(); });
@@ -2791,18 +2771,10 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
         (ws as any).isAlive = true;
       });
 
-      // Send initial state
+      // Send initial state. The hub owns no session of its own — the
+      // browser's transcript comes from a headless child (start_session /
+      // rpc_command) — so no snapshot follows; the view binds headless.
       sendTo(ws, { type: "state", isStreaming: false, mode: role });
-
-      // Immediately send state snapshot. In hub role this process owns no
-      // session of its own — the browser's transcript comes from a headless
-      // child (rpc_command) or a hub-attached mirror, so an empty hub
-      // snapshot would just flash a bogus session.
-      if (latestCtx && role === "mirror") {
-        buildStateSnapshot(latestCtx).then((snapshot) => {
-          sendTo(ws, snapshot);
-        });
-      }
 
       ws.on("message", (data) => {
         try {
@@ -2877,10 +2849,6 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
     };
 
     const onListening = (port: number) => {
-      boundPort = port;
-      // Announce ourselves to the hub now that the port is known (a hello
-      // sent before listen would carry port 0).
-      pushMirrorStatus();
       const isLoopback = HOST === "127.0.0.1" || HOST === "::1" || HOST === "localhost";
 
       let localIp = "localhost";
@@ -2929,8 +2897,8 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
       mirrorUrl = `http://${localIp}:${port}`;
       tailscaleUrl = tailscaleIp ? `http://${tailscaleIp}:${port}` : "";
       serverStartedAt = new Date().toISOString();
-      tauLog(`[Mirror] Tau mirror server running on ${mirrorUrl}${tailscaleUrl ? `  •  Tailscale: ${tailscaleUrl}` : ""}`);
-      ctx.ui.setStatus("mirror", `Mirror: ${localIp}:${port}${tailscaleIp ? ` • TS: ${tailscaleIp}:${port}` : ""}`);
+      tauLog(`[tau-web] Hub server running on ${mirrorUrl}${tailscaleUrl ? `  •  Tailscale: ${tailscaleUrl}` : ""}`);
+      ctx.ui.setStatus("mirror", `Hub: ${localIp}:${port}${tailscaleIp ? ` • TS: ${tailscaleIp}:${port}` : ""}`);
 
       // Sibling check: the old `tau` package and `tau-web` must never run together.
       // Both load in every pi process (installed packages + -e), both read the
@@ -2951,7 +2919,7 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
       const sessionFile = ctx.sessionManager.getSessionFile() || "";
       registerInstance(port, sessionFile, ctx.cwd || process.cwd());
 
-      ctx.ui.notify(`Tau mirror: ${mirrorUrl}${tailscaleUrl ? `  •  Tailscale: ${tailscaleUrl}` : ""}  •  /qr for QR code`, "info");
+      ctx.ui.notify(`Tau hub: ${mirrorUrl}${tailscaleUrl ? `  •  Tailscale: ${tailscaleUrl}` : ""}`, "info");
     };
 
     tryListen(PORT);
@@ -2978,14 +2946,18 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
     // headless child (`TAU_DISABLED=1`) must never bind hub.sock or the
     // registry, or it would fight the hub that spawned it.
     if (!TAU_AUTO_START) {
-      tauDebug("[Mirror] Tau auto-start disabled (TAU_DISABLED=1). Use /tau-start to start manually.");
+      tauDebug("[Mirror] Tau auto-start disabled (TAU_DISABLED=1).");
       return;
     }
 
-    if (role === "hub") startHubSocket();
-    else startHubForwarder();
-
-    startServer(ctx);
+    if (role === "hub") {
+      startHubSocket();
+      startServer(ctx);
+    } else {
+      // Mirror role serves no HTTP (ADR-014: no per-TUI port) — it dials
+      // the hub and relays attach/drive through hub.sock only.
+      startHubForwarder();
+    }
   });
 
   // ═══════════════════════════════════════

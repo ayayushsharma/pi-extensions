@@ -71,7 +71,7 @@ select:focus-visible {
   --accent-subtle: rgba(255, 255, 255, 0.04);
   --accent-text: #c0c0c0;
 
-  --user-bubble: rgba(255, 255, 255, 0.06);
+  --user-bubble: rgba(255, 255, 255, 0.15);
   --user-bubble-text: var(--text-primary);
   --user-bubble-border: linear-gradient(135deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.02));
 
@@ -117,7 +117,7 @@ select:focus-visible {
   --accent-subtle: rgba(106, 122, 136, 0.06);
   --accent-text: #8a9aa8;
 
-  --user-bubble: rgba(255, 255, 255, 0.08);
+  --user-bubble: rgba(255, 255, 255, 0.17);
   --user-bubble-text: var(--text-primary);
   --user-bubble-border: linear-gradient(135deg, rgba(255, 255, 255, 0.10), rgba(255, 255, 255, 0.02));
 
@@ -163,7 +163,7 @@ select:focus-visible {
   --accent-subtle: rgba(122, 138, 176, 0.1);
   --accent-text: #a0b4d8;
 
-  --user-bubble: rgba(122, 138, 176, 0.1);
+  --user-bubble: rgba(122, 138, 176, 0.28);
   --user-bubble-text: var(--text-primary);
   --user-bubble-border: linear-gradient(135deg, rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0.02));
 
@@ -1936,6 +1936,88 @@ html {
 .settings-value-btn:hover {
   background: var(--bg-glass-hover);
   border-color: var(--border-hover);
+}
+
+/* Live pi processes (ADR-013): OS rows, not sessions. Kill is destructive
+   (frees resources) but never deletes files — quiet outline that turns red
+   on hover, same language as the dialog abort button. */
+.proc-note {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin: 2px 0 8px;
+  line-height: 1.45;
+}
+.proc-error {
+  font-size: 12px;
+  color: #dc2626;
+  margin-bottom: 8px;
+}
+.proc-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 4px;
+  max-height: 240px;
+  overflow-y: auto;
+}
+.proc-empty {
+  font-size: 12px;
+  color: var(--text-dim);
+  padding: 4px 0;
+}
+.proc-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  background: var(--bg-glass);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+.proc-main {
+  flex: 1;
+  min-width: 0;
+}
+.proc-name {
+  font-size: 13px;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.proc-meta {
+  font-size: 11px;
+  color: var(--text-dim);
+  font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
+}
+.proc-tag {
+  flex: none;
+  font-size: 10px;
+  padding: 1px 7px;
+  border-radius: 99px;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.proc-tag-hub {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.proc-kill {
+  flex: none;
+  padding: 3px 10px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+}
+.proc-kill:hover {
+  border-color: #dc2626;
+  color: #dc2626;
 }
 
 .settings-select {

@@ -82,6 +82,9 @@ let authEnabled = AUTH_CONFIGURED && TAU_SETTINGS.authEnabled !== false;
 // HttpOnly cookie session after verifying JSON credentials. Tokens live in
 // memory only: a server restart invalidates them and the UI re-prompts.
 const authTokens = new Set<string>();
+// Login brute-force backoff: per-source-IP failure count with decay. No
+// persistent blocklist — a forgotten password must never lock the owner out.
+const loginFailures = new Map<string, { count: number; at: number }>();
 // API access-log throttle (method+path -> last logged ms); diagnostics only.
 const apiAccessLog = new Map<string, number>();
 const AUTH_COOKIE = "tau_auth";
@@ -1664,7 +1667,7 @@ export default function (pi: ExtensionAPI) {
       }
       let body = "";
       req.on("data", (chunk: Buffer) => { body += chunk.toString(); });
-      req.on("end", () => {
+      req.on("end", async () => {
         let user = "";
         let pass = "";
         try {
@@ -1684,7 +1687,9 @@ export default function (pi: ExtensionAPI) {
           const legacy = parseBasicCredentials(req.headers.authorization as string);
           if (legacy) { user = legacy.user; pass = legacy.pass; }
         }
+        const clientKey = req.socket.remoteAddress || "unknown";
         if (user && credentialsMatch(user, pass)) {
+          loginFailures.delete(clientKey);
           // Success audit (username only): distinguishes "POST never
           // arrives" from "login ok but the browser drops the cookie".
           try { tauLog(`[Mirror] login ok (user: "${user}")`); } catch {}
@@ -1698,6 +1703,13 @@ export default function (pi: ExtensionAPI) {
           // Log the attempted username (never the password): a loop of
           // failures with "Ayush" vs "ayush" here means autocapitalize.
           try { tauLog(`[Mirror] login failed (user: "${user}")`); } catch {}
+          // Backoff before answering: 500ms x failures, capped at 5s, with
+          // 10-minute decay. Slows online guessing to a crawl while a lone
+          // typo costs the owner half a second.
+          const prev = loginFailures.get(clientKey);
+          const fails = (prev && Date.now() - prev.at < 10 * 60 * 1000) ? prev.count + 1 : 1;
+          loginFailures.set(clientKey, { count: fails, at: Date.now() });
+          await new Promise((r) => setTimeout(r, Math.min(500 * fails, 5000)));
           res.writeHead(401, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ ok: false, error: "Invalid username or password" }));
         }

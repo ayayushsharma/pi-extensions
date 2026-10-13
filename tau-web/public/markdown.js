@@ -273,24 +273,39 @@ function renderInline(text) {
     return `%%ICODE${idx}%%`;
   });
 
-  // Math (protect $$...$$ and $...$ before *, _, etc. corrupt them)
+  // Math (protect $$...$$ and $...$ before *, _, etc. corrupt them).
+  // Spans are stored ESCAPED: KaTeX reads textContent (which unescapes),
+  // while raw TeX containing <>& would otherwise go live into innerHTML —
+  // and stay live when KaTeX is absent.
   const mathSpans = [];
   // $$...$$ first (greedy, for display math appearing inline or in lists)
   text = text.replace(/\$\$([\s\S]*?)\$\$/g, (match) => {
     const idx = mathSpans.length;
-    mathSpans.push(match);
+    mathSpans.push(escapeHtml(match));
     return `%%MATHX${idx}%%`;
   });
   // Then $...$ (inline math — opening $ not followed by digit/space).
   // This avoids matching currency amounts like $100.
   text = text.replace(/\$(?=[^\d\s])[^$\n]+?(?<=\S)\$/g, (match) => {
     const idx = mathSpans.length;
-    mathSpans.push(match);
+    mathSpans.push(escapeHtml(match));
     return `%%MATHX${idx}%%`;
   });
 
-  // Images (before links so ![...](...) isn't caught by link regex)
-  text = text.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '<img src="$2" alt="$1" class="inline-image">');
+  // Escape everything else BEFORE inline formatting: bold/link/image/text
+  // captures are model- or session-file-controlled, and interpolating them
+  // raw lets `<img onerror>` / `javascript:` URLs go live — stored XSS that
+  // rides the auth cookie past every server gate. The %%ICODE%%/%%MATHX%%
+  // placeholders contain no &<>" chars and survive intact.
+  text = escapeHtml(text);
+
+  // Images (before links so ![...](...) isn't caught by link regex).
+  // Scheme-gated: only http(s) becomes an element; anything else
+  // (`javascript:`, `data:`, relative paths) degrades to plain alt text.
+  text = text.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_, alt, url) =>
+    /^https?:\/\//i.test(url)
+      ? `<img src="${url}" alt="${alt}" class="inline-image" loading="lazy">`
+      : alt);
 
   // Bold + italic
   text = text.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>');
@@ -306,8 +321,13 @@ function renderInline(text) {
   // Strikethrough
   text = text.replace(/~~(.+?)~~/g, '<del>$1</del>');
 
-  // Links
-  text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  // Links — same scheme gate as images; non-http(s) targets degrade to
+  // their label text. (Captured label/url are already escaped above, so
+  // quote-breakout is dead even for http(s) URLs containing `"`.)
+  text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label, url) =>
+    /^https?:\/\//i.test(url)
+      ? `<a href="${url}" target="_blank" rel="noopener">${label}</a>`
+      : label);
 
   // Auto-link bare URLs
   text = text.replace(/(^|[^"'])(https?:\/\/[^\s<]+)/g, '$1<a href="$2" target="_blank" rel="noopener">$2</a>');

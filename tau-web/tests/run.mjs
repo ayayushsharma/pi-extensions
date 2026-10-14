@@ -18,6 +18,7 @@ const ORDER = [
   "h8-live-section.test.mjs",
   "h9-drive-cancel.test.mjs",
   "h10-processes.test.mjs",
+  "h11-reswitch.test.mjs",
   "d1-drive-attach.test.mjs",
   "d5-auth.test.mjs",
   "p2-guards.test.mjs",

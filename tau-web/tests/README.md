@@ -16,7 +16,7 @@ tests/
   hub-stub.mjs       # CI hub: headless-only HTTP + WS contracts without a pi process
   hub-real.mjs       # Real hub boot (`pi -e ./tau-web --mode rpc`, stdin held open)
   browser.mjs        # CDP driver: system Chrome, pageerror-first, screenshots on fail
-  e2e/               # one file per case (H1–H10 P0, D1/D5 + P2 guards)
+  e2e/               # one file per case (H1–H11 P0, D1/D5 + P2 guards)
 ```
 
 ## Run
@@ -62,10 +62,12 @@ Env knobs (all optional, all per-run so ports never bump):
 
 ## Coverage
 
-P0 (CI): H1–H10 (H7–H9 cover the uplink attach relay: list/instances,
+P0 (CI): H1–H11 (H7–H9 cover the uplink attach relay: list/instances,
 live section, preview-then-drive; H10 covers the live-process list +
 kill UI against a stub fixture, plus an opt-in real-hub pass that
-reaps an `exec -a pi sleep` double). `startHubStub` accepts a
+reaps an `exec -a pi sleep` double; H11 is a real-hub-only guard that
+session rejoin never re-sends switch_session, skipped without
+TEST_REAL_HUB=1). `startHubStub` accepts a
 `processes` fixture table for H10. P1: D1 (dead-frame silence),
 D5 (auth), traversal + rebinding guards. Manual-only (documented
 skips with reasons): real-hub dialog relay, reload re-attach,

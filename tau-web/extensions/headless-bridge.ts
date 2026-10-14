@@ -109,6 +109,11 @@ export type ManagedHeadless = {
   idleTimer: NodeJS.Timeout | null;
   isClosing: boolean;
   discoveredFile: string | null;
+  // Absolute session path the child has been told to load via switch_session
+  // (set by switchToFile). A rejoin naming the same file must NOT re-issue
+  // the switch: pi cancels the in-flight turn on switch, so reselecting or
+  // returning to a running session would kill its run ("Command aborted").
+  switchedFile: string | null;
   // True only for a web /new backend: it may announce its discovered file so
   // the tab can pin #session=<basename>. Ambient scratch binds stay hash-less.
   hashDiscovery: boolean;
@@ -254,6 +259,7 @@ export class HeadlessRegistry {
       id, cwd, sessionFile, rpc,
       clients: new Set(), isAgentRunning: false,
       idleTimer: null, isClosing: false, discoveredFile: null,
+      switchedFile: null,
       hashDiscovery: false,
       lastActiveMs: Date.now(),
     };
@@ -313,6 +319,7 @@ export class HeadlessRegistry {
   }
 
   switchToFile(managed: ManagedHeadless, absSessionPath: string): void {
+    managed.switchedFile = absSessionPath;
     managed.rpc.send({ type: "switch_session", sessionPath: absSessionPath });
   }
 

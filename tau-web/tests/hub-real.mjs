@@ -15,6 +15,13 @@ export async function bootRealHub({ port, extraEnv = {} }) {
     TAU_ROLE: "hub",
     ...extraEnv,
   };
+  // A dev shell running inside a tau-web agent session inherits
+  // TAU_DISABLED=1 (nested servers off) — the test hub IS a server.
+  delete env.TAU_DISABLED;
+  // Same for auth: the suite asserts hub logic, not auth (D5 covers
+  // that). Scrub inherited credentials so the test hub serves open.
+  delete env.TAU_USER;
+  delete env.TAU_PASS;
   // stdin held open via a tail pipe — bare `</dev/null` exits immediately.
   const tail = spawn("tail", ["-f", "/dev/null"], { stdio: ["ignore", "ignore", "ignore"] });
   const hub = spawn(piBin, ["-e", path.join(REPO_ROOT), "--mode", "rpc"], {

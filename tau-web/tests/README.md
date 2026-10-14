@@ -66,8 +66,14 @@ P0 (CI): H1–H11 (H7–H9 cover the uplink attach relay: list/instances,
 live section, preview-then-drive; H10 covers the live-process list +
 kill UI against a stub fixture, plus an opt-in real-hub pass that
 reaps an `exec -a pi sleep` double; H11 is a real-hub-only guard that
-session rejoin never re-sends switch_session, skipped without
-TEST_REAL_HUB=1). `startHubStub` accepts a
+session rejoin never re-sends switch_session, that the rejoin ack
+carries isAgentRunning, and that /api/headless/status tracks the run
+(skipped without TEST_REAL_HUB=1). The background-run history watch
+itself is browser-only (no Chrome on this box) — covered by the H11
+server contract plus manual check: rejoin a running session, see
+progress appear within ~3s. H6 uses os.tmpdir() as the child cwd:
+"/tmp" does not exist on some hosts (Termux / is read-only) and the
+spawn silently breaks. `startHubStub` accepts a
 `processes` fixture table for H10. P1: D1 (dead-frame silence),
 D5 (auth), traversal + rebinding guards. Manual-only (documented
 skips with reasons): real-hub dialog relay, reload re-attach,

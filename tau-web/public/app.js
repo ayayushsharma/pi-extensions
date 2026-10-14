@@ -171,6 +171,7 @@ let serverMode = null; // 'hub' | 'mirror' — from the WS state frame (ADR-010)
 let liveInstances = []; // All running Tau instances [{port, sessionFile, cwd}]
 // ─── tau-web unified: epoch guard, headless binding, uplink (ADR-004) ───
 let bindingEpoch = 0; // bumped on every session switch; stale stream events are dropped
+let bgWatchToken = 0; // bumped to stop the background-run history watch (see startBackgroundWatch)
 let activeStreamEpoch = -1; // epoch captured when the current stream started
 const VISIBLE_MESSAGE_WINDOW = 50; // render only the last 50; older loads on demand, full history stays on disk
 // ─── URL session routing (per-tab sessions) ───
@@ -732,6 +733,7 @@ function cancelStreamSettle() {
 }
 function handleAgentStart() {
   activeStreamEpoch = bindingEpoch;
+  bgWatchToken++; // a new run renders live; the history watch yields
   cancelStreamSettle();
   state.setStreaming(true);
   showTypingIndicator(true);
@@ -2084,6 +2086,7 @@ async function switchSession(sessionFile, session = null, project = null, opts =
   try {
     // New binding epoch — in-flight stream events from the old session are dropped.
     bindingEpoch++;
+    bgWatchToken++; // stop any background-run watch from the previous view
     cancelStreamSettle();
     state.setStreaming(false);
     showTypingIndicator(false);
@@ -2129,7 +2132,7 @@ async function switchSession(sessionFile, session = null, project = null, opts =
           // a live session's file — drive the running TUI instead.
           if (!opts.preview) {
             const ownedByTui = (liveInstances || []).some((li) => !li.local && li.sessionFile && sessionFile && li.sessionFile === sessionFile);
-            if (!ownedByTui) bindHeadless(project?.path || null, file);
+            if (!ownedByTui) bindHeadless(project?.path || null, file, null, { dirName });
           }
           // File browser follows the viewed session (history entries carry
           // the authoritative cwd when the sidebar object lacks it).
@@ -2509,7 +2512,7 @@ function routeCommand(cmd) {
   }
   wsClient.send(cmd);
 }
-function bindHeadless(cwd, sessionFile, sessionKey = null) {
+function bindHeadless(cwd, sessionFile, sessionKey = null, opts = {}) {
   headlessSessionKey = null; // cleared until the ack re-arms it
   // Reload-proof rejoin: name the exact backend from the last ack. A caller
   // key wins; otherwise keep the stored key when the file is unchanged, so a
@@ -2533,8 +2536,72 @@ function bindHeadless(cwd, sessionFile, sessionKey = null) {
         headlessBinding.sessionKey = data.data.sessionKey;
         persistBinding();
       }
+      // Rejoined a backend that's still running (e.g. returned to a
+      // session whose agent kept working): live WS events for it were
+      // dropped by the epoch bump, so watch its history until it lands.
+      if (data?.data?.isAgentRunning && file && opts?.dirName && headlessBinding && (headlessBinding.sessionFile || null) === file) {
+        startBackgroundWatch(opts.dirName, cwd, file);
+      }
     }
   });
+}
+
+// Background-run watch: after binding to a session whose agent is still
+// working, the static history ends mid-turn and live events stay dropped.
+// Poll cheap backend status + re-render history on change until the run
+// lands, so a returned-to session visibly progresses instead of looking
+// dead. Stops on session switch, on a new live run, or when the backend
+// goes idle/gone. Never sends anything to the backend — read-only.
+function histSignature(entries) {
+  if (!entries || !entries.length) return '0';
+  const last = entries[entries.length - 1];
+  return `${entries.length}|${last.id || ''}`;
+}
+async function startBackgroundWatch(dirName, cwd, file) {
+  const token = ++bgWatchToken;
+  showTypingIndicator(true);
+  updateUI();
+  const histUrl = `/api/sessions/${dirName}/${file}`;
+  const statusUrl = `/api/headless/status?cwd=${encodeURIComponent(cwd || '')}&file=${encodeURIComponent(file)}`;
+  let lastSig = null;
+  try {
+    const h0 = await fetch(histUrl).then((r) => (r.ok ? r.json() : null));
+    if (token !== bgWatchToken) return;
+    lastSig = histSignature(h0?.entries);
+  } catch {}
+  for (;;) {
+    await new Promise((r) => setTimeout(r, 3000));
+    if (token !== bgWatchToken) return;
+    let st = null;
+    try {
+      const r = await fetch(statusUrl);
+      if (r.ok) st = await r.json();
+    } catch {}
+    if (!st || !st.isWorking) {
+      // Landed (or backend gone): one final refresh, hand the view back.
+      try {
+        const h = await fetch(histUrl).then((r) => (r.ok ? r.json() : null));
+        if (token === bgWatchToken && h?.entries) refreshWatchedHistory(h.entries);
+      } catch {}
+      if (token === bgWatchToken) { showTypingIndicator(false); updateUI(); }
+      return;
+    }
+    try {
+      const h = await fetch(histUrl).then((r) => (r.ok ? r.json() : null));
+      if (token !== bgWatchToken) return;
+      const sig = histSignature(h?.entries);
+      if (h?.entries && sig !== lastSig) {
+        lastSig = sig;
+        refreshWatchedHistory(h.entries);
+      }
+    } catch {}
+  }
+}
+function refreshWatchedHistory(entries) {
+  const sc = messagesContainer;
+  const atBottom = sc.scrollHeight - sc.scrollTop - sc.clientHeight < 150;
+  renderSessionHistory(entries);
+  if (atBottom) sc.scrollTop = sc.scrollHeight;
 }
 async function refreshUplinkList() {
   try {

@@ -1094,7 +1094,7 @@ export default function (pi: ExtensionAPI) {
               // its run and bake "Command aborted" into the transcript.
               if (abs && fs.existsSync(abs) && managed.switchedFile !== abs) headless.switchToFile(managed, abs);
             }
-            sendTo(ws, { type: "rpc_event", event: { type: "response", command: "start_session", success: true, data: { sessionKey: managed.id, cwd: managed.cwd } }, id: command.id });
+            sendTo(ws, { type: "rpc_event", event: { type: "response", command: "start_session", success: true, data: { sessionKey: managed.id, cwd: managed.cwd, isAgentRunning: managed.isAgentRunning } }, id: command.id });
             return;
           }
           case "new_session": {
@@ -1847,6 +1847,28 @@ export default function (pi: ExtensionAPI) {
 
     if (urlPath === "/api/sessions" && req.method === "GET") {
       serveSessionsList(res);
+      return;
+    }
+
+    // Live backend status for one session (drives the background-run watch
+    // in the UI): registry lookup only, no session-file parsing. Same
+    // auth + origin gates as every other /api/* route.
+    if ((urlPath === "/api/headless/status" || urlPath.startsWith("/api/headless/status?")) && req.method === "GET") {
+      try {
+        const q = new URL(`http://localhost${req.url}`);
+        const cwd = q.searchParams.get("cwd") || "";
+        const file = q.searchParams.get("file") || "";
+        if (!cwd || !file) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "cwd and file query params required" }));
+          return;
+        }
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(headless.statusFor(cwd, file)));
+      } catch (e: any) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: e?.message || "status failed" }));
+      }
       return;
     }
 

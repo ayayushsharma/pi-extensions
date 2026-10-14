@@ -18,11 +18,22 @@ import { bootRealHub } from "../hub-real.mjs";
 import { assert, assertPortFree, basePort, TMP_DIR, ensureTmp, waitFor, sleep } from "../helpers.mjs";
 
 export const id = "H11";
-export const title = "session rejoin does not re-send switch_session";
+export const title = "session rejoin: no re-switch + running state for the background watch";
 
 const STUB_SRC = `#!/bin/bash
 # H11 double: log every stdin line (commands from the hub), stay alive.
-while IFS= read -r line; do printf '%s\\n' "$line" >> "$HEADLESS_STUB_LOG"; done
+# First prompt seen -> pretend a run started; second -> pretend it ended.
+# (lets the test flip ManagedHeadless.isAgentRunning deterministically.)
+PROMPTS=0
+while IFS= read -r line; do
+  printf '%s\\n' "$line" >> "$HEADLESS_STUB_LOG"
+  case "$line" in
+    *'"type":"prompt"'*) PROMPTS=$((PROMPTS+1));
+      if [ "$PROMPTS" -eq 1 ]; then printf '%s\\n' '{"type":"agent_start"}';
+      elif [ "$PROMPTS" -eq 2 ]; then printf '%s\\n' '{"type":"agent_end"}'; fi;;
+    *) ;;
+  esac
+done
 `;
 
 function rpc(ws, msg, { timeout = 15000 } = {}) {
@@ -100,15 +111,30 @@ export async function run() {
     const ack1 = await rpc(ws, { type: "start_session", cwd: projDir, sessionFile: fileA });
     assert(ack1.event?.success, `start_session A ok: ${JSON.stringify(ack1.event).slice(0, 200)}`);
     const keyA = ack1.event?.data?.sessionKey;
+    assert(ack1.event?.data?.isAgentRunning === false, `fresh bind reports idle`);
     await waitFor(() => switchCount(logFile, fileA) === 1, { timeout: 10000, label: "first switch for A" });
+
+    const statusUrl = (f) => `${hub.url}/api/headless/status?cwd=${encodeURIComponent(projDir)}&file=${encodeURIComponent(f)}`;
+    const getStatus = async (f) => { const r = await fetch(statusUrl(f)); assert(r.ok, `status ok for ${f}`); return r.json(); };
+    let st = await getStatus(fileA);
+    assert(st.isActive && !st.isWorking, `A idle before run: ${JSON.stringify(st)}`);
+
+    // Start a fake run: prompt -> stub emits agent_start -> registry flags running.
+    ws.send(JSON.stringify({ type: "rpc_command", command: { type: "prompt", message: "fake run" }, id: `e2e-fire-${Date.now()}` }));
+    await waitFor(async () => (await getStatus(fileA)).isWorking === true, { timeout: 10000, label: "A working after prompt" });
 
     // 2. Rejoin the same file (user switches back to a running session):
     // must rebind to the SAME backend and must NOT send switch_session again.
     const ack2 = await rpc(ws, { type: "start_session", cwd: projDir, sessionFile: fileA });
     assert(ack2.event?.success, `rejoin A ok: ${JSON.stringify(ack2.event).slice(0, 200)}`);
     assert(ack2.event?.data?.sessionKey === keyA, `rejoin binds the same backend (got ${ack2.event?.data?.sessionKey}, want ${keyA})`);
+    assert(ack2.event?.data?.isAgentRunning === true, `rejoin reports the run still in flight (client watch keys on this)`);
     await sleep(800); // give a redundant switch time to land, then assert absence
     assert(switchCount(logFile, fileA) === 1, `no second switch_session for A on rejoin (log:\n${fs.readFileSync(logFile, "utf8").slice(0, 500)})`);
+
+    // End the fake run: second prompt -> stub emits agent_end.
+    ws.send(JSON.stringify({ type: "rpc_command", command: { type: "prompt", message: "fake run end" }, id: `e2e-fire2-${Date.now()}` }));
+    await waitFor(async () => (await getStatus(fileA)).isWorking === false, { timeout: 10000, label: "A idle after second prompt" });
 
     // 3. A different file still binds a new backend and switches it.
     const ack3 = await rpc(ws, { type: "start_session", cwd: projDir, sessionFile: fileB });

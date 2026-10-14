@@ -2,6 +2,7 @@
 // Against the stub (default, CI) the simulated backend echoes HEADLESS-OK.
 // With TEST_REAL_HUB=1 it runs against a real `pi` hub + real headless child.
 import { WebSocket } from "ws";
+import os from "node:os";
 import { startHubStub } from "../hub-stub.mjs";
 import { bootRealHub } from "../hub-real.mjs";
 import { assert, assertPortFree, basePort, PUBLIC_DIR, waitFor } from "../helpers.mjs";
@@ -47,7 +48,9 @@ export async function run() {
       setTimeout(() => rej(new Error("ws connect timeout")), 10000);
     });
     try {
-      const started = await rpc(ws, { type: "start_session", cwd: "/tmp" });
+      // os.tmpdir(): "/tmp" does not exist on some hosts (e.g. Termux /
+      // is read-only) and the headless child spawns with this cwd.
+      const started = await rpc(ws, { type: "start_session", cwd: os.tmpdir() });
       assert(started.event?.success === true, `start_session failed: ${JSON.stringify(started)}`);
       assert(started.event?.data?.sessionKey, "start_session missing sessionKey");
 

@@ -4085,13 +4085,10 @@ body.no-tts .message-speak-btn { display: none; }
     margin-left: 0;
   }
 
+  /* #context-size ("12.3k / 200k") stays hidden on phones too: the %
+     pill + its usage popup carry the context state on every width. */
   #context-size.visible {
-    display: block;
-    background: none;
-    border: none;
-    padding: 0;
-    font-size: 11px;
-    color: var(--thinking-accent-text);
+    display: none;
   }
 
   /* Context popover is anchored in the bottom status bar — open it upward,

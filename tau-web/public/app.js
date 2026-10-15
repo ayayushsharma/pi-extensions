@@ -172,6 +172,7 @@ let liveInstances = []; // All running Tau instances [{port, sessionFile, cwd}]
 // ─── tau-web unified: epoch guard, headless binding, uplink (ADR-004) ───
 let bindingEpoch = 0; // bumped on every session switch; stale stream events are dropped
 let bgWatchToken = 0; // bumped to stop the background-run history watch (see startBackgroundWatch)
+let bgAgentRunning = false; // backend working with no local stream (e.g. after reload): abort stays available
 let activeStreamEpoch = -1; // epoch captured when the current stream started
 const VISIBLE_MESSAGE_WINDOW = 50; // render only the last 50; older loads on demand, full history stays on disk
 // ─── URL session routing (per-tab sessions) ───
@@ -734,6 +735,7 @@ function cancelStreamSettle() {
 function handleAgentStart() {
   activeStreamEpoch = bindingEpoch;
   bgWatchToken++; // a new run renders live; the history watch yields
+  bgAgentRunning = false; // the local run owns the chrome now
   cancelStreamSettle();
   state.setStreaming(true);
   showTypingIndicator(true);
@@ -1626,10 +1628,7 @@ async function fetchModelInfo() {
     }
     if (currentModelId && !uplinkContextUsage) {
       const model = availableModels.find(m => m.id === currentModelId);
-      if (model?.contextWindow) {
-        contextWindowSize = model.contextWindow;
-        updateTokenUsage();
-      }
+      if (model?.contextWindow) setContextWindow(model.contextWindow);
     }
     if (stateData.success && stateData.data?.thinkingLevel && !uplinkOwnsView()) {
       currentThinkingLevel = stateData.data.thinkingLevel;
@@ -1696,10 +1695,7 @@ function openModelDropdown() {
         if (resp && resp.success === false) return; // keep the previous label on failure
         currentModelId = resp?.data?.id || m.id;
         updateModelLabel();
-        if (m.contextWindow) {
-          contextWindowSize = m.contextWindow;
-          updateTokenUsage();
-        }
+        if (m.contextWindow) setContextWindow(m.contextWindow);
       });
       itemsContainer.appendChild(el);
     });
@@ -1798,7 +1794,7 @@ document.addEventListener('keydown', (e) => {
       return;
     }
 
-    if (state.isStreaming) {
+    if (state.isStreaming || bgAgentRunning) {
       routeCommand({ type: 'abort' });
       messageRenderer.renderError('Aborted by user');
       showTypingIndicator(false);
@@ -2090,6 +2086,7 @@ async function switchSession(sessionFile, session = null, project = null, opts =
     // (fast tab-hopping) invalidates everything this call fetches after.
     const myEpoch = bindingEpoch;
     bgWatchToken++; // stop any background-run watch from the previous view
+    bgAgentRunning = false; // fresh view; the bind ack re-arms if still running
     cancelStreamSettle();
     state.setStreaming(false);
     showTypingIndicator(false);
@@ -2246,9 +2243,7 @@ function handleMirrorSync(data, fromUplink = false) {
   if (data.model) {
     currentModelId = data.model.id || '';
     updateModelLabel();
-    if (data.model.contextWindow) {
-      contextWindowSize = data.model.contextWindow;
-    }
+    if (data.model.contextWindow) setContextWindow(data.model.contextWindow);
   }
 
   // Update thinking level
@@ -2271,7 +2266,7 @@ function handleMirrorSync(data, fromUplink = false) {
   // overrides the last assistant message's token count from the entries.
   uplinkContextUsage = data.contextUsage || null;
   if (data.contextUsage && typeof data.contextUsage === 'object') {
-    if (data.contextUsage.contextWindow) contextWindowSize = data.contextUsage.contextWindow;
+    if (data.contextUsage.contextWindow) setContextWindow(data.contextUsage.contextWindow);
     if (Number.isFinite(data.contextUsage.tokens)) lastInputTokens = data.contextUsage.tokens;
   }
 
@@ -2568,6 +2563,7 @@ function histSignature(entries) {
 }
 async function startBackgroundWatch(dirName, cwd, file) {
   const token = ++bgWatchToken;
+  bgAgentRunning = true; // the ack says the backend is working: abort stays available
   showTypingIndicator(true);
   updateUI();
   const histUrl = `/api/sessions/${dirName}/${file}`;
@@ -2586,13 +2582,20 @@ async function startBackgroundWatch(dirName, cwd, file) {
       const r = await fetch(statusUrl);
       if (r.ok) st = await r.json();
     } catch {}
+    // Backend picked up work after binding (or the ack raced it): surface
+    // the abort button even without a local stream.
+    if (st?.isWorking && !bgAgentRunning) { bgAgentRunning = true; showTypingIndicator(true); updateUI(); }
     if (!st || !st.isWorking) {
       // Landed (or backend gone): one final refresh, hand the view back.
       try {
         const h = await fetch(histUrl).then((r) => (r.ok ? r.json() : null));
         if (token === bgWatchToken && h?.entries) refreshWatchedHistory(h.entries);
       } catch {}
-      if (token === bgWatchToken) { showTypingIndicator(false); updateUI(); }
+      if (token === bgWatchToken) {
+        bgAgentRunning = false; // landed (or backend gone): abort hides
+        showTypingIndicator(false);
+        updateUI();
+      }
       return;
     }
     try {
@@ -3076,10 +3079,7 @@ function applyAttachedState(d) {
   if (d.model?.id) {
     currentModelId = d.model.id;
     updateModelLabel();
-    if (d.model.contextWindow) {
-      contextWindowSize = d.model.contextWindow;
-      updateTokenUsage();
-    }
+    if (d.model.contextWindow) setContextWindow(d.model.contextWindow);
   }
   if (d.thinkingLevel) {
     currentThinkingLevel = d.thinkingLevel;
@@ -3347,6 +3347,12 @@ function renderSessionHistory(entries) {
   if (histThinking && histThinking !== currentThinkingLevel) { currentThinkingLevel = histThinking; updateThinkingBtn(); }
   sessionTotalCost = histCost;
   if (histTokens) { lastInputTokens = histTokens; lastUsage = histUsage; }
+  // Session-specific window: the history endpoint serves entries only, so
+  // re-derive the window from the history's model via the catalog, then
+  // repaint — otherwise the pill shows the previous session's percentage.
+  const hm = histModel && availableModels.find((m) => m.id === histModel);
+  if (hm?.contextWindow) setContextWindow(hm.contextWindow);
+  else updateTokenUsage();
 
   // Window the render: full history stays in memory/on disk, the DOM only
   // holds the tail until "load earlier" grows the window.
@@ -3404,6 +3410,17 @@ function updateCostDisplay() {
   } else {
     sessionCostEl.classList.remove('visible');
   }
+}
+
+// Single funnel for context-window changes (model switch, per-session
+// history, attached-state poll, dynamic cap): a new window forces a pill
+// repaint instead of showing a stale percentage.
+function setContextWindow(n) {
+  if (!Number.isFinite(n) || n <= 0 || n === contextWindowSize) return;
+  contextWindowSize = n;
+  lastTokenRenderKey = null;
+  updateTokenUsage();
+  if (!contextViz.classList.contains('hidden')) updateContextViz();
 }
 
 function updateTokenUsage() {
@@ -3487,7 +3504,7 @@ function renderStatusDot() {
     ? 'disconnected'
     : isCompacting
       ? 'compacting'
-      : state.isStreaming
+      : (state.isStreaming || bgAgentRunning)
         ? 'streaming'
         : 'connected';
   if (next === dotState) return;
@@ -3536,10 +3553,14 @@ function pollConnectionStatus() {
 setInterval(pollConnectionStatus, 3000);
 
 function updateUI() {
-  const isStreaming = state.isStreaming;
+  // A reloaded page has no live stream, but the backend may still be
+  // working (bgAgentRunning from the background watch): abort + Working
+  // state follow either signal.
+  const isStreaming = state.isStreaming || bgAgentRunning;
+  const uiKey = `${state.isStreaming}:${bgAgentRunning}`;
   // No-op when nothing changed: rewriting classes/text restarts CSS pulses.
-  if (isStreaming === lastUiStreaming) return;
-  lastUiStreaming = isStreaming;
+  if (uiKey === lastUiStreaming) return;
+  lastUiStreaming = uiKey;
 
   // Dot color follows the derived state. Its pulse lives on the base class,
   // so this swap never restarts the animation.

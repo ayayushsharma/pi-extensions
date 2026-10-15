@@ -154,6 +154,81 @@
 .tab.active .tab-close { opacity: 1; }
 .tab-close:hover { background: var(--bg-glass-active); color: var(--text-primary); }
 
+/* ─── Vertical open-tabs mirror (sidebar, "Currently running Tabs") ──── */
+/* Same rows as the strip, stacked full-width. Desktop shows both; phones
+   (≤768px) hide the horizontal strip below and navigate from here. */
+.vtabs-section { padding: 6px 10px 4px; }
+.vtabs-heading {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  padding: 2px 6px 6px;
+}
+.vtabs { display: flex; flex-direction: column; gap: 2px; }
+.vtab {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 36px;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+  text-align: left;
+  transition: background var(--duration) var(--ease), color var(--duration) var(--ease);
+}
+.vtab:hover { background: var(--bg-glass-hover); color: var(--text-primary); }
+.vtab.active { background: var(--bg-glass-active); color: var(--text-primary); }
+.vtab-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--text-dim);
+}
+.vtab-dot.live { background: var(--success); box-shadow: 0 0 6px rgba(52, 211, 153, 0.5); }
+.vtab-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.vtab-close {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--duration) var(--ease), background var(--duration) var(--ease);
+}
+.vtab:hover .vtab-close,
+.vtab.active .vtab-close { opacity: 1; }
+.vtab-close:hover { background: var(--bg-glass-active); color: var(--text-primary); }
+/* No hover on touch: the close target stays visible on phones. */
+@media (pointer: coarse) {
+  .vtab-close { opacity: 0.7; }
+}
+@media (max-width: 768px) {
+  /* Phones navigate from the sidebar mirror: the horizontal strip hides. */
+  #tab-strip { display: none; }
+}
+
 /* ─── Status lives in the tab bar now ────────────────────────────────── */
 .hub-shell .tabbar .status {
   max-width: 260px;

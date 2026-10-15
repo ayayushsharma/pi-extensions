@@ -156,34 +156,55 @@ function init() {
 
   function renderTabs() {
     strip.textContent = '';
+    const vtabs = document.getElementById('vtabs');
+    const vtabsSection = document.getElementById('vtabs-section');
+    if (vtabs) vtabs.textContent = '';
     for (const t of state.tabs) {
-      const btn = document.createElement('button');
-      btn.className = 'tab' + (t.key === state.active ? ' active' : '');
-      btn.dataset.key = t.key;
-      btn.setAttribute('role', 'tab');
-      btn.title = t.title;
-
-      const dot = document.createElement('span');
-      dot.className = 'tab-dot' + (state.live.has(t.key) ? ' live' : '');
-      btn.appendChild(dot);
-
-      const title = document.createElement('span');
-      title.className = 'tab-title';
-      title.textContent = t.title;
-      btn.appendChild(title);
-
-      const close = document.createElement('button');
-      close.className = 'tab-close';
-      close.setAttribute('aria-label', 'Close tab');
-      close.innerHTML = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
-      close.addEventListener('click', (e) => { e.stopPropagation(); closeTab(t.key); });
-      btn.appendChild(close);
-
-      btn.addEventListener('click', (e) => { if (!e.target.closest('.tab-close')) activate(t.key); });
-      strip.appendChild(btn);
+      strip.appendChild(makeTabRow(t, false));
+      if (vtabs) vtabs.appendChild(makeTabRow(t, true));
     }
+    // No open tabs -> the sidebar section hides itself (heading included).
+    if (vtabsSection) vtabsSection.style.display = state.tabs.length ? '' : 'none';
     const activeEl = strip.querySelector('.tab.active');
     if (activeEl) activeEl.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }
+
+  // One row builder for both the horizontal strip and the sidebar's
+  // vertical mirror: same dot/title/close, same handlers. The vertical
+  // copy also dismisses the off-canvas sidebar on phones after a tap.
+  function makeTabRow(t, vertical) {
+    const p = vertical ? 'vtab' : 'tab';
+    const btn = document.createElement('button');
+    btn.className = p + (t.key === state.active ? ' active' : '');
+    btn.dataset.key = t.key;
+    btn.setAttribute('role', 'tab');
+    btn.title = t.title;
+
+    const dot = document.createElement('span');
+    dot.className = p + '-dot' + (state.live.has(t.key) ? ' live' : '');
+    btn.appendChild(dot);
+
+    const title = document.createElement('span');
+    title.className = p + '-title';
+    title.textContent = t.title;
+    btn.appendChild(title);
+
+    const close = document.createElement('button');
+    close.className = p + '-close';
+    close.setAttribute('aria-label', 'Close tab');
+    close.innerHTML = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
+    close.addEventListener('click', (e) => { e.stopPropagation(); closeTab(t.key); });
+    btn.appendChild(close);
+
+    btn.addEventListener('click', (e) => {
+      if (e.target.closest('.tab-close, .vtab-close')) return;
+      activate(t.key);
+      if (vertical && window.matchMedia('(max-width: 768px)').matches) {
+        document.getElementById('sidebar')?.classList.add('collapsed');
+        document.getElementById('sidebar-overlay')?.classList.remove('visible');
+      }
+    });
+    return btn;
   }
 
   function syncFromHash() {

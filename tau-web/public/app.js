@@ -228,12 +228,11 @@ const fileSidebarClose = document.getElementById('file-sidebar-close');
 const fileSidebarUp = document.getElementById('file-sidebar-up');
 const fileList = document.getElementById('file-list');
 const fileSidebarPath = document.getElementById('file-sidebar-path');
-const fileBrowser = new FileBrowser(fileList, fileSidebarPath, messageInput, (filePath) => {
-  const name = filePath.split(/[/\\]/).pop() || filePath;
-  const ext = name.split('.').pop()?.toLowerCase() || '';
-  pendingFilePaths.push({ path: filePath, name, ext });
-  renderAttachmentPreviews();
-});
+// NOTE: the explorer no longer feeds the prompt (blind context is out):
+// file clicks route to FileBrowser.previewFile (read-only viewer stub).
+// The pendingFilePaths pipeline below stays dormant until the viewer grows
+// an explicit, preview-first "Add to prompt" action.
+const fileBrowser = new FileBrowser(fileList, fileSidebarPath);
 
 fileSidebarToggle.addEventListener('click', () => {
   const isCollapsed = fileSidebar.classList.toggle('collapsed');
@@ -1050,7 +1049,7 @@ const imageInput = document.getElementById('image-input');
 const imagePreviews = document.getElementById('image-previews');
 
 let pendingImages = [];     // { data: base64, mimeType }
-let pendingFilePaths = [];  // { path, name, ext } — from file browser (populated by callback above)
+let pendingFilePaths = [];  // { path, name, ext } — dormant; the read-only viewer will feed it via explicit attach
 
 const MAX_IMAGE_DIM = 2048;
 const VALID_MIME_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];

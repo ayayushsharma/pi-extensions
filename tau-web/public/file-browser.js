@@ -25,11 +25,9 @@ function formatSize(bytes) {
 }
 
 export class FileBrowser {
-  constructor(container, pathEl, messageInput, onFileInserted = null) {
+  constructor(container, pathEl) {
     this.container = container;
     this.pathEl = pathEl;
-    this.messageInput = messageInput;
-    this.onFileInserted = onFileInserted;
     this.currentPath = null;
     // Root directory the browser should show for the currently viewed
     // session (set by the app on every view change); load() falls back to
@@ -38,8 +36,6 @@ export class FileBrowser {
     // sessionKeyOf() the last file the browser was rooted for — lets the
     // app skip reloads when a background sync re-announces the same file.
     this.sessionKey = null;
-
-    this.setupDropTarget();
   }
 
   async load(dirPath) {
@@ -87,7 +83,8 @@ export class FileBrowser {
     for (const item of items) {
       const el = document.createElement('div');
       el.className = `file-item${item.isDirectory ? ' directory' : ''}`;
-      el.draggable = true;
+      // Nothing accepts drops anymore (prompt-insert removed): not draggable.
+      el.draggable = false;
       el.dataset.path = item.path;
       el.dataset.name = item.name;
       el.dataset.isDirectory = item.isDirectory;
@@ -101,12 +98,13 @@ export class FileBrowser {
         ${size ? `<span class="file-size">${size}</span>` : ''}
       `;
 
-      // Click: navigate directory or insert file path into input
+      // Click: navigate directory, or preview a file (read-only viewer).
+      // Files never feed the prompt directly — blind context is out.
       el.addEventListener('click', () => {
         if (item.isDirectory) {
           this.load(item.path);
         } else {
-          this.insertPath(item.path);
+          this.previewFile(item.path);
         }
       });
 
@@ -145,39 +143,9 @@ export class FileBrowser {
     }
   }
 
-  insertPath(filePath) {
-    const input = this.messageInput;
-    const start = input.selectionStart;
-    const end = input.selectionEnd;
-    input.value = input.value.substring(0, start) + filePath + ' ' + input.value.substring(end);
-    input.selectionStart = input.selectionEnd = start + filePath.length + 1;
-    input.focus();
-    input.dispatchEvent(new Event('input'));
-    if (this.onFileInserted) this.onFileInserted(filePath);
-  }
-
-  setupDropTarget() {
-    const input = this.messageInput;
-
-    input.addEventListener('dragover', (e) => {
-      e.preventDefault();
-      e.dataTransfer.dropEffect = 'copy';
-      input.classList.add('file-drop-hover');
-    });
-
-    input.addEventListener('dragleave', () => {
-      input.classList.remove('file-drop-hover');
-    });
-
-    input.addEventListener('drop', (e) => {
-      e.preventDefault();
-      input.classList.remove('file-drop-hover');
-
-      const filePath = e.dataTransfer.getData('text/plain');
-      // Accept Unix paths (/) and Windows paths (C:\ or C:/)
-      if (filePath && (filePath.startsWith('/') || /^[A-Za-z]:[\\\/]/.test(filePath))) {
-        this.insertPath(filePath);
-      }
-    });
+  // Read-only preview entry point (IDE-like viewer): stubbed until the
+  // viewer lands — clicking a file must not silently feed the prompt.
+  previewFile(filePath) {
+    console.debug('[FileBrowser] preview not implemented yet:', filePath);
   }
 }

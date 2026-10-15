@@ -47,6 +47,25 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="Tau">
   <meta name="theme-color" content="#f5f3ef">
+  <!-- Pre-paint theme: apply the saved (or OS-guessed) theme synchronously
+       before the stylesheets below load, so reloads and first paints never
+       flash the default theme. The deferred module re-applies the same
+       value later (idempotent). Mirrors getCurrentTheme() in themes.js —
+       keep the id list and fallbacks in sync. -->
+  <script>
+    try {
+      var tauBg = { night: '#212121', dawn: '#1a1d26', midnight: '#000000', clean: '#ffffff', terracotta: '#f4f1ec', sage: '#f0f2ec' };
+      var tauTheme = localStorage.getItem('tau-theme');
+      if (tauTheme === 'dark') tauTheme = 'night';
+      else if (tauTheme === 'light') tauTheme = 'terracotta';
+      if (!tauBg[tauTheme]) {
+        tauTheme = (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) ? 'terracotta' : 'night';
+      }
+      document.documentElement.setAttribute('data-theme', tauTheme);
+      var tauMeta = document.querySelector('meta[name="theme-color"]');
+      if (tauMeta) tauMeta.setAttribute('content', tauBg[tauTheme]);
+    } catch (e) {}
+  </script>
   <link rel="stylesheet" href="../style.css">
   <link rel="stylesheet" href="hub.css">
   <!-- KaTeX for math rendering -->

@@ -2105,7 +2105,7 @@ export default function (pi: ExtensionAPI) {
             }
           }
         }
-        out.sort((a, b) => b.mtime - a.mtime);
+        out.sort((a, b) => b.mtime - a.mtime || (b.date || 0) - (a.date || 0));
         res.end(JSON.stringify({ sessions: out }));
       } catch (err: any) {
         try { res.end(JSON.stringify({ error: err.message })); } catch {}

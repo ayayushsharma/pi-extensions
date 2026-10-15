@@ -1728,6 +1728,7 @@ html {
 .status-indicator {
   width: 6px;
   height: 6px;
+  flex-shrink: 0; /* the dot never deforms, even in a squeezed row */
   border-radius: 50%;
   background: var(--text-dim);
   transition: all 0.4s var(--ease);

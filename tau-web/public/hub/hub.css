@@ -159,6 +159,7 @@
   max-width: 260px;
   min-width: 0;
   margin-right: 2px;
+  flex-shrink: 0; /* never squish the status: the tab-strip scrolls instead */
 }
 .hub-shell .tabbar #status-text {
   min-width: 0;

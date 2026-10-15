@@ -514,6 +514,14 @@ html {
 .icon-btn.spinning { animation: spin 0.5s ease; }
 @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 
+/* Phone-only reload button (see #phone-refresh in hub/index.html): desktop
+   has Ctrl+R, phones get a tap target. Coarse pointer = touch phones and
+   tablets; desktop/laptop stays uncluttered. */
+#phone-refresh { display: none; }
+@media (pointer: coarse) {
+  #phone-refresh { display: flex; }
+}
+
 /* Session list */
 .session-list {
   flex: 1;

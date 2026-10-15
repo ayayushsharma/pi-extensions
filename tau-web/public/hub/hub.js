@@ -317,6 +317,10 @@ function init() {
 
   document.getElementById('tabbar-home')?.addEventListener('click', openHome);
   document.getElementById('tab-new')?.addEventListener('click', newSession);
+  // Phone-only reload (hidden on desktop via CSS): the Ctrl+R equivalent
+  // for touch devices. Reload is safe — the binding is persisted and the
+  // tab rejoins the same backend on boot.
+  document.getElementById('phone-refresh')?.addEventListener('click', () => window.location.reload());
   homeBackdrop?.addEventListener('click', closeHome);
 
   homeInput?.addEventListener('input', () => { state.filter = homeInput.value; state.sel = 0; renderHome(); });

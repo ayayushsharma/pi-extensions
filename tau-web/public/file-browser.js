@@ -143,9 +143,9 @@ export class FileBrowser {
     }
   }
 
-  // Read-only preview entry point (IDE-like viewer): stubbed until the
-  // viewer lands — clicking a file must not silently feed the prompt.
+  // Read-only preview entry point (IDE-like viewer): the app owns the
+  // viewer (session key + attach live there), so this is just an event.
   previewFile(filePath) {
-    console.debug('[FileBrowser] preview not implemented yet:', filePath);
+    window.dispatchEvent(new CustomEvent('tau:preview-file', { detail: { path: filePath } }));
   }
 }

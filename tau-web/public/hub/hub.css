@@ -573,3 +573,127 @@ a.tab, a.vtab { text-decoration: none; }
   .session-home { padding-top: 10vh; }
   .session-bar .sb-text { max-width: 40vw; }
 }
+
+/* ── Read-only file viewer ─────────────────────────────────────── */
+.fv-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6vh 20px 20px;
+}
+.fv-overlay.hidden { display: none; }
+.fv-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+}
+.fv-panel {
+  position: relative;
+  width: min(920px, 100%);
+  max-height: 88vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-elevated, #1a1a1e);
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.12));
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+.fv-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.12));
+  flex-shrink: 0;
+}
+.fv-title-wrap { flex: 1; min-width: 0; }
+.fv-name {
+  font-weight: 600;
+  font-size: 14px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.fv-meta { font-size: 11px; color: var(--text-dim); }
+.fv-actions { display: flex; gap: 8px; flex-shrink: 0; }
+.fv-btn {
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.12));
+  background: transparent;
+  color: var(--text-primary);
+  border-radius: 8px;
+  padding: 6px 12px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.fv-btn-primary {
+  background: var(--accent);
+  border-color: transparent;
+  color: #fff;
+  font-weight: 600;
+}
+.fv-btn-x { padding: 6px 10px; }
+.fv-notice {
+  padding: 6px 12px;
+  font-size: 12px;
+  color: var(--warning);
+  border-bottom: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.12));
+  flex-shrink: 0;
+}
+.fv-notice.hidden { display: none; }
+.fv-body {
+  display: flex;
+  overflow: auto;
+  flex: 1;
+  min-height: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+.fv-gutter {
+  position: sticky;
+  left: 0;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 10px 8px 10px 12px;
+  text-align: right;
+  color: var(--text-dim);
+  background: var(--bg-elevated, #1a1a1e);
+  user-select: none;
+}
+.fv-gutter span { height: calc(12.5px * 1.55); }
+.fv-code {
+  margin: 0;
+  padding: 10px 16px 10px 8px;
+  white-space: pre;
+  flex: 1;
+}
+.fv-code code { background: none; font-family: inherit; }
+.fv-loading, .fv-error { padding: 20px; color: var(--text-secondary); }
+.fv-error { color: var(--warning); }
+.fv-image-wrap { padding: 16px; margin: auto; }
+.fv-image { max-width: 100%; border-radius: 8px; }
+
+/* highlight.js tokens painted with the app's own theme vars */
+.fv-code .hljs-keyword, .fv-code .hljs-selector-tag, .fv-code .hljs-doctag { color: var(--accent); }
+.fv-code .hljs-string, .fv-code .hljs-regexp, .fv-code .hljs-addition { color: var(--success); }
+.fv-code .hljs-number, .fv-code .hljs-literal { color: var(--warning); }
+.fv-code .hljs-comment, .fv-code .hljs-quote { color: var(--text-dim); font-style: italic; }
+.fv-code .hljs-title, .fv-code .hljs-title-function_, .fv-code .hljs-section { color: var(--text-primary); font-weight: 600; }
+.fv-code .hljs-type, .fv-code .hljs-class .hljs-title, .fv-code .hljs-built_in { color: var(--info, #7dd3fc); }
+.fv-code .hljs-variable, .fv-code .hljs-template-variable, .fv-code .hljs-attr, .fv-code .hljs-attribute { color: var(--text-secondary); }
+.fv-code .hljs-name, .fv-code .hljs-selector-id, .fv-code .hljs-selector-class { color: var(--accent); }
+.fv-code .hljs-operator, .fv-code .hljs-punctuation { color: var(--text-secondary); }
+.fv-code .hljs-deletion { color: var(--error, #f87171); }
+.fv-code .hljs-meta, .fv-code .hljs-meta .hljs-keyword { color: var(--text-dim); }
+.fv-code .hljs-emphasis { font-style: italic; }
+.fv-code .hljs-strong { font-weight: 700; }
+
+@media (max-width: 768px) {
+  .fv-overlay { padding: 0; align-items: stretch; }
+  .fv-panel { width: 100%; max-height: none; height: 100%; border: none; border-radius: 0; }
+  .fv-btn { padding: 8px 12px; }
+}

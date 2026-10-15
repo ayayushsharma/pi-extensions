@@ -9,6 +9,7 @@ import { ToolCardRenderer } from './tool-card.js';
 import { DialogHandler } from './dialogs.js';
 import { SessionSidebar } from './session-sidebar.js';
 import { themes, applyTheme, getCurrentTheme } from './themes.js';
+import { openFileViewer } from './file-viewer.js';
 import { FileBrowser, getFileIcon } from './file-browser.js';
 import { Launcher } from './launcher.js';
 import { icon } from './icons.js';
@@ -232,6 +233,17 @@ const fileSidebarPath = document.getElementById('file-sidebar-path');
 // file clicks route to FileBrowser.previewFile (read-only viewer stub).
 // The pendingFilePaths pipeline below stays dormant until the viewer grows
 // an explicit, preview-first "Add to prompt" action.
+// Read-only file viewer: the explorer only announces taps (it knows no
+// session key); the dormant pendingFilePaths pipeline is re-fed here, so
+// attach stays an explicit, preview-first user action.
+window.addEventListener('tau:preview-file', (e) => {
+  const p = e?.detail?.path;
+  if (!p) return;
+  openFileViewer(p, {
+    sessionKey: sessionKeyOf(sidebar.activeSessionFile || mirrorActiveSessionFile),
+    onAttach: (info) => { pendingFilePaths.push(info); renderAttachmentPreviews(); },
+  });
+});
 const fileBrowser = new FileBrowser(fileList, fileSidebarPath);
 
 fileSidebarToggle.addEventListener('click', () => {

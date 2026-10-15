@@ -1946,6 +1946,89 @@ export default function (pi: ExtensionAPI) {
       return;
     }
 
+    // Read-only file content for the IDE-like viewer. Jailed to the
+    // viewed session's cwd (resolved server-side from the session file,
+    // never trusted from the client): ?path= + ?sessionKey=. Caps size,
+    // sniffs binary, follows symlinks via realpath before jailing.
+    if (urlPath === "/api/files/content" || urlPath.startsWith("/api/files/content?")) {
+      if (req.method !== "GET") { res.writeHead(405); res.end(); return; }
+      res.writeHead(200, { "Content-Type": "application/json" });
+      try {
+        const q = new URL(`http://localhost${req.url}`);
+        const rawPath = q.searchParams.get("path");
+        const sessionKey = q.searchParams.get("sessionKey");
+        if (!rawPath || !sessionKey || sessionKey.includes("/")) {
+          res.end(JSON.stringify({ error: "path + sessionKey required" }));
+          return;
+        }
+        // Resolve the session's cwd from its file (first line carries it).
+        let jail: string | null = null;
+        try {
+          const dirs = fs.readdirSync(SESSIONS_DIR, { withFileTypes: true });
+          for (const d of dirs) {
+            if (!d.isDirectory()) continue;
+            const cand = path.join(SESSIONS_DIR, d.name, sessionKey);
+            if (!fs.existsSync(cand)) continue;
+            const fd = fs.openSync(cand, "r");
+            try {
+              const buf = Buffer.alloc(4096);
+              const n = fs.readSync(fd, buf, 0, 4096, 0);
+              const firstLine = buf.subarray(0, n).toString("utf-8").split("\n")[0];
+              const parsed: any = JSON.parse(firstLine || "{}");
+              if (parsed?.type === "session" && typeof parsed.cwd === "string" && parsed.cwd) {
+                jail = path.resolve(parsed.cwd);
+              }
+            } catch {} finally { fs.closeSync(fd); }
+            break;
+          }
+        } catch {}
+        if (!jail || !fs.existsSync(jail)) {
+          res.end(JSON.stringify({ error: "Unknown session — cannot jail the read" }));
+          return;
+        }
+        let abs: string;
+        try {
+          abs = fs.realpathSync(path.resolve(rawPath));
+        } catch {
+          res.end(JSON.stringify({ error: "File not found" }));
+          return;
+        }
+        const jailReal = fs.realpathSync(jail);
+        if (abs !== jailReal && !abs.startsWith(jailReal + path.sep)) {
+          res.end(JSON.stringify({ error: "Outside the viewed session" }));
+          return;
+        }
+        const st = fs.statSync(abs);
+        if (!st.isFile()) {
+          res.end(JSON.stringify({ error: "Not a file" }));
+          return;
+        }
+        const MAX = 256 * 1024;
+        const fd2 = fs.openSync(abs, "r");
+        let content: string;
+        let truncated = false;
+        let binary = false;
+        try {
+          const head = Buffer.alloc(Math.min(st.size, 8192));
+          fs.readSync(fd2, head, 0, head.length, 0);
+          binary = head.includes(0);
+          const take = Math.min(st.size, MAX);
+          const buf = Buffer.alloc(take);
+          fs.readSync(fd2, buf, 0, take, 0);
+          content = buf.toString("utf-8");
+          truncated = st.size > MAX;
+        } finally { fs.closeSync(fd2); }
+        if (binary) {
+          res.end(JSON.stringify({ path: abs, binary: true, size: st.size }));
+          return;
+        }
+        res.end(JSON.stringify({ path: abs, size: st.size, truncated, content }));
+      } catch (err: any) {
+        res.end(JSON.stringify({ error: err.message }));
+      }
+      return;
+    }
+
     // Git context for the session status bar (branch / repo root / dirty).
     // execFile (argv, no shell) so a hostile cwd can't inject a command.
     // NB: handleApiRoute receives urlPath WITH the query string still attached.

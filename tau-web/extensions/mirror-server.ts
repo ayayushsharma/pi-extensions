@@ -2029,6 +2029,131 @@ export default function (pi: ExtensionAPI) {
       return;
     }
 
+    // Create a single directory for the session picker. Jailed under $HOME
+    // (no general FS write pipe); the parent must already exist — the
+    // picker only offers New-folder inside the browsed directory.
+    if (urlPath === "/api/files/mkdir" && req.method === "POST") {
+      let body = "";
+      req.on("data", (chunk: Buffer) => { body += chunk.toString(); });
+      req.on("end", () => {
+        try {
+          const { path: raw } = JSON.parse(body);
+          if (!raw || typeof raw !== "string") {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "path required" }));
+            return;
+          }
+          const home = fs.realpathSync(process.env.HOME || "/");
+          const abs = path.resolve(raw);
+          if (abs !== home && !abs.startsWith(home + path.sep)) {
+            res.writeHead(403, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "Outside the home directory" }));
+            return;
+          }
+          if (fs.existsSync(abs)) {
+            res.writeHead(409, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "Already exists" }));
+            return;
+          }
+          fs.mkdirSync(abs); // non-recursive: the parent is the browsed dir
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ path: abs }));
+        } catch (err: any) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: err.message }));
+        }
+      });
+      return;
+    }
+
+    // Session summaries for the session picker: one directory's sessions
+    // with title (rename > first user message), date and running state,
+    // most-recent-first. ?cwd= is matched against session header cwds.
+    if (urlPath === "/api/sessions/summaries" || urlPath.startsWith("/api/sessions/summaries?")) {
+      if (req.method !== "GET") { res.writeHead(405); res.end(); return; }
+      res.writeHead(200, { "Content-Type": "application/json" });
+      // handleApiRoute is sync: run the async scan in an IIFE.
+      (async () => {
+      try {
+        const q = new URL(`http://localhost${req.url}`);
+        const cwd = q.searchParams.get("cwd");
+        if (!cwd) { res.end(JSON.stringify({ sessions: [] })); return; }
+        const want = path.resolve(cwd);
+        const readline = await import("node:readline");
+        const running = new Set(
+          getRunningInstances().map((i: any) => i.sessionFile).filter(Boolean)
+        );
+        const out: any[] = [];
+        if (fs.existsSync(SESSIONS_DIR)) {
+          for (const dir of fs.readdirSync(SESSIONS_DIR, { withFileTypes: true })) {
+            if (!dir.isDirectory()) continue;
+            const projectDir = path.join(SESSIONS_DIR, dir.name);
+            for (const file of fs.readdirSync(projectDir).filter((f) => f.endsWith(".jsonl"))) {
+              try {
+                const filePath = path.join(projectDir, file);
+                const parsed: any = await parseSessionFile(filePath, readline);
+                if (!parsed || path.resolve(parsed.cwd || "") !== want) continue;
+                const stat = fs.statSync(filePath);
+                out.push({
+                  file, dirName: dir.name, filePath,
+                  title: parsed.name || parsed.firstMessage || "(empty session)",
+                  date: parsed.timestamp || stat.mtimeMs,
+                  mtime: stat.mtimeMs,
+                  running: running.has(filePath),
+                });
+              } catch { /* skip unreadable */ }
+            }
+          }
+        }
+        out.sort((a, b) => b.mtime - a.mtime);
+        res.end(JSON.stringify({ sessions: out }));
+      } catch (err: any) {
+        try { res.end(JSON.stringify({ error: err.message })); } catch {}
+      }
+      })();
+      return;
+    }
+
+    // Fork a session: byte-identical transcript copy under a fresh pi-style
+    // name in the same project dir. The client binds the copy through the
+    // normal resume path, so no new spawn protocol is needed.
+    if (urlPath === "/api/sessions/fork" && req.method === "POST") {
+      let body = "";
+      req.on("data", (chunk: Buffer) => { body += chunk.toString(); });
+      req.on("end", () => {
+        try {
+          const { dirName, file } = JSON.parse(body);
+          if (!dirName || !file || typeof file !== "string" || !file.endsWith(".jsonl")) {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "dirName + .jsonl file required" }));
+            return;
+          }
+          const root = path.resolve(SESSIONS_DIR);
+          const src = path.resolve(path.join(SESSIONS_DIR, dirName, file));
+          if (src !== root && !src.startsWith(root + path.sep)) {
+            res.writeHead(403, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "Forbidden" }));
+            return;
+          }
+          if (!fs.existsSync(src)) {
+            res.writeHead(404, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "Session not found" }));
+            return;
+          }
+          const { randomUUID } = require("node:crypto");
+          const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+          const dest = path.join(path.dirname(src), `${stamp}_${randomUUID()}.jsonl`);
+          fs.copyFileSync(src, dest);
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ file: path.basename(dest), dirName }));
+        } catch (err: any) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: err.message }));
+        }
+      });
+      return;
+    }
+
     // Git context for the session status bar (branch / repo root / dirty).
     // execFile (argv, no shell) so a hostile cwd can't inject a command.
     // NB: handleApiRoute receives urlPath WITH the query string still attached.

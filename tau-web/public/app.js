@@ -10,6 +10,7 @@ import { DialogHandler } from './dialogs.js';
 import { SessionSidebar } from './session-sidebar.js';
 import { themes, applyTheme, getCurrentTheme } from './themes.js';
 import { openFileViewer } from './file-viewer.js';
+import { openSessionPicker } from './session-picker.js';
 import { FileBrowser, getFileIcon } from './file-browser.js';
 import { Launcher } from './launcher.js';
 import { icon } from './icons.js';
@@ -2075,32 +2076,56 @@ async function applyFreshSession(data) {
 
 // New-session modal: directory (prefilled) + optional starter prompt. Resume
 // lives in the sidebar; this path always starts fresh.
+// Start / Resume picker: directory browser + per-directory sessions +
+// favourites + optional starter. New sessions reuse the busy-guarded
+// creation flow; resume/fork bind through the normal switch path.
 async function promptNewSession() {
   const cwd = fileBrowser.currentPath || headlessBinding?.cwd || '';
-  const result = await dialogHandler.promptLocal({
-    title: 'New session',
-    fields: [
-      { name: 'cwd', label: 'Directory', value: cwd, placeholder: '~/project' },
-      { name: 'prompt', label: 'Starter prompt (optional)', placeholder: 'What should the agent do?', multiline: true },
-    ],
-    okLabel: 'Start',
+  openSessionPicker({
+    cwd,
+    isFavourite: (fp) => sidebar.isFavourite(fp),
+    onToggleFavourite: (fp) => sidebar.toggleFavourite(fp),
+    onNew: async (dir, starter) => {
+      if (!wsClient.ws || wsClient.ws.readyState !== WebSocket.OPEN) {
+        messageRenderer.renderSystemMessage('Not connected to the backend — start (or wait for) the server before opening a new session.');
+        return;
+      }
+      if (newSessionBusy) return;
+      setNewSessionBusy(true, 'Creating session…');
+      try {
+        console.time('[NewSession] total (picker confirm to bound view)');
+        await sessionActions.newSessionInCwd(dir || null);
+        if (starter) sendMessage(starter);
+        console.timeEnd('[NewSession] total (picker confirm to bound view)');
+      } finally {
+        setNewSessionBusy(false);
+      }
+    },
+    onResume: async (sm) => {
+      let found = findSidebarSession(sm.file);
+      if (!found) { await sidebar.loadSessions(); found = findSidebarSession(sm.file); }
+      if (!found) {
+        messageRenderer.renderSystemMessage('That session is no longer on disk.');
+        return;
+      }
+      await handleSessionSelect(found.session, found.project);
+    },
+    onFork: async (sm) => {
+      const res = await fetch('/api/sessions/fork', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dirName: sm.dirName, file: sm.file }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data?.error || !data?.file) {
+        messageRenderer.renderSystemMessage(`Fork failed: ${data?.error || res.status}`);
+        return;
+      }
+      await sidebar.loadSessions();
+      const found = findSidebarSession(data.file);
+      if (found) await handleSessionSelect(found.session, found.project);
+      else messageRenderer.renderSystemMessage('Forked, but the copy is not listed — pull to refresh.');
+    },
   });
-  if (!result) return;
-  if (!wsClient.ws || wsClient.ws.readyState !== WebSocket.OPEN) {
-    messageRenderer.renderSystemMessage('Not connected to the backend — start (or wait for) the server before opening a new session.');
-    return;
-  }
-  if (newSessionBusy) return; // a creation is already in flight — no duplicates
-  setNewSessionBusy(true, 'Creating session…');
-  try {
-    console.time('[NewSession] total (modal confirm to bound view)');
-    await sessionActions.newSessionInCwd(result.cwd?.trim() || null);
-    const starter = result.prompt?.trim();
-    if (starter) sendMessage(starter);
-    console.timeEnd('[NewSession] total (modal confirm to bound view)');
-  } finally {
-    setNewSessionBusy(false);
-  }
 }
 
 async function handleSessionSelect(session, project) {

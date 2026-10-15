@@ -20,6 +20,7 @@ const ORDER = [
   "h10-processes.test.mjs",
   "h11-reswitch.test.mjs",
   "h12-viewer.test.mjs",
+  "h13-picker.test.mjs",
   "d1-drive-attach.test.mjs",
   "d5-auth.test.mjs",
   "p2-guards.test.mjs",

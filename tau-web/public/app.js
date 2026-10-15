@@ -2679,7 +2679,21 @@ function updateSessionHash(filePathOrKey, drive) {
 // previewed (and driven if asked), otherwise the headless backend resumes it.
 async function restoreSessionFromUrl() {
   const wanted = parseSessionHash();
-  if (!wanted?.key || restoreInFlight) return;
+  if (!wanted?.key) return;
+  // Instant chrome: paint the incoming session's title/card/loading from
+  // the cached index BEFORE any await, so a tab tap feels immediate while
+  // the socket/index/instances + history loads still resolve.
+  const early = findSidebarSession(wanted.key);
+  if (early) {
+    sidebar.setActive(early.session.filePath);
+    renderCurrentSessionCard();
+    messageRenderer.clear();
+    messageRenderer.renderSystemMessage('Loading session...');
+  }
+  // A switch landing mid-restore is served by the finally re-run below,
+  // which picks up the latest hash — taps can never strand the view.
+  if (restoreInFlight) return;
+  const myKey = wanted.key;
   restoreInFlight = true;
   urlRestorePending = true;
   isMirrorMode = true; // a pinned view never repoints the server's own session
@@ -2710,6 +2724,10 @@ async function restoreSessionFromUrl() {
   } finally {
     urlRestorePending = false;
     restoreInFlight = false;
+    // The hash moved on while we worked: serve it now (converges once
+    // taps stop; the ghost path clears the hash so this can't loop).
+    const now = parseSessionHash()?.key;
+    if (now && now !== myKey) restoreSessionFromUrl();
   }
 }
 function waitForWsOpen(timeoutMs = 5000) {

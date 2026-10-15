@@ -113,6 +113,8 @@
 }
 .tab:hover { background: var(--bg-glass-hover); color: var(--text-primary); }
 .tab.active { background: var(--bg-glass-active); color: var(--text-primary); }
+/* Tabs are anchors: never show link styling. */
+a.tab, a.vtab { text-decoration: none; }
 .tab.dragging { opacity: 0.5; }
 .tab.drop-before { box-shadow: inset 2px 0 0 var(--accent); }
 .tab.drop-after { box-shadow: inset -2px 0 0 var(--accent); }

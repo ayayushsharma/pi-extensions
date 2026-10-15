@@ -2086,6 +2086,9 @@ async function switchSession(sessionFile, session = null, project = null, opts =
   try {
     // New binding epoch — in-flight stream events from the old session are dropped.
     bindingEpoch++;
+    // Captured for the stale-switch guards below: a second switchSession
+    // (fast tab-hopping) invalidates everything this call fetches after.
+    const myEpoch = bindingEpoch;
     bgWatchToken++; // stop any background-run watch from the previous view
     cancelStreamSettle();
     state.setStreaming(false);
@@ -2122,6 +2125,11 @@ async function switchSession(sessionFile, session = null, project = null, opts =
           console.log('[App] History fetch status:', res.status);
           const data = await res.json();
           console.log('[App] History entries:', data.entries?.length || 0);
+
+          // Superseded while fetching (fast tab switch): the newer view
+          // owns the screen — drop this payload so neither its content,
+          // its title, nor its headless bind lands on the wrong tab.
+          if (myEpoch !== bindingEpoch) return;
 
           messageRenderer.clear();
           renderSessionHistory(data.entries || []);
@@ -2169,6 +2177,7 @@ async function switchSession(sessionFile, session = null, project = null, opts =
 
       if (!res.ok) {
         const err = await res.json();
+        if (myEpoch !== bindingEpoch) return; // superseded: don't error on the new tab's view
         messageRenderer.renderError(`Failed to switch session: ${err.error}`);
       }
     }

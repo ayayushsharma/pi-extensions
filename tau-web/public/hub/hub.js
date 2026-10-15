@@ -5,7 +5,8 @@
  * owns session switching through the URL hash; this module is a thin,
  * decoupled layer on top of it:
  *
- *   • renders the tab strip (one tab per open session, "+", "×")
+ *   • renders the tab strip + sidebar mirror (real #session= anchors, so
+ *     long-press / Ctrl+click opens a session in a new browser tab)
  *   • renders the "home" search overlay (all sessions, grouped by project)
  *   • drives sessions purely via `location.hash` + /api/sessions
  *
@@ -172,9 +173,14 @@ function init() {
   // One row builder for both the horizontal strip and the sidebar's
   // vertical mirror: same dot/title/close, same handlers. The vertical
   // copy also dismisses the off-canvas sidebar on phones after a tap.
+  // Tabs are real anchors (href=#session=<key>): plain taps/clicks
+  // switch in place, while long-press / middle-click / Ctrl+click opens
+  // that session in a new browser tab via the hash deep-link. The close
+  // button preventDefaults so it never navigates.
   function makeTabRow(t, vertical) {
     const p = vertical ? 'vtab' : 'tab';
-    const btn = document.createElement('button');
+    const btn = document.createElement('a');
+    btn.href = `#session=${encodeURIComponent(t.key)}`;
     btn.className = p + (t.key === state.active ? ' active' : '');
     btn.dataset.key = t.key;
     btn.setAttribute('role', 'tab');
@@ -193,11 +199,14 @@ function init() {
     close.className = p + '-close';
     close.setAttribute('aria-label', 'Close tab');
     close.innerHTML = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
-    close.addEventListener('click', (e) => { e.stopPropagation(); closeTab(t.key); });
+    close.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); closeTab(t.key); });
     btn.appendChild(close);
 
     btn.addEventListener('click', (e) => {
       if (e.target.closest('.tab-close, .vtab-close')) return;
+      // Modifier/middle click: let the browser open the href (new tab).
+      if (e.metaKey || e.ctrlKey || e.shiftKey || e.button === 1) return;
+      e.preventDefault(); // same-tab switch, no navigation
       activate(t.key);
       if (vertical && window.matchMedia('(max-width: 768px)').matches) {
         document.getElementById('sidebar')?.classList.add('collapsed');

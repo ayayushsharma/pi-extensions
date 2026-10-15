@@ -12,7 +12,9 @@ export function createSessionActions(deps) {
   async function newSessionInCwd(cwd) {
     const payload = { type: "new_session" };
     if (cwd) payload.cwd = cwd;
+    console.time("[NewSession] new_session RPC (cold backend spawn)");
     const data = await sendRpc(payload);
+    console.timeEnd("[NewSession] new_session RPC (cold backend spawn)");
     // A dropped ack must never be silent: the view stays put, so say why.
     if (data && !data.timeout) onFresh?.(data);
     else if (data?.timeout) onTimeout?.("new_session");

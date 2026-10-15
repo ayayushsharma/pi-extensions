@@ -514,6 +514,13 @@ html {
 .icon-btn.spinning { animation: spin 0.5s ease; }
 @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 
+/* New-session busy: creation spawns a cold backend, so entries ignore
+   taps and show work. Buttons spin; the home-list row (not spinnable
+   without looking broken) dims instead. Desktop + phone alike. */
+.ns-busy { pointer-events: none; }
+#new-session-btn.ns-busy, #tab-new.ns-busy { animation: spin 1s linear infinite; }
+.sh-new.ns-busy { opacity: 0.5; }
+
 /* Phone-only reload button (see #phone-refresh in hub/index.html): desktop
    has Ctrl+R, phones get a tap target. Coarse pointer = touch phones and
    tablets; desktop/laptop stays uncluttered. */

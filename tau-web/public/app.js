@@ -1908,6 +1908,27 @@ newSessionBtn.addEventListener('click', () => {
   promptNewSession();
 });
 
+// New-session busy guard: creation spawns a cold backend (slow on phones),
+// so all three entries (#new-session-btn, #tab-new, .sh-new) spin and
+// ignore extra taps while one is in flight — no duplicate sessions.
+let newSessionBusy = false;
+let newSessionStage = null; // transient statusText override while busy
+function setNewSessionBusy(busy, stage = null) {
+  newSessionBusy = busy;
+  newSessionStage = busy ? stage : null;
+  for (const el of document.querySelectorAll('#new-session-btn, #tab-new, .sh-new')) {
+    el.classList.toggle('ns-busy', busy);
+  }
+  lastUiStreaming = null; // the stage joins the repaint key — force it through
+  updateUI();
+}
+function setNewSessionStage(stage) {
+  if (!newSessionBusy) return;
+  newSessionStage = stage;
+  lastUiStreaming = null;
+  updateUI();
+}
+
 // ─── Persistent session actions (hub mode) ───
 // Browser close only detaches; pi keeps running until explicit Kill.
 // Module kept tiny and separate (session-actions.js) so lifecycle reads
@@ -1930,7 +1951,13 @@ window.addEventListener('tau:new-session', () => {
     messageRenderer.renderSystemMessage('Not connected to the backend — start (or wait for) the server before opening a new session.');
     return;
   }
-  sessionActions.newSessionSameProject();
+  if (newSessionBusy) return; // a creation is already in flight — no duplicates
+  setNewSessionBusy(true, 'Creating session…');
+  console.time('[NewSession] total (tap to bound view)');
+  sessionActions.newSessionSameProject().finally(() => {
+    console.timeEnd('[NewSession] total (tap to bound view)');
+    setNewSessionBusy(false);
+  });
 });
 // Header Kill button. Placed on the current-session card so it is visually
 // attached to the session it terminates (no ambiguity about which one dies).
@@ -2032,6 +2059,8 @@ async function resetToScratchView() {
 // Rebinding here (calling bindHeadless) would spawn a second child and orphan
 // the one we just asked for.
 async function applyFreshSession(data) {
+  console.time('[NewSession] applyFreshSession (reset + bind)');
+  setNewSessionStage('Starting backend…');
   const cwd = data?.data?.cwd || null;
   headlessSessionKey = data?.data?.sessionKey || 'bound';
   headlessBinding = { cwd, sessionFile: null, sessionKey: data?.data?.sessionKey || null };
@@ -2041,6 +2070,7 @@ async function applyFreshSession(data) {
     fileBrowser.pendingRoot = cwd;
     if (!fileSidebar.classList.contains('collapsed')) fileBrowser.load(cwd);
   }
+  console.timeEnd('[NewSession] applyFreshSession (reset + bind)');
 }
 
 // New-session modal: directory (prefilled) + optional starter prompt. Resume
@@ -2060,9 +2090,17 @@ async function promptNewSession() {
     messageRenderer.renderSystemMessage('Not connected to the backend — start (or wait for) the server before opening a new session.');
     return;
   }
-  await sessionActions.newSessionInCwd(result.cwd?.trim() || null);
-  const starter = result.prompt?.trim();
-  if (starter) sendMessage(starter);
+  if (newSessionBusy) return; // a creation is already in flight — no duplicates
+  setNewSessionBusy(true, 'Creating session…');
+  try {
+    console.time('[NewSession] total (modal confirm to bound view)');
+    await sessionActions.newSessionInCwd(result.cwd?.trim() || null);
+    const starter = result.prompt?.trim();
+    if (starter) sendMessage(starter);
+    console.timeEnd('[NewSession] total (modal confirm to bound view)');
+  } finally {
+    setNewSessionBusy(false);
+  }
 }
 
 async function handleSessionSelect(session, project) {
@@ -2193,6 +2231,9 @@ async function switchSession(sessionFile, session = null, project = null, opts =
     console.error('[App] Failed to switch session:', error);
     messageRenderer.renderError('Failed to switch session');
   }
+  // A creation that drove this switch is now bound: drop the transient
+  // stage (the busy flag itself clears in the new-session finally).
+  if (newSessionStage) { newSessionStage = null; lastUiStreaming = null; updateUI(); }
   updateMirrorInputState();
 }
 
@@ -3568,7 +3609,7 @@ function updateUI() {
   // working (bgAgentRunning from the background watch): abort + Working
   // state follow either signal.
   const isStreaming = state.isStreaming || bgAgentRunning;
-  const uiKey = `${state.isStreaming}:${bgAgentRunning}`;
+  const uiKey = `${state.isStreaming}:${bgAgentRunning}:${newSessionStage}`;
   // No-op when nothing changed: rewriting classes/text restarts CSS pulses.
   if (uiKey === lastUiStreaming) return;
   lastUiStreaming = uiKey;
@@ -3578,7 +3619,7 @@ function updateUI() {
   renderStatusDot();
   // While compacting, the pill belongs to the compaction state.
   if (!isCompacting) {
-    statusText.textContent = isStreaming ? 'Working...' : idleStatusText();
+    statusText.textContent = newSessionStage || (isStreaming ? 'Working...' : idleStatusText());
   }
 
   sendBtn.disabled = false;

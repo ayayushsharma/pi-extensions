@@ -3087,6 +3087,13 @@ body.hide-thinking .thinking-block { display: none !important; }
 
 .image-preview:hover .image-preview-remove { opacity: 1; }
 
+/* Phones have no hover: the remove button must always be visible, and
+   the tap-flash hover zoom only clips the chip against its edges. */
+@media (pointer: coarse) {
+  .image-preview-remove { opacity: 1; }
+  .image-preview:hover { transform: none; }
+}
+
 .file-chip {
   width: auto;
   min-width: 64px;

@@ -1085,7 +1085,13 @@ export default function (pi: ExtensionAPI) {
             const cwd = typeof command.cwd === "string" && command.cwd.trim() ? command.cwd : process.cwd();
             const file = typeof command.sessionFile === "string" && command.sessionFile ? command.sessionFile : null;
             const fresh = command.fresh === true;
-            const managed = headless.attach(ws, cwd, file, { fresh, sessionKey: typeof command.sessionKey === "string" ? command.sessionKey : undefined });
+            let managed;
+            try {
+              managed = headless.attach(ws, cwd, file, { fresh, sessionKey: typeof command.sessionKey === "string" ? command.sessionKey : undefined });
+            } catch (e: any) {
+              sendTo(ws, { type: "rpc_event", event: { type: "response", command: "start_session", success: false, error: e?.message || "invalid cwd" }, id: command.id });
+              return;
+            }
             if (file && !fresh) {
               const abs = resolveHeadlessSessionPath(managed.cwd, file);
               // Skip the switch when this backend is already on the file:
@@ -1101,7 +1107,13 @@ export default function (pi: ExtensionAPI) {
             // /new semantics: old session keeps running detached, fresh
             // empty session bound to this tab.
             const cwd = typeof command.cwd === "string" && command.cwd.trim() ? command.cwd : undefined;
-            const managed = headless.newSession(ws, cwd);
+            let managed;
+            try {
+              managed = headless.newSession(ws, cwd);
+            } catch (e: any) {
+              sendTo(ws, { type: "rpc_event", event: { type: "response", command: "new_session", success: false, error: e?.message || "invalid cwd" }, id: command.id });
+              return;
+            }
             sendTo(ws, { type: "rpc_event", event: { type: "response", command: "new_session", success: true, data: { sessionKey: managed.id, cwd: managed.cwd } }, id: command.id });
             return;
           }

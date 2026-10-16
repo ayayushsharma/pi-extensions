@@ -6,6 +6,7 @@
  * - LF-only JSONL framing (U+2028/29 safe).
  */
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { statSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { homedir } from "node:os";
 
@@ -36,6 +37,31 @@ export function resolveHeadlessOptions(): Required<HeadlessOptions> {
   };
 }
 
+/** Build the env for a headless child: hub auth secrets are stripped so a
+ *  prompt-injected bash tool cannot read the web password via printenv.
+ *  Keeps TAU_DISABLED=1 and every non-auth var. */
+export function buildHeadlessChildEnv(extra?: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env, ...(extra || {}) };
+  delete env.TAU_USER;
+  delete env.TAU_PASS;
+  for (const k of Object.keys(env)) {
+    if (k === "TAU_AUTH" || k.startsWith("TAU_AUTH_")) delete env[k];
+  }
+  env.TAU_DISABLED = "1";
+  return env;
+}
+
+/** Throw with a clear message unless cwd exists and is a directory. */
+export function assertValidHeadlessCwd(cwd: string): void {
+  let st: any;
+  try {
+    st = statSync(cwd);
+  } catch {
+    throw new Error(`invalid cwd "${cwd}": does not exist or is not accessible`);
+  }
+  if (!st.isDirectory()) throw new Error(`invalid cwd "${cwd}": not a directory`);
+}
+
 export class RpcSession {
   private proc: ChildProcessWithoutNullStreams;
   private buffer = "";
@@ -50,10 +76,11 @@ export class RpcSession {
     onError: (message: string) => void;
     onExit: (code: number | null) => void;
   }) {
+    assertValidHeadlessCwd(opts.cwd);
     this.proc = spawn(opts.piBin, ["--mode", "rpc"], {
       cwd: opts.cwd,
       stdio: ["pipe", "pipe", "pipe"],
-      env: { ...process.env, TAU_DISABLED: "1", ...(opts.env || {}) },
+      env: buildHeadlessChildEnv(opts.env),
     });
     this.proc.stdout.setEncoding("utf-8");
     this.proc.stderr.setEncoding("utf-8");
@@ -73,8 +100,18 @@ export class RpcSession {
       const msg = String(chunk).trim();
       if (msg) opts.onError(msg);
     });
-    this.proc.on("error", (err) => opts.onError(err.message));
-    this.proc.on("exit", (code) => opts.onExit(code));
+    // Spawn failure (bad pi binary, bad cwd that slipped past validation)
+    // emits 'error' then 'close' and never 'exit' — treat all three as
+    // terminal and report onExit exactly once (error path passes null).
+    let settled = false;
+    const done = (code: number | null) => {
+      if (settled) return;
+      settled = true;
+      opts.onExit(code);
+    };
+    this.proc.on("error", (err) => { try { opts.onError((err as Error)?.message || String(err)); } catch {} done(null); });
+    this.proc.on("close", (code) => done(code));
+    this.proc.on("exit", (code) => done(code));
     if (opts.sessionFile) {
       this.send({ type: "switch_session", sessionPath: opts.sessionFile });
     }

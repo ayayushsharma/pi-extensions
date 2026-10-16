@@ -61,6 +61,49 @@ function attachLineReader(sock: net.Socket, onFrame: (frame: Frame) => void): vo
   });
 }
 
+/**
+ * Short liveness probe for a socket path: resolves true when a listener
+ * answers (live hub — the file must not be touched), false when dialing
+ * fails fast (stale file or no listener). A connect that hangs is treated
+ * as live: unlinking on a timeout could steal a loaded hub's socket.
+ */
+function probeSocketLive(sockPath: string, timeoutMs = 500): Promise<boolean> {
+  return new Promise((resolve) => {
+    let done = false;
+    let sock: net.Socket | null = null;
+    const timer = setTimeout(() => finish(true), timeoutMs);
+    function finish(live: boolean): void {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      try { sock?.destroy(); } catch { /* already gone */ }
+      resolve(live);
+    }
+    try {
+      sock = net.connect(sockPath);
+    } catch {
+      finish(false);
+      return;
+    }
+    sock.on("connect", () => finish(true));
+    sock.on("error", () => finish(false));
+  });
+}
+
+/** True while `p` is still the exact socket file we bound (same inode). */
+function isOurSocket(ours: { path: string; dev: number; ino: number }): boolean {
+  try {
+    const cur = fs.statSync(ours.path);
+    return cur.dev === ours.dev && cur.ino === ours.ino;
+  } catch { return false; } // no file — nothing of ours to remove
+}
+
+/** Remove `ours.path`, but only while it is still the file we bound. */
+function removeIfOurs(ours: { path: string; dev: number; ino: number }): void {
+  if (!isOurSocket(ours)) return;
+  try { fs.unlinkSync(ours.path); } catch { /* raced */ }
+}
+
 // ═══════════════════════════════════════
 // Hub side (listener)
 // ═══════════════════════════════════════
@@ -69,6 +112,10 @@ export class HubSocketServer {
   private server: net.Server | null = null;
   private conns = new Map<string, { sock: net.Socket; rec: MirrorRecord }>();
   private byPid = new Map<number, string>();
+  /** Identity (path + inode) of the socket file this instance bound, if any. */
+  private boundSocket: { path: string; dev: number; ino: number } | null = null;
+  /** Bumps on every start/stop so a stop during an async start cancels it. */
+  private startGen = 0;
 
   constructor(
     private hooks: {
@@ -80,18 +127,88 @@ export class HubSocketServer {
     },
   ) {}
 
-  start(): void {
-    if (this.server) return;
+  /**
+   * Bind the private socket. Never steals a live hub's path: when something
+   * already sits at the socket path, a short connect decides — a live
+   * listener answers (report via onError, return false, leave the file
+   * alone), while a stale file from a crashed hub is unlinked and bound as
+   * before. Resolves true once listening, false when refused or the bind
+   * failed (a failed bind also clears the server so start() can be retried).
+   */
+  async start(): Promise<boolean> {
+    if (this.server) return true;
+    const gen = ++this.startGen;
     const sockPath = hubSocketPath();
-    fs.mkdirSync(path.dirname(sockPath), { recursive: true, mode: 0o700 });
-    // A crashed hub can leave a stale socket that blocks bind.
-    try { fs.unlinkSync(sockPath); } catch { /* none */ }
+    try {
+      fs.mkdirSync(path.dirname(sockPath), { recursive: true, mode: 0o700 });
+    } catch (e) {
+      this.hooks.onError(e as Error);
+      return false;
+    }
+    if (fs.existsSync(sockPath)) {
+      if (await probeSocketLive(sockPath)) {
+        this.hooks.onError(new Error(`hub socket ${sockPath} is already served by a live hub; refusing to steal it`));
+        return false;
+      }
+      if (gen !== this.startGen || this.server) return this.server !== null;
+      // Stale socket with no listener — unlink and bind as before.
+      try { fs.unlinkSync(sockPath); } catch { /* raced; the bind will tell */ }
+    }
+    if (gen !== this.startGen || this.server) return this.server !== null;
+    let listening = false;
     const server = net.createServer((sock) => this.onConnection(sock));
-    server.on("error", (e) => this.hooks.onError(e as Error));
-    server.listen(sockPath, () => {
-      try { fs.chmodSync(sockPath, 0o600); } catch { /* best effort */ }
+    server.on("error", (e) => {
+      if (!listening && this.server === server) this.server = null;
+      this.hooks.onError(e as Error);
     });
     this.server = server;
+    let bound: boolean;
+    // Earliest observation of the file we just created — a peer following
+    // the probe protocol can only replace it after this point, so comparing
+    // a later stat against boundId detects a mid-start takeover.
+    let boundId: { dev: number; ino: number } | null = null;
+    try {
+      bound = await new Promise<boolean>((resolve) => {
+        const onErr = () => resolve(false);
+        server.once("error", onErr);
+        server.listen(sockPath, () => {
+          listening = true;
+          server.removeListener("error", onErr);
+          try { fs.chmodSync(sockPath, 0o600); } catch { /* best effort */ }
+          try {
+            const st = fs.statSync(sockPath);
+            boundId = { dev: st.dev, ino: st.ino };
+          } catch { boundId = null; }
+          resolve(true);
+        });
+      });
+    } catch (e) {
+      if (this.server === server) this.server = null;
+      this.hooks.onError(e as Error);
+      return false;
+    }
+    if (gen !== this.startGen) {
+      // stop() ran while binding — tear down only what is still ours.
+      // close() itself unlinks the socket path, so it must not run once
+      // the file belongs to a newer hub; an orphaned listener fd is
+      // unreachable via the path and dies with the process.
+      const fresh = boundId ? { path: sockPath, ...boundId } : null;
+      if (bound && fresh && isOurSocket(fresh)) {
+        try { server.close(); } catch { /* already closed */ }
+        removeIfOurs(fresh); // close() usually already unlinked it
+      } else if (!bound) {
+        try { server.close(); } catch { /* already closed */ }
+      } else {
+        // Takeover mid-start: unref (not close) so the abandoned listener
+        // cannot hold the event loop open.
+        try { server.unref(); } catch { /* already closed */ }
+      }
+      if (this.server === server) this.server = null;
+      return false;
+    }
+    if (!bound) return false;
+    this.boundSocket = boundId ? { path: sockPath, ...boundId } : null;
+    return true;
   }
 
   private onConnection(sock: net.Socket): void {
@@ -165,14 +282,34 @@ export class HubSocketServer {
   }
 
   stop(): void {
+    this.startGen++;
     for (const conn of this.conns.values()) {
       try { conn.sock.destroy(); } catch { /* already gone */ }
     }
     this.conns.clear();
     this.byPid.clear();
-    try { this.server?.close(); } catch { /* already closed */ }
+    const server = this.server;
     this.server = null;
-    try { fs.unlinkSync(hubSocketPath()); } catch { /* none */ }
+    const ours = this.boundSocket;
+    this.boundSocket = null;
+    // NOTE: server.close() unlinks the socket path itself, so it must only
+    // run while the file is still the one we bound — a stopping old hub
+    // must never delete (via close or unlink) a newer hub's socket, and a
+    // refused/failed start leaves nothing to remove. A server left
+    // listening on a superseded path is unreachable and dies with the
+    // process; the next start() heals any stale file left behind.
+    if (server && ours && isOurSocket(ours)) {
+      try { server.close(); } catch { /* already closed */ }
+      removeIfOurs(ours); // close() usually already unlinked it
+    } else if (!server && ours) {
+      removeIfOurs(ours);
+    } else if (server) {
+      // Takeover (or start still in flight): never close() — it unlinks the
+      // path — just unref so an abandoned listener cannot hold the loop.
+      try { server.unref(); } catch { /* already closed */ }
+    }
+    // server without ours (refused/failed/in-flight start): leave it alone —
+    // the in-flight start() tears itself down via the generation check.
   }
 }
 

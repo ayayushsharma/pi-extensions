@@ -859,30 +859,6 @@ export default function (pi: ExtensionAPI) {
   }
 
   // ═══════════════════════════════════════
-  // tau-web: session path resolution (L6)
-  // ═══════════════════════════════════════
-  function cwdToSessionDir(cwd: string): string {
-    const n = path.resolve(cwd).replace(/^[/\\]/, "").replace(/[/\\:]/g, "-");
-    return `--${n}--`;
-  }
-  // Lossy display-only decode of a session dir name. The encoding maps
-  // every `/` to `-`, so literal dashes in project names (true-knowledge)
-  // cannot round-trip — NEVER use this where correctness matters (bind cwd,
-  // identity compares). Prefer the session header's `cwd` (parseSessionFile)
-  // or the live instance record; fall back to this for display only.
-  function lossyDecodeSessionDir(dirName: string): string {
-    return dirName.replace(/^--/, "/").replace(/--$/, "").replace(/-/g, "/");
-  }
-  function resolveHeadlessSessionPath(cwd: string, filename: string): string | null {
-    if (!filename || filename.includes("/") || filename.includes("\\") || !filename.endsWith(".jsonl")) return null;
-    const dir = path.join(SESSIONS_DIR, cwdToSessionDir(cwd));
-    const abs = path.resolve(path.join(dir, filename));
-    const root = path.resolve(SESSIONS_DIR);
-    if (!(abs === root || abs.startsWith(root + path.sep))) return null;
-    return abs;
-  }
-
-  // ═══════════════════════════════════════
   // Hub role (ADR-010): control-plane socket + mirror forwarder
   // ═══════════════════════════════════════
 

@@ -87,6 +87,58 @@ const authTokens = new Set<string>();
 const loginFailures = new Map<string, { count: number; at: number }>();
 // API access-log throttle (method+path -> last logged ms); diagnostics only.
 const apiAccessLog = new Map<string, number>();
+// S5: shared capped body reader for every POST route. Unbounded
+// `body += chunk` accumulation lets an unauthenticated client (e.g. a huge
+// /api/login POST) grow memory without bound; readBody answers 413 and
+// destroys the stream as soon as maxBytes is exceeded, so the whole body is
+// never buffered. Normal-sized bodies reach onBody unchanged (the same string
+// the old inline accumulators produced), preserving each route's existing
+// JSON parse/error handling.
+const BODY_LIMIT_LOGIN = 64 * 1024;
+const BODY_LIMIT_JSON = 256 * 1024;
+const BODY_LIMIT_RPC = 1024 * 1024;
+const BODY_LIMIT_CLIENT_ERROR = 8 * 1024;
+function readBody(req: http.IncomingMessage, res: http.ServerResponse, maxBytes: number, onBody: (body: string) => void): void {
+  let size = 0;
+  let body = "";
+  let over = false;
+  req.on("data", (chunk: Buffer) => {
+    if (over) return;
+    size += chunk.length;
+    if (size > maxBytes) {
+      over = true;
+      try {
+        res.writeHead(413, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Request body too large" }));
+      } catch {}
+      try { req.destroy(); } catch {}
+      return;
+    }
+    body += chunk.toString();
+  });
+  req.on("end", () => { if (!over) onBody(body); });
+  req.on("error", () => {});
+}
+// S7: /api/client-error is auth-exempt (a locked-out client must still be able
+// to report), so it gets a per-source-IP rate limit on top of the 8 KiB cap:
+// at most 20 logged reports per minute; excess answers 429 and is never
+// written to tau.log.
+const CLIENT_ERROR_MAX_PER_MIN = 20;
+const CLIENT_ERROR_WINDOW_MS = 60 * 1000;
+const clientErrorHits = new Map<string, number[]>();
+function clientErrorAllowed(ip: string): boolean {
+  const now = Date.now();
+  let hits = clientErrorHits.get(ip);
+  if (!hits) {
+    hits = [];
+    if (clientErrorHits.size > 1000) { const first = clientErrorHits.keys().next().value; if (first !== undefined) clientErrorHits.delete(first); }
+    clientErrorHits.set(ip, hits);
+  }
+  while (hits.length > 0 && now - hits[0] > CLIENT_ERROR_WINDOW_MS) hits.shift();
+  if (hits.length >= CLIENT_ERROR_MAX_PER_MIN) return false;
+  hits.push(now);
+  return true;
+}
 const AUTH_COOKIE = "tau_auth";
 let serverStartedAt = "";
 let tauWebVersion = "0.1.0";
@@ -1653,9 +1705,14 @@ export default function (pi: ExtensionAPI) {
     // POSTed here so a failing app shell is visible in tau.log even when the
     // browser console isn't being watched.
     if (urlPath === "/api/client-error" && req.method === "POST") {
-      let body = "";
-      req.on("data", (c: Buffer) => { body += c.toString(); if (body.length > 8000) req.destroy(); });
-      req.on("end", () => {
+      const ip = req.socket.remoteAddress || "unknown";
+      if (!clientErrorAllowed(ip)) {
+        res.writeHead(429, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Too many requests" }));
+        try { req.destroy(); } catch {}
+        return;
+      }
+      readBody(req, res, BODY_LIMIT_CLIENT_ERROR, (body) => {
         try { tauLog(`[client] ${body}`); } catch {}
         res.writeHead(204);
         res.end();
@@ -1678,9 +1735,7 @@ export default function (pi: ExtensionAPI) {
         res.end(JSON.stringify({ ok: true, authRequired: false }));
         return;
       }
-      let body = "";
-      req.on("data", (chunk: Buffer) => { body += chunk.toString(); });
-      req.on("end", async () => {
+      readBody(req, res, BODY_LIMIT_LOGIN, async (body) => {
         let user = "";
         let pass = "";
         try {
@@ -1845,9 +1900,7 @@ export default function (pi: ExtensionAPI) {
         res.end(JSON.stringify({ error: "Project launch is only supported on macOS (iTerm2)" }));
         return;
       }
-      let body = "";
-      req.on("data", (chunk: Buffer) => { body += chunk.toString(); });
-      req.on("end", () => {
+      readBody(req, res, BODY_LIMIT_JSON, (body) => {
         try {
           const { path: projectPath } = JSON.parse(body);
           if (!projectPath || typeof projectPath !== "string") {
@@ -1920,9 +1973,7 @@ export default function (pi: ExtensionAPI) {
       return;
     }
     if (urlPath === "/api/processes/kill" && req.method === "POST") {
-      let body = "";
-      req.on("data", (chunk: Buffer) => { body += chunk.toString(); });
-      req.on("end", async () => {
+      readBody(req, res, BODY_LIMIT_JSON, async (body) => {
         try {
           const { pid } = JSON.parse(body);
           // Hub-owned children go through the registry so WS bindings and
@@ -2065,9 +2116,7 @@ export default function (pi: ExtensionAPI) {
     // (no general FS write pipe); the parent must already exist — the
     // picker only offers New-folder inside the browsed directory.
     if (urlPath === "/api/files/mkdir" && req.method === "POST") {
-      let body = "";
-      req.on("data", (chunk: Buffer) => { body += chunk.toString(); });
-      req.on("end", () => {
+      readBody(req, res, BODY_LIMIT_JSON, (body) => {
         try {
           const { path: raw } = JSON.parse(body);
           if (!raw || typeof raw !== "string") {
@@ -2166,9 +2215,7 @@ export default function (pi: ExtensionAPI) {
     // name in the same project dir. The client binds the copy through the
     // normal resume path, so no new spawn protocol is needed.
     if (urlPath === "/api/sessions/fork" && req.method === "POST") {
-      let body = "";
-      req.on("data", (chunk: Buffer) => { body += chunk.toString(); });
-      req.on("end", () => {
+      readBody(req, res, BODY_LIMIT_JSON, (body) => {
         try {
           const { dirName, file } = JSON.parse(body);
           if (!dirName || !file || typeof file !== "string" || !file.endsWith(".jsonl")) {
@@ -2242,9 +2289,7 @@ export default function (pi: ExtensionAPI) {
     // answered ok:true before the opener even ran, so Android (no xdg-open)
     // silently did nothing).
     if (urlPath === "/api/open" && req.method === "POST") {
-      let body = "";
-      req.on("data", (chunk: Buffer) => { body += chunk.toString(); });
-      req.on("end", async () => {
+      readBody(req, res, BODY_LIMIT_JSON, async (body) => {
         try {
           const { filePath: fp } = JSON.parse(body);
           if (!fp || typeof fp !== "string") {
@@ -2305,9 +2350,7 @@ export default function (pi: ExtensionAPI) {
 
     // RPC proxy — handle via WebSocket command handler
     if (urlPath === "/api/rpc" && req.method === "POST") {
-      let body = "";
-      req.on("data", (chunk: Buffer) => { body += chunk.toString(); });
-      req.on("end", async () => {
+      readBody(req, res, BODY_LIMIT_RPC, async (body) => {
         try {
           const command = JSON.parse(body);
           // Binding/routing commands need a real browser WS: the fake socket
@@ -2343,9 +2386,7 @@ export default function (pi: ExtensionAPI) {
     // Session delete — constrained to the session store. The old code
     // unlinked any path the client named.
     if (urlPath === "/api/sessions/delete" && req.method === "POST") {
-      let body = "";
-      req.on("data", (chunk: Buffer) => { body += chunk.toString(); });
-      req.on("end", () => {
+      readBody(req, res, BODY_LIMIT_JSON, (body) => {
         try {
           const { filePath } = JSON.parse(body);
           if (!filePath || typeof filePath !== "string") {
@@ -2386,9 +2427,7 @@ export default function (pi: ExtensionAPI) {
     // another running session are refused (ADR-003: never write a live
     // session's file from a second process).
     if (urlPath === "/api/sessions/rename" && req.method === "POST") {
-      let body = "";
-      req.on("data", (chunk: Buffer) => { body += chunk.toString(); });
-      req.on("end", () => {
+      readBody(req, res, BODY_LIMIT_JSON, (body) => {
         try {
           const { dirName, file, name } = JSON.parse(body);
           const clean = typeof name === "string" ? name.trim().slice(0, 120) : "";
@@ -2460,9 +2499,7 @@ export default function (pi: ExtensionAPI) {
     // Export button needs this: same `pi --export` CLI pointed at the
     // selected history file. Read-only — safe on any file.
     if (urlPath === "/api/sessions/export" && req.method === "POST") {
-      let body = "";
-      req.on("data", (chunk: Buffer) => { body += chunk.toString(); });
-      req.on("end", () => {
+      readBody(req, res, BODY_LIMIT_JSON, (body) => {
         try {
           const { dirName, file } = JSON.parse(body);
           if (typeof dirName !== "string" || typeof file !== "string" || !file.endsWith(".jsonl")) {

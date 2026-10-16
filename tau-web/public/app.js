@@ -3198,8 +3198,10 @@ async function pollInstances() {
   return liveInstances;
 }
 
-// Poll every 5 seconds
-setInterval(pollInstances, 5000);
+// Safety-net poll only: the hub pushes `mirrorsChanged` on join/leave/update
+// and the handler below already refreshes immediately, so a fast poll is
+// redundant. (Was every 5s.)
+setInterval(pollInstances, 30000);
 pollInstances();
 
 // Hub pushes this when a TUI mirror connects/disconnects — refresh the LIVE

@@ -2402,6 +2402,7 @@ export default function (pi: ExtensionAPI) {
           getRunningInstances().map((i: any) => i.sessionFile).filter(Boolean)
         );
         const out: any[] = [];
+        const seenSummaries = new Set<string>();
         if (fs.existsSync(SESSIONS_DIR)) {
           for (const dir of fs.readdirSync(SESSIONS_DIR, { withFileTypes: true })) {
             if (!dir.isDirectory()) continue;
@@ -2409,19 +2410,22 @@ export default function (pi: ExtensionAPI) {
             for (const file of fs.readdirSync(projectDir).filter((f) => f.endsWith(".jsonl"))) {
               try {
                 const filePath = path.join(projectDir, file);
-                const parsed: any = await parseSessionFile(filePath, readline);
+                const cached: any = await cachedParseSessionFile(filePath, readline);
+                if (!cached) continue;
+                seenSummaries.add(filePath);
+                const parsed = cached.parsed;
                 if (!parsed || path.resolve(parsed.cwd || "") !== want) continue;
-                const stat = fs.statSync(filePath);
                 out.push({
                   file, dirName: dir.name, filePath,
                   title: parsed.name || parsed.firstMessage || "(empty session)",
-                  date: parsed.timestamp || stat.mtimeMs,
-                  mtime: stat.mtimeMs,
+                  date: parsed.timestamp || cached.mtimeMs,
+                  mtime: cached.mtimeMs,
                   running: running.has(filePath),
                 });
               } catch { /* skip unreadable */ }
             }
           }
+          sweepSessionSummaryCache(seenSummaries);
         }
         out.sort((a, b) => b.mtime - a.mtime || (b.date || 0) - (a.date || 0));
         res.end(JSON.stringify({ sessions: out }));
@@ -2460,6 +2464,7 @@ export default function (pi: ExtensionAPI) {
           const stamp = new Date().toISOString().replace(/[:.]/g, "-");
           const dest = path.join(path.dirname(src), `${stamp}_${randomUUID()}.jsonl`);
           fs.copyFileSync(src, dest);
+          invalidateSessionSummary(dest);
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ file: path.basename(dest), dirName }));
         } catch (err: any) {
@@ -2633,6 +2638,7 @@ export default function (pi: ExtensionAPI) {
             return;
           }
           fs.unlinkSync(abs);
+          invalidateSessionSummary(abs);
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ success: true }));
         } catch (err: any) {
@@ -2705,6 +2711,7 @@ export default function (pi: ExtensionAPI) {
           } catch {}
           const entry = { type: "session_info", id: require("node:crypto").randomUUID(), parentId, timestamp: new Date().toISOString(), name: clean };
           fs.appendFileSync(abs, JSON.stringify(entry) + "\n", "utf8");
+          invalidateSessionSummary(abs);
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ success: true, name: clean }));
         } catch (err: any) {
@@ -2791,10 +2798,89 @@ export default function (pi: ExtensionAPI) {
   // ═══════════════════════════════════════
   // Sessions list endpoint
   // ═══════════════════════════════════════
+  // ── P1/P5: session-store caches ──
+  // serveSessionsList used to fully re-parse every .jsonl on every
+  // GET /api/sessions (0.31–0.41 s at ~95 sessions, polled every 15 s).
+  // Parsed summaries are cached per absolute path and validated by
+  // (mtimeMs, size): an unchanged file is never re-parsed, while a
+  // rename/fork/delete that touches a file changes its stat (or removes
+  // it) so the next request re-reads exactly that file. Response shapes
+  // are unchanged — the cache only skips the re-parse.
+  type SessionSummaryCacheEntry = { mtimeMs: number; size: number; parsed: any };
+  const sessionSummaryCache = new Map<string, SessionSummaryCacheEntry>();
+  const SESSION_SUMMARY_CACHE_MAX = 2000;
+  // P5: /api/projects rolls up the same store. A per-request readdir+stat
+  // of every session file is cached briefly as a built map; mutation
+  // endpoints (rename/delete/fork) reset it via invalidateSessionSummary,
+  // so hub-driven changes are immediate and only external writes lag by
+  // the TTL at most.
+  let sessionInfoMapCache: { at: number; map: Map<string, { count: number; lastActive: number }> } = {
+    at: 0,
+    map: new Map(),
+  };
+  const SESSION_INFO_MAP_TTL_MS = 10000;
+  function invalidateSessionSummary(filePath: string): void {
+    sessionSummaryCache.delete(filePath);
+    sessionInfoMapCache.at = 0;
+  }
+  async function cachedParseSessionFile(
+    filePath: string,
+    readline: any
+  ): Promise<{ parsed: any; mtimeMs: number; size: number } | null> {
+    let mtimeMs = 0;
+    let size = 0;
+    try {
+      const stat = fs.statSync(filePath);
+      mtimeMs = stat.mtimeMs;
+      size = stat.size;
+    } catch {
+      sessionSummaryCache.delete(filePath);
+      return null;
+    }
+    const hit = sessionSummaryCache.get(filePath);
+    if (hit && hit.mtimeMs === mtimeMs && hit.size === size) {
+      return { parsed: hit.parsed, mtimeMs, size };
+    }
+    const parsed = await parseSessionFile(filePath, readline);
+    // Cache negative results too (header-less one-shots): the
+    // (mtimeMs, size) key re-parses as soon as the file grows.
+    if (sessionSummaryCache.size >= SESSION_SUMMARY_CACHE_MAX && !sessionSummaryCache.has(filePath)) {
+      const oldest = sessionSummaryCache.keys().next().value;
+      if (oldest !== undefined) sessionSummaryCache.delete(oldest);
+    }
+    sessionSummaryCache.set(filePath, { mtimeMs, size, parsed });
+    return { parsed, mtimeMs, size };
+  }
+  function sweepSessionSummaryCache(seen: Set<string>): void {
+    // Drop entries for files the store scan no longer lists (deleted or
+    // renamed away) so the map cannot accumulate stale entries over time.
+    for (const key of sessionSummaryCache.keys()) {
+      if (!seen.has(key)) sessionSummaryCache.delete(key);
+    }
+  }
+
+  // tmux live-file detection used to spawn tmux/pgrep/lsof subprocesses on
+  // every /api/sessions call. The result is cached briefly; when tmux is
+  // not installed the negative answer is remembered for the process.
+  let tmuxInstalled: boolean | null = null;
+  let tmuxFilesCache: Set<string> = new Set();
+  let tmuxFilesCacheAt = 0;
+  const TMUX_FILES_CACHE_TTL_MS = 8000;
   function getTmuxSessionFiles(): Set<string> {
     if (process.platform === "win32") return new Set();
+    if (tmuxInstalled === false) return new Set();
+    if (Date.now() - tmuxFilesCacheAt < TMUX_FILES_CACHE_TTL_MS) return tmuxFilesCache;
     try {
       const { execSync } = require("node:child_process");
+      if (tmuxInstalled === null) {
+        try {
+          execSync("command -v tmux 2>/dev/null", { encoding: "utf8" });
+          tmuxInstalled = true;
+        } catch {
+          tmuxInstalled = false;
+          return new Set();
+        }
+      }
       // Get tmux pane PIDs
       const paneOutput = execSync("tmux list-panes -a -F '#{pane_pid}' 2>/dev/null", { encoding: "utf8" });
       const tmuxFiles = new Set<string>();
@@ -2813,9 +2899,15 @@ export default function (pi: ExtensionAPI) {
           }
         } catch { /* no match */ }
       }
+      tmuxFilesCache = tmuxFiles;
+      tmuxFilesCacheAt = Date.now();
       return tmuxFiles;
     } catch {
-      return new Set();
+      // No tmux server (or no panes): remember the empty answer briefly so
+      // the failure path does not respawn subprocesses on every request.
+      tmuxFilesCache = new Set();
+      tmuxFilesCacheAt = Date.now();
+      return tmuxFilesCache;
     }
   }
 
@@ -2830,8 +2922,10 @@ export default function (pi: ExtensionAPI) {
     };
   }
 
-  // Session counts + recency per project path, built once per request.
+  // Session counts + recency per project path, TTL-cached (P5) so
+  // /api/projects does not readdir+stat the whole store per request.
   function buildSessionInfoMap(): Map<string, { count: number; lastActive: number }> {
+    if (Date.now() - sessionInfoMapCache.at < SESSION_INFO_MAP_TTL_MS) return sessionInfoMapCache.map;
     const map = new Map<string, { count: number; lastActive: number }>();
     if (!fs.existsSync(SESSIONS_DIR)) return map;
     for (const dir of fs.readdirSync(SESSIONS_DIR, { withFileTypes: true })) {
@@ -2853,6 +2947,7 @@ export default function (pi: ExtensionAPI) {
       const decoded = lossyDecodeSessionDir(dir.name);
       if (!map.has(decoded)) map.set(decoded, info);
     }
+    sessionInfoMapCache = { at: Date.now(), map };
     return map;
   }
 
@@ -2917,6 +3012,7 @@ export default function (pi: ExtensionAPI) {
       const readline = await import("node:readline");
       const dirEntries = fs.readdirSync(SESSIONS_DIR, { withFileTypes: true });
       const projects: any[] = [];
+      const seen = new Set<string>();
 
       for (const dir of dirEntries) {
         if (!dir.isDirectory()) continue;
@@ -2931,11 +3027,12 @@ export default function (pi: ExtensionAPI) {
         for (const file of files) {
           try {
             const filePath = path.join(projectDir, file);
-            const parsed = await parseSessionFile(filePath, readline);
-            if (parsed) {
-              const stat = fs.statSync(filePath);
+            const cached = await cachedParseSessionFile(filePath, readline);
+            if (!cached) continue;
+            seen.add(filePath);
+            if (cached.parsed) {
               const isTmux = tmuxFiles.has(filePath);
-              sessions.push({ ...parsed, file, filePath, mtime: stat.mtimeMs, ...(isTmux && { tmux: true }) });
+              sessions.push({ ...cached.parsed, file, filePath, mtime: cached.mtimeMs, ...(isTmux && { tmux: true }) });
             }
           } catch { /* skip */ }
         }
@@ -2959,6 +3056,7 @@ export default function (pi: ExtensionAPI) {
         }
       }
 
+      sweepSessionSummaryCache(seen);
       projects.sort((a, b) => {
         const aTime = a.sessions[0]?.mtime || 0;
         const bTime = b.sessions[0]?.mtime || 0;

@@ -2772,10 +2772,16 @@ async function restoreSessionFromUrl() {
   // the socket/index/instances + history loads still resolve.
   const early = findSidebarSession(wanted.key);
   if (early) {
+    // Reconnect guard (B5): don't wipe a transcript already showing the
+    // wanted session — the live branch below reloads it via switchSession.
+    const alreadyShowing = sessionKeyOf(sidebar.activeSessionFile) === wanted.key
+      && (messagesContainer?.childElementCount || 0) > 0;
     sidebar.setActive(early.session.filePath);
     renderCurrentSessionCard();
-    messageRenderer.clear();
-    messageRenderer.renderSystemMessage('Loading session...');
+    if (!alreadyShowing) {
+      messageRenderer.clear();
+      messageRenderer.renderSystemMessage('Loading session...');
+    }
   }
   // A switch landing mid-restore is served by the finally re-run below,
   // which picks up the latest hash — taps can never strand the view.
@@ -2984,13 +2990,16 @@ async function previewAttach(port, pid, sessionFile, lastActive, opts = {}) {
     const dirName = parts.pop();
     if (file && dirName) { session = { file, filePath: sessionFile }; project = { dirName }; }
   }
-  if (session && project && sidebar.activeSessionFile !== sessionFile) {
+  if (session && project && sessionKeyOf(sidebar.activeSessionFile) !== sessionKeyOf(sessionFile)) {
     sidebar.setActive(sessionFile);
     await switchSession(sessionFile, session, project, { preview: true });
   } else if (session && project) {
-    // Already viewing it: still root the file browser (it may hold the
-    // server default or another session's directory).
-    refreshFileBrowser(sessionFile, session, project);
+    // Already viewing the wanted live session (e.g. WS reconnect while it
+    // is pinned): reload history so the view doesn't stick on the early
+    // "Loading session..." placeholder. preview:true keeps read-only
+    // semantics (no headless bind to a TUI-owned file); switchSession
+    // already roots the file browser.
+    await switchSession(sidebar.activeSessionFile || sessionFile, session, project, { preview: true });
   } else if (!session || !project) {
     messageRenderer.renderSystemMessage('History unavailable for this session — you can still drive it.');
   }

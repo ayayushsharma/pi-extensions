@@ -5,6 +5,27 @@
 import { renderMarkdown, renderUserMarkdown } from './markdown.js';
 import { icon } from './icons.js';
 
+// Allowlist mirrors processImageFile's VALID_MIME_TYPES in app.js. History
+// session files are attacker-influenced, so image blocks are validated here
+// at the sink (and filtered on the history path in app.js).
+const VALID_IMAGE_MIMES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
+
+function isValidMessageImage(img) {
+  if (!img || typeof img.data !== 'string' || !img.data) return false;
+  if (!VALID_IMAGE_MIMES.includes(img.mimeType || 'image/png')) return false;
+  let b64 = img.data;
+  if (b64.startsWith('data:')) {
+    const comma = b64.indexOf(',');
+    if (comma === -1) return false;
+    const header = b64.slice(0, comma);
+    const m = header.match(/^data:([^;,]+)(;base64)?$/i);
+    if (!m || !VALID_IMAGE_MIMES.includes((m[1] || '').toLowerCase())) return false;
+    b64 = b64.slice(comma + 1);
+  }
+  if (!/^[A-Za-z0-9+/=\s]*$/.test(b64)) return false;
+  return b64.replace(/\s/g, '').length > 0;
+}
+
 export class MessageRenderer {
   constructor(container) {
     this.container = container;
@@ -81,20 +102,28 @@ export class MessageRenderer {
     const div = document.createElement('div');
     div.className = `message user${isHistory ? ' history' : ''}`;
 
-    let imagesHtml = '';
+    const contentDiv = document.createElement('div');
+    contentDiv.className = 'message-content';
     if (message.images && message.images.length > 0) {
-      imagesHtml = '<div class="message-images">' +
-        message.images.map(img => {
-          const src = img.data.startsWith('data:') ? img.data : `data:${img.mimeType || 'image/png'};base64,${img.data}`;
-          return `<img class="message-image" src="${src}" alt="Attached image" />`;
-        }).join('') +
-        '</div>';
+      const imagesWrap = document.createElement('div');
+      imagesWrap.className = 'message-images';
+      let validCount = 0;
+      for (const img of message.images) {
+        if (!isValidMessageImage(img)) continue;
+        const el = document.createElement('img');
+        el.className = 'message-image';
+        el.alt = 'Attached image';
+        el.src = img.data.startsWith('data:') ? img.data : `data:${img.mimeType || 'image/png'};base64,${img.data}`;
+        imagesWrap.appendChild(el);
+        validCount++;
+      }
+      if (validCount > 0) contentDiv.appendChild(imagesWrap);
     }
-
-    div.innerHTML = `
-      <div class="message-content">${imagesHtml}${renderUserMarkdown(message.content)}</div>
+    contentDiv.insertAdjacentHTML('beforeend', renderUserMarkdown(message.content));
+    div.appendChild(contentDiv);
+    div.insertAdjacentHTML('beforeend', `
       <button class="message-copy-btn" aria-label="Copy message"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
-    `;
+    `);
     this._setupCopyBtn(div);
     this.container.appendChild(div);
     this._renderMath(div);

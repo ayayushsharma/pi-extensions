@@ -75,24 +75,31 @@ export function renderMarkdown(text) {
     // Display math placeholder
     const dmathMatch = line.match(/^%%DMATH_(\d+)%%$/);
     if (dmathMatch) {
-      flushList();
-      flushBlockquote();
       const math = displayMath[parseInt(dmathMatch[1])];
-      html += `<div class="math math-display">$$${escapeHtml(math)}$$</div>`;
-      continue;
+      if (math !== undefined) {
+        flushList();
+        flushBlockquote();
+        html += `<div class="math math-display">$$${escapeHtml(math)}$$</div>`;
+        continue;
+      }
+      // Unknown marker (user text collided with a placeholder): fall through
+      // and render the line as plain text via the normal inline path below.
     }
 
     // Code block placeholder
     const codeMatch = line.match(/^%%CODEBLOCK_(\d+)%%$/);
     if (codeMatch) {
-      flushList();
-      flushBlockquote();
       const block = codeBlocks[parseInt(codeMatch[1])];
-      const langLabel = block.lang || 'code';
-      html += `<div class="code-block-wrapper">`;
-      html += `<div class="code-block-header"><span>${escapeHtml(langLabel)}</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>`;
-      html += `<pre><code>${escapeHtml(block.code)}</code></pre></div>`;
-      continue;
+      if (block !== undefined) {
+        flushList();
+        flushBlockquote();
+        const langLabel = block.lang || 'code';
+        html += `<div class="code-block-wrapper">`;
+        html += `<div class="code-block-header"><span>${escapeHtml(langLabel)}</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>`;
+        html += `<pre><code>${escapeHtml(block.code)}</code></pre></div>`;
+        continue;
+      }
+      // Unknown marker: fall through to plain-text rendering below.
     }
 
     // Table detection: look ahead for header + separator pattern
@@ -332,11 +339,13 @@ function renderInline(text) {
   // Auto-link bare URLs
   text = text.replace(/(^|[^"'])(https?:\/\/[^\s<]+)/g, '$1<a href="$2" target="_blank" rel="noopener">$2</a>');
 
-  // Restore math (before inline code so math inside code stays as code)
-  text = text.replace(/%%MATHX(\d+)%%/g, (_, idx) => mathSpans[parseInt(idx)]);
+  // Restore math (before inline code so math inside code stays as code).
+  // Missing index means the source text itself contained a marker-like
+  // string: keep the original marker text instead of emitting "undefined".
+  text = text.replace(/%%MATHX(\d+)%%/g, (m, idx) => mathSpans[parseInt(idx)] ?? m);
 
   // Restore inline code
-  text = text.replace(/%%ICODE(\d+)%%/g, (_, idx) => codeSpans[parseInt(idx)]);
+  text = text.replace(/%%ICODE(\d+)%%/g, (m, idx) => codeSpans[parseInt(idx)] ?? m);
 
   return text;
 }

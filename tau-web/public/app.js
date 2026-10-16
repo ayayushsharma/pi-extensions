@@ -1066,6 +1066,25 @@ let pendingFilePaths = [];  // { path, name, ext } — dormant; the read-only vi
 
 const MAX_IMAGE_DIM = 2048;
 const VALID_MIME_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
+
+// History-path guard for session-file image blocks (B1/S1): the renderer
+// re-validates at the sink, but filter here too so invalid blocks never
+// become message state.
+function isValidHistoryImage(data, mimeType) {
+  if (!VALID_MIME_TYPES.includes(mimeType)) return false;
+  if (typeof data !== 'string' || !data) return false;
+  let b64 = data;
+  if (b64.startsWith('data:')) {
+    const comma = b64.indexOf(',');
+    if (comma === -1) return false;
+    const header = b64.slice(0, comma);
+    const m = header.match(/^data:([^;,]+)(;base64)?$/i);
+    if (!m || !VALID_MIME_TYPES.includes((m[1] || '').toLowerCase())) return false;
+    b64 = b64.slice(comma + 1);
+  }
+  if (!/^[A-Za-z0-9+/=\s]*$/.test(b64)) return false;
+  return b64.replace(/\s/g, '').length > 0;
+}
 const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'ico']);
 
 function getFileChipIcon(name) {
@@ -3288,6 +3307,7 @@ function renderHistoryEntries(slice) {
         ? msg.content
             .filter((b) => b.type === 'image')
             .map((b) => ({ data: b.source?.data || b.data || '', mimeType: b.source?.media_type || b.media_type || 'image/png' }))
+            .filter((img) => isValidHistoryImage(img.data, img.mimeType))
         : [];
       if (content || images.length > 0) {
         userCount++;

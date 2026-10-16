@@ -568,6 +568,12 @@ wsClient.addEventListener('sessionFile', (e) => {
   headlessBinding = { cwd: headlessBinding.cwd || e.detail?.cwd || null, sessionFile: key, sessionKey: keepKey };
   persistBinding();
   updateSessionHash(file, false);
+  // Fresh headless identity: the backend is bound and the hash is pinned,
+  // but the card/title still read "No session" until the view points at
+  // it. Adopt the discovered file as the viewed session (guards above
+  // already protect preview/driven and foreign-pin cases) and repaint.
+  if (sessionKeyOf(sidebar.activeSessionFile) !== key) sidebar.setActive(file);
+  renderCurrentSessionCard();
 });
 
 // Track hub vs mirror so the Live section never offers cross-session attach on
@@ -2245,31 +2251,13 @@ async function switchSession(sessionFile, session = null, project = null, opts =
       messageRenderer.renderWelcome();
     }
 
-    // In mirror mode, check if this is the active session on the current
-    // instance. tau-web never re-points the browser WS at another instance
-    // (legacy tau did) — driving another TUI goes through the uplink proxy so
-    // the unified envelope + auth stay intact.
+    // In mirror mode, track whether this view is the live session. Binding
+    // is owned by the WS start_session / mirror_sync path — there is no
+    // legacy HTTP switch (the hub has no /api/sessions/switch route).
     if (isMirrorMode) {
       viewingActiveSession = sessionFile === mirrorActiveSessionFile;
       if (uplinkPreview) viewingActiveSession = false; // preview is read-only
       updateMirrorInputState();
-
-      if (viewingActiveSession) {
-        // Re-request live state from the extension
-        wsClient.send({ type: 'mirror_sync_request' });
-      }
-    } else {
-      const res = await fetch('/api/sessions/switch', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sessionFile }),
-      });
-
-      if (!res.ok) {
-        const err = await res.json();
-        if (myEpoch !== bindingEpoch) return; // superseded: don't error on the new tab's view
-        messageRenderer.renderError(`Failed to switch session: ${err.error}`);
-      }
     }
   } catch (error) {
     console.error('[App] Failed to switch session:', error);
@@ -2932,11 +2920,7 @@ async function backToLive(sessionFile) {
   if (found) {
     sidebar.setActive(target);
     updateSessionHash(target, false);
-    const wasMirror = isMirrorMode;
     await switchSession(target, found.session, found.project);
-    // Fresh page (no sync seen yet): switchSession takes the legacy branch
-    // and never asks for live state — request it so the live tail loads.
-    if (!wasMirror) wsClient.send({ type: 'mirror_sync_request' });
   } else if (target) {
     // The server's session is listed nowhere (quiet sessions are filtered
     // from the sidebar): drive the live view anyway. The sync carries the
@@ -2945,7 +2929,6 @@ async function backToLive(sessionFile) {
     updateSessionHash(target, false);
     messageRenderer.clear();
     messageRenderer.renderSystemMessage('Loading live session...');
-    wsClient.send({ type: 'mirror_sync_request' });
     refreshFileBrowser(target);
   } else {
     updateSessionHash(null);

@@ -1,0 +1,25 @@
+{
+  "name": "pi-session-clear",
+  "version": "0.1.0",
+  "description": "True session wipe for Pi: /clear deletes the current session file and starts fresh",
+  "keywords": [
+    "pi",
+    "pi-package"
+  ],
+  "author": "",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": ""
+  },
+  "pi": {
+    "extensions": [
+      "./extensions/clear.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "dependencies": {}
+}

@@ -487,6 +487,18 @@ function sendAuthRequired(res: http.ServerResponse) {
   res.end(JSON.stringify({ error: "Unauthorized" }));
 }
 
+// S6: baseline security headers on every HTTP response. Frame + nosniff
+// are free; CSP is frame-ancestors only — the app uses inline handlers
+// and CDN assets, so script-src/style-src would break it.
+function setSecurityHeaders(res: http.ServerResponse) {
+  try {
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("X-Frame-Options", "DENY");
+    res.setHeader("Referrer-Policy", "no-referrer");
+    res.setHeader("Content-Security-Policy", "frame-ancestors 'none'");
+  } catch {}
+}
+
 export default function (pi: ExtensionAPI) {
   let server: http.Server | null = null;
   let wss: WebSocketServer | null = null;
@@ -1583,6 +1595,10 @@ export default function (pi: ExtensionAPI) {
   // Static file server
   // ═══════════════════════════════════════
   function serveStaticFile(req: http.IncomingMessage, res: http.ServerResponse) {
+    // S6: every response (static, /api/*, 401/403/redirect) carries the
+    // baseline headers. Set before the auth/route branches so no early
+    // return skips them; later writeHead calls merge with these.
+    setSecurityHeaders(res);
     let urlPath = req.url || "/";
 
     // Auth gate — API only. The static shell (index.html / app.js / style.css)
@@ -1690,11 +1706,10 @@ export default function (pi: ExtensionAPI) {
   // API routes (sessions list, etc.)
   // ═══════════════════════════════════════
   function handleApiRoute(req: http.IncomingMessage, res: http.ServerResponse, urlPath: string) {
-    // CORS headers
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-
+    // S11: no wildcard CORS — the UI is same-origin, so no route needs
+    // Access-Control-Allow-Origin. Omitting it keeps a cross-origin page
+    // from reading /api/* JSON (e.g. auth-exempt /api/health) while
+    // same-origin fetch/cookies keep working.
     if (req.method === "OPTIONS") {
       res.writeHead(200);
       res.end();
@@ -1841,7 +1856,9 @@ export default function (pi: ExtensionAPI) {
         const headers: Record<string, string> = {
           "Content-Type": mimeType,
           "Cache-Control": "max-age=60",
-          "Content-Security-Policy": "sandbox",
+          // S6: keep the sandbox jail and add the baseline frame-ancestors
+          // guard (this writeHead overrides the global CSP, so restate it).
+          "Content-Security-Policy": "sandbox; frame-ancestors 'none'",
           "X-Content-Type-Options": "nosniff",
         };
         if (ext === "svg") {
@@ -1857,7 +1874,7 @@ export default function (pi: ExtensionAPI) {
     }
 
     if (urlPath === "/api/instances") {
-      res.writeHead(200, { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" });
+      res.writeHead(200, { "Content-Type": "application/json" });
       // ADR-010: only the hub owns the switchboard. A mirror cannot dial other
       // TUIs (uplink_attach is hub-only), so exposing the whole registry here
       // would advertise Attach buttons for servers this process cannot drive.

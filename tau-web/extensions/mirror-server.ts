@@ -1464,9 +1464,30 @@ export default function (pi: ExtensionAPI) {
             // directly, so hostile characters are inert.
             const { execFileSync } = require("node:child_process");
             const piBin = process.env.PI_WEB_PI_BIN || process.env.TAU_PI_BIN || "pi";
+            // S3: outputPath is client-controlled. Constrain it the way
+            // /api/sessions/export does — inside the session store only.
+            // No outputPath (the UI path) exports next to the session file.
+            const storeRoot = path.resolve(SESSIONS_DIR);
+            const rawOut = typeof command.outputPath === "string" ? command.outputPath.trim() : "";
             const argv = ["--export", sessionFile];
-            if (typeof command.outputPath === "string" && command.outputPath.trim()) {
-              argv.push(command.outputPath.trim());
+            if (rawOut) {
+              const absOut = path.resolve(rawOut);
+              if (absOut !== storeRoot && !absOut.startsWith(storeRoot + path.sep)) {
+                throw new Error("Output must be inside the session store");
+              }
+              // A symlinked parent inside the store must not redirect the
+              // write outside: jail the resolved parent when it exists.
+              try {
+                const parentReal = fs.realpathSync(path.dirname(absOut));
+                if (parentReal !== storeRoot && !parentReal.startsWith(storeRoot + path.sep)) {
+                  throw new Error("Output must be inside the session store");
+                }
+              } catch (e: any) {
+                if (e?.message === "Output must be inside the session store") throw e;
+                // Parent missing: keep the string-prefix jail above; pi
+                // --export fails cleanly if the directory does not exist.
+              }
+              argv.push(absOut);
             }
             const output = execFileSync(piBin, argv, { cwd: process.cwd(), timeout: 30000, encoding: "utf-8" });
             // pi prints the output path
@@ -1729,11 +1750,6 @@ export default function (pi: ExtensionAPI) {
         res.end(JSON.stringify({ error: "path required" }));
         return;
       }
-      if (!isPathAllowed(filePath)) {
-        res.writeHead(403, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "Path outside allowed roots" }));
-        return;
-      }
       const IMAGE_PREVIEW_MIMES: Record<string, string> = {
         png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg",
         gif: "image/gif", webp: "image/webp", svg: "image/svg+xml", ico: "image/x-icon",
@@ -1745,11 +1761,39 @@ export default function (pi: ExtensionAPI) {
         res.end(JSON.stringify({ error: "Not a previewable image" }));
         return;
       }
+      // S4: resolve symlinks before the jail so a link inside a root that
+      // points outside is refused. Missing targets realpath-fail -> 404.
+      let realPath: string;
       try {
-        const stat = fs.statSync(filePath);
+        realPath = fs.realpathSync(path.resolve(filePath));
+      } catch {
+        res.writeHead(404, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Not found" }));
+        return;
+      }
+      if (!isRealPathAllowed(realPath)) {
+        res.writeHead(403, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Path outside allowed roots" }));
+        return;
+      }
+      try {
+        const stat = fs.statSync(realPath);
         if (!stat.isFile()) throw new Error("Not a file");
-        res.writeHead(200, { "Content-Type": mimeType, "Cache-Control": "max-age=60" });
-        fs.createReadStream(filePath).pipe(res);
+        // S4b: SVG served inline would execute as the hub origin when
+        // navigated to. Force it to download; sandbox all previews so a
+        // mislabelled payload cannot run there either. <img> thumbnails of
+        // raster images are unaffected (images need no script origin).
+        const headers: Record<string, string> = {
+          "Content-Type": mimeType,
+          "Cache-Control": "max-age=60",
+          "Content-Security-Policy": "sandbox",
+          "X-Content-Type-Options": "nosniff",
+        };
+        if (ext === "svg") {
+          headers["Content-Disposition"] = `attachment; filename="${path.basename(realPath).replace(/"/g, "")}"`;
+        }
+        res.writeHead(200, headers);
+        fs.createReadStream(realPath).pipe(res);
       } catch (err: any) {
         res.writeHead(404, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: err.message }));
@@ -2043,6 +2087,22 @@ export default function (pi: ExtensionAPI) {
             res.end(JSON.stringify({ error: "Already exists" }));
             return;
           }
+          // S14: the string-prefix jail above does not see a symlinked
+          // parent (~/link -> /etc + ~/link/new passes). The parent must
+          // already exist, so resolve it and jail the resolved parent.
+          let parentReal: string;
+          try {
+            parentReal = fs.realpathSync(path.dirname(abs));
+          } catch {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "Parent not found" }));
+            return;
+          }
+          if (parentReal !== home && !parentReal.startsWith(home + path.sep)) {
+            res.writeHead(403, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "Outside the home directory" }));
+            return;
+          }
           fs.mkdirSync(abs); // non-recursive: the parent is the browsed dir
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ path: abs }));
@@ -2192,7 +2252,17 @@ export default function (pi: ExtensionAPI) {
             res.end(JSON.stringify({ error: "filePath required" }));
             return;
           }
-          if (!isPathAllowed(fp)) {
+          // S4: resolve symlinks before the jail so a link inside a root
+          // that points outside is refused. Missing targets -> 404.
+          let realFp: string;
+          try {
+            realFp = fs.realpathSync(path.resolve(fp));
+          } catch {
+            res.writeHead(404, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "Not found" }));
+            return;
+          }
+          if (!isRealPathAllowed(realFp)) {
             res.writeHead(403, { "Content-Type": "application/json" });
             res.end(JSON.stringify({ error: "Path outside allowed roots" }));
             return;
@@ -2203,12 +2273,12 @@ export default function (pi: ExtensionAPI) {
           });
           try {
             if (process.platform === "win32") {
-              await run("explorer", [fp]);
+              await run("explorer", [realFp]);
             } else if (process.platform === "darwin") {
-              await run("open", [fp]);
+              await run("open", [realFp]);
             } else {
-              try { await run("xdg-open", [fp]); }
-              catch { await run("termux-open", [fp]); }
+              try { await run("xdg-open", [realFp]); }
+              catch { await run("termux-open", [realFp]); }
             }
           } catch (err: any) {
             tauLog("[Mirror] open failed:", err.message);
@@ -2796,6 +2866,18 @@ export default function (pi: ExtensionAPI) {
   function isPathAllowed(target: string): boolean {
     const resolved = path.resolve(target);
     return fsAllowedRoots().some((root) => resolved === root || resolved.startsWith(root + path.sep));
+  }
+
+  // Symlink-aware jail for S4/S14: `isPathAllowed` above is a string-prefix
+  // check on the unresolved path, so a symlink inside an allowed root that
+  // points outside (secret.png -> ~/.pi/agent/settings.json) still passes.
+  // Callers that touch the filesystem resolve with fs.realpathSync first and
+  // jail the resolved target against the resolved roots.
+  function isRealPathAllowed(realAbs: string): boolean {
+    const roots = fsAllowedRoots().map((r) => {
+      try { return fs.realpathSync(r); } catch { return r; }
+    });
+    return roots.some((root) => realAbs === root || realAbs.startsWith(root + path.sep));
   }
 
   function serveFileList(res: http.ServerResponse, dirPath: string) {

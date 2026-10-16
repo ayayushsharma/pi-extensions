@@ -96,6 +96,31 @@ const BASIC_AUTH_BACKOFF_CAP_MS = 2000;
 // Login brute-force backoff: per-source-IP failure count with decay. No
 // persistent blocklist — a forgotten password must never lock the owner out.
 const loginFailures = new Map<string, { count: number; at: number }>();
+// S9: loginFailures and apiAccessLog grow by key forever (one entry per
+// source IP / method+path). Prune stale entries on access (older than the
+// 10-minute failure window / 1 hour for the log throttle) with a hard cap
+// so a scan of spoofed IPs or ever-changing query strings cannot grow hub
+// memory without bound.
+const LOGIN_FAIL_MAX_ENTRIES = 1000;
+const API_ACCESS_LOG_TTL_MS = 60 * 60 * 1000;
+const API_ACCESS_LOG_MAX_ENTRIES = 1000;
+// S10: WS backpressure guards. maxPayload caps a single inbound client
+// frame (streaming deltas are bytes–KBs); the bufferedAmount cap stops one
+// slow browser from growing hub memory without bound during a long stream.
+const WS_MAX_PAYLOAD_BYTES = 2 * 1024 * 1024;
+const WS_BUFFERED_CAP_BYTES = 16 * 1024 * 1024;
+function pruneLoginFailures(now: number = Date.now()): void {
+  try {
+    for (const [k, v] of loginFailures) {
+      if (now - v.at > LOGIN_FAIL_WINDOW_MS) loginFailures.delete(k);
+    }
+    while (loginFailures.size > LOGIN_FAIL_MAX_ENTRIES) {
+      const first = loginFailures.keys().next().value;
+      if (first === undefined) break;
+      loginFailures.delete(first);
+    }
+  } catch {}
+}
 function pruneExpiredAuthTokens(now: number = Date.now()): void {
   try {
     for (const [tok, createdAt] of authTokens) {
@@ -119,6 +144,7 @@ function basicClientKey(req: http.IncomingMessage): string {
 function recordBasicFailure(req: http.IncomingMessage): number {
   const key = basicClientKey(req);
   const now = Date.now();
+  pruneLoginFailures(now);
   const prev = loginFailures.get(key);
   const fails = (prev && now - prev.at < LOGIN_FAIL_WINDOW_MS) ? prev.count + 1 : 1;
   loginFailures.set(key, { count: fails, at: now });
@@ -136,6 +162,18 @@ function sleepAuthBackoff(ms: number): Promise<void> {
 }
 // API access-log throttle (method+path -> last logged ms); diagnostics only.
 const apiAccessLog = new Map<string, number>();
+function pruneApiAccessLog(now: number = Date.now()): void {
+  try {
+    for (const [k, at] of apiAccessLog) {
+      if (now - at > API_ACCESS_LOG_TTL_MS) apiAccessLog.delete(k);
+    }
+    while (apiAccessLog.size > API_ACCESS_LOG_MAX_ENTRIES) {
+      const first = apiAccessLog.keys().next().value;
+      if (first === undefined) break;
+      apiAccessLog.delete(first);
+    }
+  } catch {}
+}
 // S5: shared capped body reader for every POST route. Unbounded
 // `body += chunk` accumulation lets an unauthenticated client (e.g. a huge
 // /api/login POST) grow memory without bound; readBody answers 413 and
@@ -650,7 +688,7 @@ export default function (pi: ExtensionAPI) {
           // All answer channels gone mid-dialog: release the TUI to its native prompt.
           const stillLocal = clients.size > 0;
           const stillHub = role === "mirror" && !!hubForwarder?.connected;
-          if (!stillLocal && !stillHub) { pendingDialogs.delete(id); resolve(undefined); return; }
+          if (!stillLocal && !stillHub) { pendingDialogs.delete(id); try { (pendingDialogs as any).responses?.delete(id); } catch {} resolve(undefined); return; }
           const entry = (pendingDialogs as any).responses?.get?.(id);
           if (entry !== undefined) {
             (pendingDialogs as any).responses.delete(id);
@@ -713,21 +751,29 @@ export default function (pi: ExtensionAPI) {
   // ═══════════════════════════════════════
   // Helper: send to one client
   // ═══════════════════════════════════════
+  function isWsBackpressured(ws: WebSocket): boolean {
+    try { return (((ws as any).bufferedAmount || 0) as number) > WS_BUFFERED_CAP_BYTES; } catch { return false; }
+  }
   function sendTo(ws: WebSocket, data: any) {
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify(data));
-    }
+    if (ws.readyState !== WebSocket.OPEN) return;
+    // S10: one slow browser must not grow hub memory without bound during
+    // streaming — skip frames once its buffer exceeds the cap. The skipped
+    // client keeps its socket (heartbeat + shapes unchanged) and catches
+    // up when it drains; normal (<1 MiB) frames flow untouched.
+    if (isWsBackpressured(ws)) return;
+    try { ws.send(JSON.stringify(data)); } catch {}
   }
 
   // ═══════════════════════════════════════
   // Helper: broadcast to all clients
   // ═══════════════════════════════════════
   function broadcast(data: any) {
-    const json = JSON.stringify(data);
+    let json: string;
+    try { json = JSON.stringify(data); } catch { return; }
     for (const client of clients) {
-      if (client.readyState === WebSocket.OPEN) {
-        client.send(json);
-      }
+      if (client.readyState !== WebSocket.OPEN) continue;
+      if (isWsBackpressured(client)) continue;
+      try { client.send(json); } catch {}
     }
   }
 
@@ -1010,6 +1056,9 @@ export default function (pi: ExtensionAPI) {
           hubUplinkSubs.delete(bw);
           sendTo(bw, { type: "uplink_dead", port: sub.port, pid: sub.pid, headlessContinue: true });
         }
+        // S9: drop hub bookkeeping for this mirror's dialogs so a
+        // disconnected mirror cannot leave parked entries behind.
+        try { releaseDialogsForMirror(rec.id); } catch {}
         broadcast({ type: "mirrors_changed" });
       },
       onFrame: (rec, frame) => handleMirrorFrame(rec, frame),
@@ -1080,6 +1129,64 @@ export default function (pi: ExtensionAPI) {
     if (hubUplinkSubs.delete(browserWs)) sendTo(browserWs, { type: "uplink_detached" });
   }
 
+  // S9: parked dialogs must not outlive their answerer. Headless dialogs
+  // park a pi child on extension_ui_request until the browser answers;
+  // hub-relayed mirror dialogs park the mirror's wrapUiDialogs poller until
+  // dialog_relay arrives. When the last browser that could answer goes
+  // away, answer cancelled on its behalf so the waiter is released.
+  // Supersede/timeout answers still flow through the normal
+  // extension_ui_response path while the entry exists.
+  function cancelHeadlessDialog(id: string): void {
+    const entry = pendingDialogs.get(id) as any;
+    if (!entry || entry.kind !== "headless" || !entry.managed) return;
+    try { entry.managed.rpc.send({ type: "extension_ui_response", id, cancelled: true }); } catch {}
+    pendingDialogs.delete(id);
+    try { (pendingDialogs as any).responses?.delete(id); } catch {}
+    try { hubDialogOwner.delete(id); } catch {}
+  }
+  function releaseHeadlessDialogsForBrowser(): void {
+    // managed.clients already had ws removed via headless.detach(); cancel
+    // only dialogs with nobody left to answer — a sibling tab still bound
+    // to the same backend keeps its dialog.
+    for (const [id, entry] of [...pendingDialogs]) {
+      if ((entry as any).kind !== "headless") continue;
+      const managed = (entry as any).managed;
+      if (!managed || managed.clients.size === 0) cancelHeadlessDialog(id);
+    }
+  }
+  function releaseHubDialogsForMirror(mirrorId: string): void {
+    // Browser gone with no remaining driver for this mirror: tell the
+    // mirror its dialogs are cancelled so its poller wakes promptly, then
+    // drop hub bookkeeping. When at least one driver remains, keep the
+    // entries — the dialog is still answerable.
+    for (const sub of hubUplinkSubs.values()) {
+      if (sub.mirrorId === mirrorId) return;
+    }
+    for (const [id, owner] of [...hubDialogOwner]) {
+      if (owner !== mirrorId) continue;
+      hubDialogOwner.delete(id);
+      pendingDialogs.delete(id);
+      try { (pendingDialogs as any).responses?.delete(id); } catch {}
+      try { hubSockets?.send(mirrorId, { type: "dialog_relay", id, response: { cancelled: true } }); } catch {}
+    }
+  }
+  function releaseDialogsForBrowser(mirrorIdBefore: string | undefined): void {
+    try { releaseHeadlessDialogsForBrowser(); } catch {}
+    try { if (mirrorIdBefore) releaseHubDialogsForMirror(mirrorIdBefore); } catch {}
+  }
+  function releaseDialogsForMirror(mirrorId: string): void {
+    // Mirror gone: its waiter self-releases via the forwarder-drop poller,
+    // so just drop hub bookkeeping (no headless child parks on these).
+    try {
+      for (const [id, owner] of [...hubDialogOwner]) {
+        if (owner !== mirrorId) continue;
+        hubDialogOwner.delete(id);
+        pendingDialogs.delete(id);
+        try { (pendingDialogs as any).responses?.delete(id); } catch {}
+      }
+    } catch {}
+  }
+
   function hubDrive(browserWs: WebSocket, command: any) {
     const sub = hubUplinkSubs.get(browserWs);
     if (!sub || !hubSockets) { sendTo(browserWs, { type: "error", message: "uplink not attached" }); return; }
@@ -1137,6 +1244,10 @@ export default function (pi: ExtensionAPI) {
       return;
     }
     if (frame.type === "dialog_relay") {
+      // S9: ignore late relays for an already-released dialog so the
+      // responses map cannot grow by key forever. Live dialogs still resolve
+      // via the poller; supersede/timeout arrive while the entry exists.
+      if (!frame.id || !pendingDialogs.has(frame.id)) return;
       (pendingDialogs as any).responses = (pendingDialogs as any).responses || new Map();
       const response = frame.response && Object.keys(frame.response).length > 0 ? frame.response : { cancelled: true };
       (pendingDialogs as any).responses.set(frame.id, response);
@@ -1288,8 +1399,11 @@ export default function (pi: ExtensionAPI) {
               pendingDialogs.delete(id);
               return;
             }
-            // Mirror-owned dialog awaited via wrapUiDialogs poller.
-            if (id) {
+            // Mirror-owned dialog awaited via wrapUiDialogs poller. Ignore
+            // late answers for an already-released dialog so the responses
+            // map cannot grow by key forever (S9); live supersede/timeout
+            // answers arrive while the entry still exists.
+            if (id && pendingDialogs.has(id)) {
               (pendingDialogs as any).responses = (pendingDialogs as any).responses || new Map();
               (pendingDialogs as any).responses.set(id, rest && Object.keys(rest).length > 0 ? rest : { cancelled: true });
             }
@@ -1683,6 +1797,7 @@ export default function (pi: ExtensionAPI) {
       try {
         const key = `${req.method} ${urlPath}`;
         const now = Date.now();
+        pruneApiAccessLog(now);
         if (now - (apiAccessLog.get(key) || 0) > 10000) {
           apiAccessLog.set(key, now);
           tauLog(`[api] ${req.method} ${urlPath} auth=${authExempt ? "exempt" : (checkWsAuth(req) ? "yes" : "no")}`);
@@ -1877,6 +1992,7 @@ export default function (pi: ExtensionAPI) {
           // Backoff before answering: 500ms x failures, capped at 5s, with
           // 10-minute decay. Slows online guessing to a crawl while a lone
           // typo costs the owner half a second.
+          pruneLoginFailures();
           const prev = loginFailures.get(clientKey);
           const fails = (prev && Date.now() - prev.at < 10 * 60 * 1000) ? prev.count + 1 : 1;
           loginFailures.set(clientKey, { count: fails, at: Date.now() });
@@ -3197,7 +3313,10 @@ export default function (pi: ExtensionAPI) {
     cleanupZombieInstances();
 
     server = http.createServer(serveStaticFile);
-    wss = new WebSocketServer({ noServer: true });
+    // S10: cap a single inbound client frame (deltas are bytes–KBs); a
+    // >2 MiB frame is rejected by ws (close 1009) without crashing the hub.
+    wss = new WebSocketServer({ noServer: true, maxPayload: WS_MAX_PAYLOAD_BYTES });
+    try { wss.on("error", (e: any) => tauLog(`[tau-web] WS server error: ${e?.message || e}`)); } catch {}
 
     server.on("upgrade", async (request, socket, head) => {
       if (!checkRequestOrigin(request)) {
@@ -3261,16 +3380,24 @@ export default function (pi: ExtensionAPI) {
 
       ws.on("close", () => {
         tauDebug("[Mirror] Browser client disconnected");
+        const subBefore = hubUplinkSubs.get(ws);
         clients.delete(ws);
         try { headless.detach(ws); } catch {}
         hubDetachUplink(ws);
+        // S9: a browser that disconnects mid-dialog releases the dialog —
+        // headless waiters get extension_ui_response {cancelled:true}, hub
+        // waiters get dialog_relay {cancelled:true} when nobody else drives
+        // the mirror — so a parked dialog cannot hang a child.
+        try { releaseDialogsForBrowser(subBefore?.mirrorId); } catch {}
       });
 
       ws.on("error", (e) => {
         tauLog("[Mirror] Client error:", e);
+        const subBefore = hubUplinkSubs.get(ws);
         clients.delete(ws);
         try { headless.detach(ws); } catch {}
         hubDetachUplink(ws);
+        try { releaseDialogsForBrowser(subBefore?.mirrorId); } catch {}
       });
     });
 
@@ -3278,14 +3405,21 @@ export default function (pi: ExtensionAPI) {
     heartbeatTimer = setInterval(() => {
       for (const client of clients) {
         if (client.readyState !== WebSocket.OPEN) {
+          const subBefore = hubUplinkSubs.get(client);
           clients.delete(client);
+          try { headless.detach(client); } catch {}
+          hubDetachUplink(client);
+          try { releaseDialogsForBrowser(subBefore?.mirrorId); } catch {}
           continue;
         }
 
         if (!(client as any).isAlive) {
+          const subBefore = hubUplinkSubs.get(client);
           try { client.terminate(); } catch {}
           clients.delete(client);
+          try { headless.detach(client); } catch {}
           hubDetachUplink(client);
+          try { releaseDialogsForBrowser(subBefore?.mirrorId); } catch {}
           continue;
         }
 

@@ -81,10 +81,59 @@ let authEnabled = AUTH_CONFIGURED && TAU_SETTINGS.authEnabled !== false;
 // Browsers can't set headers on a WS handshake, so the login form mints an
 // HttpOnly cookie session after verifying JSON credentials. Tokens live in
 // memory only: a server restart invalidates them and the UI re-prompts.
-const authTokens = new Set<string>();
+const authTokens = new Map<string, number>();
+// S13: cookie tokens expire after 30 days (matching the Set-Cookie Max-Age).
+// Stored as token -> createdAt; pruned lazily on each auth check so a leaked
+// token stops working without a restart. The 200-token cap is kept.
+const AUTH_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+const LOGIN_FAIL_WINDOW_MS = 10 * 60 * 1000;
+// S12: Basic-auth backoff reuses the login failure counter per source IP.
+// The first few failures answer immediately (a single typo stays fast);
+// above the threshold each failure waits progressively (mirroring the login
+// 500ms slope, capped ~2s) so a guessing loop cannot spin tight.
+const BASIC_AUTH_FAIL_THRESHOLD = 3;
+const BASIC_AUTH_BACKOFF_CAP_MS = 2000;
 // Login brute-force backoff: per-source-IP failure count with decay. No
 // persistent blocklist — a forgotten password must never lock the owner out.
 const loginFailures = new Map<string, { count: number; at: number }>();
+function pruneExpiredAuthTokens(now: number = Date.now()): void {
+  try {
+    for (const [tok, createdAt] of authTokens) {
+      if (now - createdAt > AUTH_TOKEN_TTL_MS) authTokens.delete(tok);
+    }
+  } catch {}
+}
+function isAuthTokenValid(token: string): boolean {
+  if (!token) return false;
+  const createdAt = authTokens.get(token);
+  if (createdAt === undefined) return false;
+  if (Date.now() - createdAt > AUTH_TOKEN_TTL_MS) {
+    try { authTokens.delete(token); } catch {}
+    return false;
+  }
+  return true;
+}
+function basicClientKey(req: http.IncomingMessage): string {
+  try { return req.socket.remoteAddress || "unknown"; } catch { return "unknown"; }
+}
+function recordBasicFailure(req: http.IncomingMessage): number {
+  const key = basicClientKey(req);
+  const now = Date.now();
+  const prev = loginFailures.get(key);
+  const fails = (prev && now - prev.at < LOGIN_FAIL_WINDOW_MS) ? prev.count + 1 : 1;
+  loginFailures.set(key, { count: fails, at: now });
+  return fails;
+}
+function clearBasicFailures(req: http.IncomingMessage): void {
+  try { loginFailures.delete(basicClientKey(req)); } catch {}
+}
+function basicBackoffMs(fails: number): number {
+  if (fails <= BASIC_AUTH_FAIL_THRESHOLD) return 0;
+  return Math.min(500 * (fails - BASIC_AUTH_FAIL_THRESHOLD), BASIC_AUTH_BACKOFF_CAP_MS);
+}
+function sleepAuthBackoff(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
 // API access-log throttle (method+path -> last logged ms); diagnostics only.
 const apiAccessLog = new Map<string, number>();
 // S5: shared capped body reader for every POST route. Unbounded
@@ -146,8 +195,9 @@ try { tauWebVersion = require("../package.json").version || tauWebVersion; } cat
 function mintAuthToken(): string {
   try {
     const t = require("node:crypto").randomBytes(32).toString("hex");
-    authTokens.add(t);
-    if (authTokens.size > 200) { const first = authTokens.values().next().value; if (first) authTokens.delete(first); }
+    pruneExpiredAuthTokens();
+    authTokens.set(t, Date.now());
+    if (authTokens.size > 200) { const first = authTokens.keys().next().value; if (first) authTokens.delete(first); }
     return t;
   } catch { return ""; }
 }
@@ -386,14 +436,25 @@ function credentialsMatch(user: string, pass: string): boolean {
     return require("node:crypto").timingSafeEqual(a, b);
   } catch { return false; }
 }
+// S8: set_auth re-auth compares the caller-supplied password against the
+// configured pass only (no username round-trip on the WS path).
+function authPassMatches(provided: string): boolean {
+  try {
+    const a = Buffer.from(provided);
+    const b = Buffer.from(AUTH_PASS);
+    if (a.length === 0 || a.length !== b.length) return false;
+    return require("node:crypto").timingSafeEqual(a, b);
+  } catch { return false; }
+}
 // Browser auth is cookie-only: the login form POSTs JSON credentials once,
 // the server mints an HttpOnly cookie session, and every later fetch / WS
 // handshake carries the cookie. No WWW-Authenticate is ever sent, so the
 // browser's native login prompt can never appear.)
 function checkCookieAuth(req: http.IncomingMessage): boolean {
   if (!authEnabled) return true;
+  pruneExpiredAuthTokens();
   const token = parseAuthCookie(req);
-  return !!token && authTokens.has(token);
+  return isAuthTokenValid(token);
 }
 // WS entry: browsers present the cookie session (cookie tokens live in this
 // process's memory and can't authenticate a different pi process).
@@ -1575,6 +1636,13 @@ export default function (pi: ExtensionAPI) {
             sendTo(ws, error("set_auth", "No credentials configured. Set tau.user and tau.pass in settings.json"));
             break;
           }
+          // S8: changing authEnabled is re-authenticated — the current
+          // password must accompany the request, otherwise an XSS with a
+          // live socket could persist auth-off.
+          if (!authPassMatches(typeof command.pass === "string" ? command.pass : "")) {
+            sendTo(ws, error("set_auth", "Invalid password"));
+            break;
+          }
           authEnabled = !!command.enabled;
           saveTauSetting("authEnabled", authEnabled);
           broadcast({ type: "event", event: { type: "auth_changed", enabled: authEnabled } });
@@ -1594,7 +1662,7 @@ export default function (pi: ExtensionAPI) {
   // ═══════════════════════════════════════
   // Static file server
   // ═══════════════════════════════════════
-  function serveStaticFile(req: http.IncomingMessage, res: http.ServerResponse) {
+  async function serveStaticFile(req: http.IncomingMessage, res: http.ServerResponse) {
     // S6: every response (static, /api/*, 401/403/redirect) carries the
     // baseline headers. Set before the auth/route branches so no early
     // return skips them; later writeHead calls merge with these.
@@ -1625,9 +1693,29 @@ export default function (pi: ExtensionAPI) {
     // OR Authorization: Basic. Cached/legacy clients authenticate with Basic
     // headers (no cookie mint yet) — rejecting them here made "logged in" UIs
     // 401 on every call while /api/login was never even hit.
-    if (authEnabled && isApi && !authExempt && !checkWsAuth(req)) {
-      sendAuthRequired(res);
-      return;
+    // S12: Basic failures reuse loginFailures (shared with /api/login) per
+    // source IP. Success clears the counter; failure records it and, above
+    // the threshold, waits progressively (capped ~2s) before the 401 so a
+    // guessing loop cannot spin tight. Single-typo failures stay immediate.
+    if (authEnabled && isApi && !authExempt) {
+      if (checkCookieAuth(req)) {
+        // Cookie valid — no Basic accounting.
+      } else {
+        const creds = parseBasicCredentials(req.headers.authorization as string);
+        if (!creds) {
+          sendAuthRequired(res);
+          return;
+        }
+        if (credentialsMatch(creds.user, creds.pass)) {
+          clearBasicFailures(req);
+        } else {
+          const fails = recordBasicFailure(req);
+          const wait = basicBackoffMs(fails);
+          if (wait > 0) await sleepAuthBackoff(wait);
+          sendAuthRequired(res);
+          return;
+        }
+      }
     }
     // Anti-rebinding: reject cross-origin / unlisted-host API calls outright.
     if (isApi && !authExempt && !checkRequestOrigin(req)) {
@@ -3111,17 +3199,33 @@ export default function (pi: ExtensionAPI) {
     server = http.createServer(serveStaticFile);
     wss = new WebSocketServer({ noServer: true });
 
-    server.on("upgrade", (request, socket, head) => {
+    server.on("upgrade", async (request, socket, head) => {
       if (!checkRequestOrigin(request)) {
         tauLog(`[tau-web] WS upgrade rejected (host=${request.headers.host} origin=${request.headers.origin})`);
         socket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
         socket.destroy();
         return;
       }
-      if (!checkWsAuth(request)) {
-        socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
-        socket.destroy();
-        return;
+      // S12: same Basic backoff as the HTTP gate — cookie first (no
+      // accounting), Basic success clears, Basic failure records and waits
+      // progressively (capped ~2s) before the 401.
+      if (authEnabled) {
+        if (checkCookieAuth(request)) {
+          // Cookie valid — no Basic accounting.
+        } else {
+          const creds = parseBasicCredentials(request.headers.authorization as string);
+          if (!creds || !credentialsMatch(creds.user, creds.pass)) {
+            if (creds) {
+              const fails = recordBasicFailure(request);
+              const wait = basicBackoffMs(fails);
+              if (wait > 0) await sleepAuthBackoff(wait);
+            }
+            try { socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n"); } catch {}
+            socket.destroy();
+            return;
+          }
+          clearBasicFailures(request);
+        }
       }
       if (request.url === "/ws") {
         wss!.handleUpgrade(request, socket, head, (ws) => {

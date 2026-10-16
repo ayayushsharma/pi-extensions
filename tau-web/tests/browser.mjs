@@ -175,7 +175,10 @@ export async function launchBrowser({ viewport = { width: 1280, height: 800 } } 
           async evaluate(expr) { return page.evaluate(`(() => { return (${expr}); })()`); },
           async click(sel) { await page.click(sel); await page.waitForTimeout(400); },
           async waitForFunction(expr, opts) {
-            await page.waitForFunction(`(() => { try { return (${expr}); } catch { return null; } })()`, null, { timeout: opts?.timeout || 10000 });
+            // Return the matched value (the CDP path does): callers await this
+            // for location.hash / status text, not just for the predicate.
+            const handle = await page.waitForFunction(`(() => { try { return (${expr}); } catch { return null; } })()`, null, { timeout: opts?.timeout || 10000 });
+            return handle.jsonValue();
           },
           async screenshot(name) {
             fs.mkdirSync(TMP_DIR, { recursive: true });

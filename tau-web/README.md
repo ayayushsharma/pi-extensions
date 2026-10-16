@@ -43,6 +43,7 @@ tau-web/
   docs/adr/                     # 001 base on tau … 011 hub-only, 013 live-processes, 014 attach-relay
                               # (012 headless-only: superseded, kept as history)
   docs/testing.md               # e2e test design: layers, doubles, P0–P2 matrix
+  docs/code-review.md           # code/security/perf review + open fix scopes (2026-10)
 ```
 
 ## Run

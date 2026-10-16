@@ -1,0 +1,265 @@
+{
+  "version": 1,
+  "tasks": [
+    {
+      "id": "T1",
+      "title": "Fix stored XSS in session images and the markdown placeholder crash",
+      "findings": ["B1", "S1", "B2"],
+      "files": ["public/message-renderer.js", "public/app.js", "public/markdown.js"],
+      "requirements": [
+        "B1/S1 (stored XSS): `public/app.js` renderHistoryEntries() passes user-message image blocks as {data, mimeType} to MessageRenderer.renderUserMessage(), which interpolates them raw into src=\"data:<mimeType>;base64,<data>\". A crafted .jsonl with an image whose data is `\\\"><img src=x onerror=...>` executes arbitrary JS in the hub origin.",
+        "Fix the sink at `public/message-renderer.js` renderUserMessage(): build the <img> element with DOM APIs (`el.src = ...`, `el.alt = 'Attached image'`, className 'message-image'), never string-interpolate data/mimeType into HTML.",
+        "Validate on the history path too: mimeType must be one of image/png, image/jpeg, image/gif, image/webp (the allowlist already used by processImageFile in app.js); data must match /^[A-Za-z0-9+/=\\s]*$/ after stripping an optional data: prefix. Skip invalid blocks instead of rendering a broken image.",
+        "B2: `public/markdown.js` substitutes %%CODEBLOCK_n%% and %%DMATH_n%% by index without a guard, so a model reply containing a line that is exactly %%CODEBLOCK_0%% or %%DMATH_0%% throws TypeError (`undefined.lang` / `undefined.replace`) and truncates/stops rendering. Guard both lookups: if the referenced block is missing, render the line as plain text via the normal inline path and continue.",
+        "Also fix the literal `undefined` output for missing %%ICODE_n%% / %%MATHX_n%% restores (fall back to the original marker text, not `undefined`), or harden the extraction so user text can never collide with a marker (e.g. escape % before substitution).",
+        "Do not change rendering of normal markdown, code blocks, math, or user messages. No UI layout changes. No new dependencies."
+      ],
+      "acceptance": [
+        "A crafted session image can no longer execute script (DOM-built img; invalid data/mime skipped).",
+        "`renderMarkdown('%%CODEBLOCK_0%%')` and `renderMarkdown('%%DMATH_0%%')` do not throw; a following block still renders.",
+        "`node tests/run.mjs` passes 16/16.",
+        "No new page errors in a normal session (the reviewer may run the deep-UI driver)."
+      ],
+      "ux": "Chat rendering must look identical for valid content; only hostile/malformed content changes (skipped instead of broken).",
+      "tests": ["node tests/run.mjs"]
+    },
+    {
+      "id": "T2",
+      "title": "Harden headless children: no zombie binding on spawn failure, no inherited hub credentials",
+      "findings": ["B3", "S2"],
+      "files": ["extensions/headless-bridge.ts", "extensions/mirror-server.ts"],
+      "requirements": [
+        "B3: `RpcSession` in extensions/headless-bridge.ts only listens for 'exit'. When spawn fails (bad cwd, missing pi binary) Node emits 'error' then 'close' and never 'exit', so the ManagedHeadless stays in the registry and start_session keeps acking success for a dead backend. Verify with: spawn with cwd '/nonexistent-cwd-xyz' emits error ENOENT, sawClose=true, sawExit=false.",
+        "Handle 'error' and 'close' as terminal, idempotently: call opts.onExit exactly once (error path may pass null code). Keep 'exit' behavior unchanged.",
+        "Validate the resolved cwd before spawning (exists and is a directory). If invalid, do not register a ManagedHeadless; make the start_session handler reply success:false with a clear error instead of a success ack.",
+        "S2: `RpcSession` spawns with `env: { ...process.env, TAU_DISABLED: '1' }`, so headless children inherit TAU_USER/TAU_PASS. The child is a full agent and its bash tool can read the web password. Delete TAU_USER and TAU_PASS (and any other TAU_* auth secret present, e.g. TAU_AUTH_*) from the child env; keep TAU_DISABLED=1 and all non-auth vars.",
+        "Do not change the one-backend-per-session model, the protocol, or normal spawn/switch/kill behavior."
+      ],
+      "acceptance": [
+        "start_session with a nonexistent cwd returns success:false; list_sessions / /api/headless/status do not show a zombie; a subsequent start_session with the same key also fails honestly.",
+        "A normal start_session still works and a prompt round-trip succeeds (TEST_REAL_HUB=1 node tests/run.mjs --filter H6 if a pi binary is available; otherwise say so).",
+        "`node tests/run.mjs` passes 16/16.",
+        "No TAU_USER/TAU_PASS in the child env (assert in the implementation or a scratch script)."
+      ],
+      "ux": "No UI change. The only visible difference is an honest error for an invalid working directory instead of a silently dead session.",
+      "tests": ["node tests/run.mjs"]
+    },
+    {
+      "id": "T3",
+      "title": "Fix new-session view state: drop the dead /api/sessions/switch fetch, set the fresh-session identity, remove dead frames",
+      "findings": ["B4", "B6", "B7"],
+      "files": ["public/app.js"],
+      "requirements": [
+        "B4: switchSession() posts to /api/sessions/switch, which the hub does not implement, so every New Session renders red 'Failed to switch session: Not found'. Remove that fetch/dead branch (binding is owned by the WS start_session / mirror_sync path). Keep switchSession's history loading and mirror-mode behavior intact.",
+        "B6: after #tab-new the current-session card shows 'No session', the title bar stays hidden, and #tb-state is empty even though the backend is bound and the hash is pinned. On the 'session_file' discovery event (and/or applyFreshSession), set the view identity so currentConnectionInfo()/renderCurrentSessionCard() report state 'headless' and the title bar shows the session name + 'Headless runner'.",
+        "B7: app.js sends {type:'mirror_sync_request'} in three places, but the hub intentionally ignores it (P2 dead-frame contract). Remove those sends; do not add a server handler.",
+        "Do not change the hash-pinning behavior, tab persistence, or normal session selection.",
+        "No CSS changes."
+      ],
+      "acceptance": [
+        "After clicking #tab-new: no .error-message in #messages; #cs-state reads 'Headless runner'; title bar visible with the session name; the URL hash is #session=<basename>.",
+        "Reload keeps the same view (no regression of H3 late session_file pinning).",
+        "`node tests/run.mjs` passes 16/16, including H3/H4/H5.",
+        "Reviewer should confirm with the deep-UI driver if available (new-session step)."
+      ],
+      "ux": "The New Session flow must feel clean: no red error, immediate header/card identity, no regression in tab or title behavior.",
+      "tests": ["node tests/run.mjs"]
+    },
+    {
+      "id": "T4",
+      "title": "Fix reconnect wiping the transcript and sticking on 'Loading session...'",
+      "findings": ["B5"],
+      "files": ["public/app.js"],
+      "requirements": [
+        "restoreSessionFromUrl() clears the transcript and paints 'Loading session...' on every call. When the pinned session is a live TUI that is already sidebar.activeSessionFile, previewAttach() skips switchSession(), so the view stays on the loading placeholder forever. Reproduced by logout -> login (or any WS reconnect) while viewing a drivable live TUI.",
+        "Fix: do not clear/repaint over a transcript that already shows the wanted session (e.g. only paint the early loading state when the active key differs or the message list is empty); and when the wanted live session is already active, still reload its history (switchSession with {preview:true} or a lighter reload) instead of skipping.",
+        "Keep the existing convergence logic (hash moved on mid-restore, restoreInFlight, ghost-session cleanup) working.",
+        "Do not change attach/detach or preview semantics."
+      ],
+      "acceptance": [
+        "Logout -> login with a pinned live TUI restores the transcript (no permanent 'Loading session...').",
+        "A normal reload with #session=<basename> still rejoins the same backend and renders history.",
+        "`node tests/run.mjs` passes 16/16.",
+        "Reviewer should confirm the reconnect path (logout/login or socket drop) with the deep-UI driver if available."
+      ],
+      "ux": "Reconnect must look like nothing happened: transcript intact, banner state intact, no flash of an empty message list.",
+      "tests": ["node tests/run.mjs"]
+    },
+    {
+      "id": "T5",
+      "title": "Remove duplicate function declarations; make hub.sock start/stop non-destructive",
+      "findings": ["B8", "B9"],
+      "files": ["extensions/mirror-server.ts", "extensions/lib/hub-socket.ts"],
+      "requirements": [
+        "B8: extensions/mirror-server.ts declares cwdToSessionDir, lossyDecodeSessionDir and resolveHeadlessSessionPath twice in the same closure (around lines 811-823 and 864-876). Delete the duplicate block and keep one copy (identical semantics).",
+        "B9: HubSocketServer.start() unlinks any existing hub.sock path before binding, so a second hub silently steals a live hub's socket path; stop() unlinks unconditionally, so a stopping old hub can delete a newer hub's socket. Make start() refuse to clobber a live listener (probe with a short connect: if a live server answers, log an error and return without unlinking/binding; if the socket is stale, unlink and bind as today). Make stop() only unlink the socket if it is still ours (e.g. record the inode at bind time and compare before unlink).",
+        "Keep single-hub behavior unchanged on a clean start/stop.",
+        "No protocol changes."
+      ],
+      "acceptance": [
+        "TypeScript source contains exactly one declaration of each removed function.",
+        "Two sequential start/stop cycles on the same path work; start() on a path served by a live listener does not unlink or steal it; stop() after another hub took the path does not remove the other hub's socket.",
+        "`node tests/run.mjs` passes 16/16."
+      ],
+      "ux": "No UI change.",
+      "tests": ["node tests/run.mjs"]
+    },
+    {
+      "id": "T6",
+      "title": "Jail file preview/open/mkdir through realpath and constrain export_html output",
+      "findings": ["S3", "S4", "S14"],
+      "files": ["extensions/mirror-server.ts"],
+      "requirements": [
+        "S4: /api/file/preview and /api/open trust isPathAllowed()'s string-prefix check and follow symlinks. Verified: a symlink secret.png -> ~/.pi/agent/settings.json inside an allowed root is served as image/png with the target bytes. Resolve with fs.realpathSync before the jail check on both routes (and reject when realpath fails). Keep serving legitimate files inside the roots.",
+        "S4b: /api/file/preview serves SVG inline (image/svg+xml), so a planted SVG document executes in the hub origin when navigated to. Serve SVG (and any non-raster format) as an attachment, or add a sandbox CSP header to preview responses, without breaking <img> thumbnails of normal raster images.",
+        "S14: /api/files/mkdir checks the target string prefix but not a symlinked parent, so a symlinked dir inside HOME can escape. Resolve the parent with realpath (parent must already exist by design) and jail the resolved parent, then create the leaf.",
+        "S3: the WS export_html command passes a client-supplied outputPath directly to `pi --export <session> <path>` (arbitrary write). Constrain it the way /api/sessions/export already does: ignore/reject outputPath outside the session store, or always write next to the session file inside SESSIONS_DIR.",
+        "Keep the /api/file/download jail and all existing success responses unchanged for legitimate paths."
+      ],
+      "acceptance": [
+        "The symlink PoC returns 403/404 (no settings bytes); a real image inside a root still previews (200).",
+        "A symlinked parent in mkdir is refused; a normal new folder in HOME still works.",
+        "export_html with an output path outside the session store is refused or ignored; export inside the store still works.",
+        "`node tests/run.mjs` passes 16/16, including H12 (viewer jail) and P2 (traversal/rebinding)."
+      ],
+      "ux": "File explorer thumbnails and the viewer must keep working for normal files; only symlink/outside-root/ SVG-inline behavior changes.",
+      "tests": ["node tests/run.mjs"]
+    },
+    {
+      "id": "T7",
+      "title": "Cap request bodies, rate-limit the client-error beacon",
+      "findings": ["S5", "S7"],
+      "files": ["extensions/mirror-server.ts"],
+      "requirements": [
+        "S5: most POST handlers accumulate `body += chunk` with no limit; /api/login is unauthenticated, so a huge POST is a memory-DoS lever. Add one shared readBody(req, res, maxBytes) helper (e.g. 64 KiB for /api/login, 256 KiB for other JSON endpoints, 1 MiB for /api/rpc) that destroys/413s over-limit bodies, and use it on every POST route in handleApiRoute (/api/login, /api/logout is GET-less, /api/processes/kill, /api/files/mkdir, /api/sessions/fork, /api/sessions/delete, /api/sessions/rename, /api/sessions/export, /api/open, /api/rpc).",
+        "S7: /api/client-error is auth-exempt and unlimited; keep the 8 KiB cap but add a simple per-source-IP rate limit (e.g. 20/min) so a LAN/internet client cannot flood tau.log. Exceeding it should answer 429 without logging.",
+        "Do not change response shapes for normal-sized requests.",
+        "Keep the existing JSON parse/error handling behavior on parse failure."
+      ],
+      "acceptance": [
+        "A 2 MiB POST to /api/login and to /api/processes/kill gets 413 (or connection closed) without buffering the whole body.",
+        "Normal login and API calls still work (node tests/run.mjs, D5 auth case).",
+        "`node tests/run.mjs` passes 16/16."
+      ],
+      "ux": "No visible change; the inline login and every panel keep working.",
+      "tests": ["node tests/run.mjs"]
+    },
+    {
+      "id": "T8",
+      "title": "Add baseline security headers and stop leaking /api/health cross-origin",
+      "findings": ["S6", "S11"],
+      "files": ["extensions/mirror-server.ts"],
+      "requirements": [
+        "S6: no response carries security headers. Add on every response: X-Content-Type-Options: nosniff, X-Frame-Options: DENY, Referrer-Policy: no-referrer, and Content-Security-Policy: frame-ancestors 'none' (only the frame-ancestors directive; do NOT add script-src/style-src — the app uses inline scripts/handlers and CDN assets, and a strict CSP would break it). Apply in serveStaticFile before the auth/route branches so /api/* and static files both get them.",
+        "S11: /api/health answers with Access-Control-Allow-Origin: * and is auth-exempt, so any web page can read mode/version/uptime/platform. Remove the wildcard CORS for /api/health (and only set CORS headers where they are actually needed), or drop the health fields that are not needed for the login page. The settings pane must still show version/uptime and the login flow must still work.",
+        "Do not break the service-worker/static shell, image preview, or the /api/login flow.",
+        "Keep existing 401/403 behavior unchanged."
+      ],
+      "acceptance": [
+        "curl -sI /hub/ and /api/health show the four headers.",
+        "A cross-origin GET of /api/health does not expose the JSON to scripts that are not same-origin (no ACAO * on that route).",
+        "The app loads, logs in, and Settings shows version/uptime.",
+        "`node tests/run.mjs` passes 16/16."
+      ],
+      "ux": "Identical UI; only response metadata changes.",
+      "tests": ["node tests/run.mjs"]
+    },
+    {
+      "id": "T9",
+      "title": "Harden auth lifecycle: set_auth re-auth, token expiry, Basic-auth backoff",
+      "findings": ["S8", "S12", "S13"],
+      "files": ["extensions/mirror-server.ts"],
+      "requirements": [
+        "S8: the WS set_auth command flips authEnabled and persists authEnabled:false to settings with no re-auth and no confirmation, so an XSS becomes permanent auth-off. Require the current password (command.pass) to match AUTH_PASS before changing authEnabled; reject with success:false otherwise. There is no UI toggle for set_auth, so no UI breaks; keep get_auth unchanged.",
+        "S13: authTokens are Set entries with no timestamp. Store {token, createdAt} (or a parallel map) and expire after 30 days (matching the cookie Max-Age), pruning lazily on each auth check and keeping the existing 200-token cap.",
+        "S12: failed Authorization: Basic credentials are not rate-limited (only /api/login is). Reuse loginFailures for Basic-auth failures: on a failed Basic attempt record the failure per remoteAddress; once the failure count (within the 10-minute decay window) is above a small threshold, answer 401 immediately with a short delay (mirror the login backoff, capped ~2s) and do not compare credentials in a tight loop. Successful Basic auth clears the counter. Do not slow down the normal single-typo case beyond the existing login behavior.",
+        "Keep cookies/WS auth semantics, /api/login responses, and the explicit login overlay unchanged."
+      ],
+      "acceptance": [
+        "set_auth without/with a wrong pass returns failure and does not change authEnabled or settings; with the correct pass it works as before.",
+        "Expired/forged tokens still 401; a fresh login token works.",
+        "N failed Basic requests get progressively delayed and never succeed; a correct Basic request after failures still succeeds.",
+        "`node tests/run.mjs` passes 16/16, including D5."
+      ],
+      "ux": "No UI change; login/logout must behave the same.",
+      "tests": ["node tests/run.mjs"]
+    },
+    {
+      "id": "T10",
+      "title": "Close memory leaks and add WS payload/backpressure guards",
+      "findings": ["S9", "S10"],
+      "files": ["extensions/mirror-server.ts", "extensions/lib/hub-socket.ts"],
+      "requirements": [
+        "S9: loginFailures and apiAccessLog grow by key forever; prune stale entries (e.g. older than the 10-minute failure window / 1 hour for the log throttle) on access, with a cap. pendingDialogs and hubDialogOwner entries for a disconnected browser/mirror are never removed: when a WS client closes (and in HubSocketServer onGone) drop any pending dialog owned by that client/mirror and send a cancelled response to the headless child (extension_ui_response {cancelled:true}) so a parked dialog cannot hang a child. Existing timeout/supersede paths must keep working.",
+        "S10: the WebSocketServer has the default maxPayload (~100 MiB) and sendTo/broadcast never check bufferedAmount. Construct WebSocketServer with a sane maxPayload (e.g. 2 MiB) and in sendTo/broadcast skip or terminate a client whose bufferedAmount exceeds a cap (e.g. 16 MiB) so one slow client cannot grow hub memory without bound during streaming. Existing message shapes and the heartbeat must not change.",
+        "Do not break the dialog relay, normal streaming, or process-kill flows."
+      ],
+      "acceptance": [
+        "Stale map entries are pruned (can be asserted with a small scratch script or by code inspection).",
+        "A browser that disconnects mid-dialog releases the dialog (no infinite park).",
+        "A >2 MiB client frame is rejected by ws without crashing the hub; normal messages (<1 MiB) flow.",
+        "`node tests/run.mjs` passes 16/16 (D1 dialog-relay behavior included)."
+      ],
+      "ux": "No UI change; dialogs must still appear and cancel cleanly.",
+      "tests": ["node tests/run.mjs"]
+    },
+    {
+      "id": "T11",
+      "title": "Cache the session store: stop re-parsing every .jsonl on a 15s poll",
+      "findings": ["P1", "P2", "P5"],
+      "files": ["extensions/mirror-server.ts", "public/hub/hub.js", "public/app.js"],
+      "requirements": [
+        "P1: GET /api/sessions costs 0.31-0.41s with 95-98 sessions because serveSessionsList parses every .jsonl fully on every call, and hub.js polls it every 15s (plus on connect/refresh/picker open). Add a per-file summary cache keyed by (path, mtimeMs, size): parseSessionFile results are reused until the file changes; a directory-level pass reuses cached entries for unchanged files. Invalidate on rename/delete/fork for the touched file (or let the mtime/size key do it). Keep response shape identical. Also make getTmuxSessionFiles cache its result briefly (5-10s) and short-circuit when tmux is not installed (check once).",
+        "P2: public/app.js polls /api/instances every 5s although the hub already pushes mirrors_changed on join/leave/update. Lengthen the interval to 30s as a safety net and keep the push handler. P5: /api/projects' buildSessionInfoMap stats every session file per request; reuse the same (mtime,size) cache instead.",
+        "Do not change endpoint contracts, response JSON, or the UI.",
+        "Measure before/after with a scratch curl loop or the timing note in the comments; the reviewer may re-measure."
+      ],
+      "acceptance": [
+        "Repeated GET /api/sessions calls with no file changes are substantially faster (cache hit; target <50ms after warm-up) and still return the same data (compare a sample of sessions before/after).",
+        "A new/renamed/deleted session file is reflected on the next request (no stale entry).",
+        "`node tests/run.mjs` passes 16/16 (H13 summaries, H2/H3 app boot)."
+      ],
+      "ux": "The sidebar and home picker must show identical lists; only latency changes.",
+      "tests": ["node tests/run.mjs"]
+    },
+    {
+      "id": "T12",
+      "title": "Windowed session transfer, coalesced stream broadcasts, lighter renderer/static work",
+      "findings": ["P3", "P4", "P6", "P7"],
+      "files": ["extensions/mirror-server.ts", "public/app.js", "public/message-renderer.js"],
+      "requirements": [
+        "P3: serveSessionFile (/api/sessions/:dir/:file) returns every parsed entry even though the client renders a 50/100-entry window. Support optional ?limit=N&before=<entryId> (default unchanged: full file) so the client can request the tail; update public/app.js to request the tail window first and keep Load-earlier working by fetching older entries on demand (or document why the client keeps full reads). Keep the existing response shape ({entries:[...]}) and H12/H13 contracts.",
+        "P4: message_update deltas are broadcast one WS frame per token. Coalesce them server-side in a short timer (~30-50ms) per client (or a shared batcher) before sending; final message_end/agent_end events must flush immediately and never be reordered after their deltas. Do not change the event envelope shape.",
+        "P6: message-renderer _renderMath runs KaTeX auto-render on every finalized message; gate it on the content actually containing '$'.",
+        "P7: static assets are served with no-cache+ETag even for ?v= URLs; add a long max-age/immutable for URLs carrying a ?v= query (keep no-cache for the rest).",
+        "Keep streaming smoothness and the epoch/stale-event guards intact."
+      ],
+      "acceptance": [
+        "A large session first paint requests/transfers less data (measure payload size) and Load-earlier still works.",
+        "Streaming still renders progressively (no long pauses) and final text is complete/ordered.",
+        "`node tests/run.mjs` passes 16/16.",
+        "Reviewer should confirm streaming UX with the deep-UI driver if available (run-complete step, one user + one assistant bubble)."
+      ],
+      "ux": "Streaming and history scrolling must feel the same or better; no missing final text, no out-of-order deltas.",
+      "tests": ["node tests/run.mjs"]
+    },
+    {
+      "id": "T13",
+      "title": "Fix the mobile preview-banner layout",
+      "findings": ["U1", "U3"],
+      "files": ["public/style.css"],
+      "requirements": [
+        "U1: at 390px the session banner squeezes 'Previewing \"…\"' into a many-line column while the Drive/Cancel buttons hold the right half (style.css around .session-banner / .sb-text / .sb-btn). At max-width:768px give .sb-text flex-basis:100% (buttons wrap to a second row) or an equivalent that forces a readable title width. Apply to every banner variant (preview, driving, detached, error) without changing desktop layout.",
+        "U3 (cosmetic, optional): the Settings -> Server process list last row can look clipped at the panel edge (max-height:240px); add a few px of bottom padding or a scroll-fade so the last row reads fully. Do not restructure the panel.",
+        "CSS-only; no JS or HTML changes unless unavoidable. Keep existing theme variables and coarse-pointer rules."
+      ],
+      "acceptance": [
+        "At 390px the preview/error/driving banners show a readable multi-line title with buttons on their own row; no horizontal overflow.",
+        "Desktop banner layout is pixel-identical (or as close as CSS allows).",
+        "`node tests/run.mjs` passes 16/16 (H2 desktop+mobile render, no pageerrors)."
+      ],
+      "ux": "Mobile browsing must not be dominated by the banner; reviewer should inspect a 390px screenshot if the deep-UI driver is available.",
+      "tests": ["node tests/run.mjs"]
+    }
+  ]
+}

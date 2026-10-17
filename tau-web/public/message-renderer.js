@@ -65,6 +65,12 @@ export class MessageRenderer {
    * Safe to call on streaming/escaped content — KaTeX only processes $...$ patterns.
    */
   _renderMath(element) {
+    // P6: KaTeX auto-render is the heaviest DOM work in the renderer — skip
+    // it when the finalized text contains no math delimiter at all.
+    try {
+      const text = element?.textContent || '';
+      if (!text.includes('$')) return;
+    } catch { return; }
     if (typeof renderMathInElement !== 'undefined') {
       try {
         renderMathInElement(element, {

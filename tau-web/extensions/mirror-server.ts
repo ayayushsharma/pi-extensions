@@ -754,7 +754,75 @@ export default function (pi: ExtensionAPI) {
   function isWsBackpressured(ws: WebSocket): boolean {
     try { return (((ws as any).bufferedAmount || 0) as number) > WS_BUFFERED_CAP_BYTES; } catch { return false; }
   }
+  // P4: coalesce per-token message_update deltas (~40ms) before WS send.
+  // The client already rAF-coalesces DOM writes but still pays WS + JSON
+  // per delta. Deltas accumulate per destination and flush as one
+  // concatenated delta per kind (thinking/text accumulate separately —
+  // order between kinds is irrelevant to the client's two accumulators).
+  // Any non-delta frame flushes pending deltas first so message_end /
+  // agent_end never reorder after their deltas. The envelope shape is
+  // unchanged: the flush reuses the first buffered envelope per kind with
+  // the combined delta.
+  const DELTA_FLUSH_MS = 40;
+  function extractStreamDelta(data: any): { kind: "text" | "thinking"; delta: string } | null {
+    try {
+      const ev = (data as any)?.event;
+      if (!ev || ev.type !== "message_update") return null;
+      const inner = ev.assistantMessageEvent;
+      if (!inner || typeof inner.delta !== "string") return null;
+      if (inner.type === "text_delta") return { kind: "text", delta: inner.delta };
+      if (inner.type === "thinking_delta") return { kind: "thinking", delta: inner.delta };
+      return null;
+    } catch { return null; }
+  }
+  function withCombinedDelta(template: any, combined: string): any {
+    try {
+      const clone = JSON.parse(JSON.stringify(template));
+      if (clone?.event?.assistantMessageEvent) clone.event.assistantMessageEvent.delta = combined;
+      return clone;
+    } catch { return null; }
+  }
+  type WsDeltaPending = { text: string; thinking: string; textTpl: any; thinkingTpl: any; timer: NodeJS.Timeout | null };
+  const wsDeltaPending = new Map<WebSocket, WsDeltaPending>();
+  function rawSendJson(ws: WebSocket, json: string) {
+    if (ws.readyState !== WebSocket.OPEN) return;
+    if (isWsBackpressured(ws)) return;
+    try { (ws as any).send(json); } catch {}
+  }
+  function flushWsDeltas(ws: WebSocket) {
+    const p = wsDeltaPending.get(ws);
+    if (!p) return;
+    if (p.timer) { try { clearTimeout(p.timer); } catch {} p.timer = null; }
+    const frames: any[] = [];
+    if (p.thinking) { const f = withCombinedDelta(p.thinkingTpl, p.thinking); if (f) frames.push(f); }
+    if (p.text) { const f = withCombinedDelta(p.textTpl, p.text); if (f) frames.push(f); }
+    p.text = ""; p.thinking = ""; p.textTpl = null; p.thinkingTpl = null;
+    for (const f of frames) {
+      let json: string;
+      try { json = JSON.stringify(f); } catch { continue; }
+      rawSendJson(ws, json);
+    }
+  }
+  function dropWsDeltas(ws: WebSocket) {
+    const p = wsDeltaPending.get(ws);
+    if (!p) return;
+    if (p.timer) { try { clearTimeout(p.timer); } catch {} }
+    wsDeltaPending.delete(ws);
+  }
   function sendTo(ws: WebSocket, data: any) {
+    const upd = extractStreamDelta(data);
+    if (upd) {
+      if (!upd.delta) return; // empty delta is a no-op — drop it
+      let p = wsDeltaPending.get(ws);
+      if (!p) { p = { text: "", thinking: "", textTpl: null, thinkingTpl: null, timer: null }; wsDeltaPending.set(ws, p); }
+      if (upd.kind === "text") { p.text += upd.delta; if (!p.textTpl) p.textTpl = data; }
+      else { p.thinking += upd.delta; if (!p.thinkingTpl) p.thinkingTpl = data; }
+      if (!p.timer) p.timer = setTimeout(() => { try { flushWsDeltas(ws); } catch {} }, DELTA_FLUSH_MS);
+      return;
+    }
+    // Ordered after any buffered deltas: flush first so terminal frames
+    // (message_end/agent_end) never jump ahead of their deltas.
+    try { flushWsDeltas(ws); } catch {}
     if (ws.readyState !== WebSocket.OPEN) return;
     // S10: one slow browser must not grow hub memory without bound during
     // streaming — skip frames once its buffer exceeds the cap. The skipped
@@ -767,7 +835,38 @@ export default function (pi: ExtensionAPI) {
   // ═══════════════════════════════════════
   // Helper: broadcast to all clients
   // ═══════════════════════════════════════
+  let bcastText = "";
+  let bcastThinking = "";
+  let bcastTextTpl: any = null;
+  let bcastThinkingTpl: any = null;
+  let bcastTimer: NodeJS.Timeout | null = null;
+  function flushBroadcastDeltas() {
+    if (bcastTimer) { try { clearTimeout(bcastTimer); } catch {} bcastTimer = null; }
+    if (!bcastText && !bcastThinking) { bcastTextTpl = null; bcastThinkingTpl = null; return; }
+    const frames: any[] = [];
+    if (bcastThinking) { const f = withCombinedDelta(bcastThinkingTpl, bcastThinking); if (f) frames.push(f); }
+    if (bcastText) { const f = withCombinedDelta(bcastTextTpl, bcastText); if (f) frames.push(f); }
+    bcastText = ""; bcastThinking = ""; bcastTextTpl = null; bcastThinkingTpl = null;
+    for (const f of frames) {
+      let json: string;
+      try { json = JSON.stringify(f); } catch { continue; }
+      for (const client of clients) {
+        if (client.readyState !== WebSocket.OPEN) continue;
+        if (isWsBackpressured(client)) continue;
+        try { client.send(json); } catch {}
+      }
+    }
+  }
   function broadcast(data: any) {
+    const upd = extractStreamDelta(data);
+    if (upd) {
+      if (!upd.delta) return;
+      if (upd.kind === "text") { bcastText += upd.delta; if (!bcastTextTpl) bcastTextTpl = data; }
+      else { bcastThinking += upd.delta; if (!bcastThinkingTpl) bcastThinkingTpl = data; }
+      if (!bcastTimer) bcastTimer = setTimeout(() => { try { flushBroadcastDeltas(); } catch {} }, DELTA_FLUSH_MS);
+      return;
+    }
+    try { flushBroadcastDeltas(); } catch {}
     let json: string;
     try { json = JSON.stringify(data); } catch { return; }
     for (const client of clients) {
@@ -785,6 +884,12 @@ export default function (pi: ExtensionAPI) {
   // ═══════════════════════════════════════
   function stopServer() {
     try { headless.shutdownAll(); } catch {}
+    // P4: drop coalesced deltas — clients are going away, never reorder
+    // a flush after the close.
+    try { if (bcastTimer) clearTimeout(bcastTimer); } catch {}
+    bcastTimer = null; bcastText = ""; bcastThinking = ""; bcastTextTpl = null; bcastThinkingTpl = null;
+    try { for (const [, p] of wsDeltaPending) { if (p.timer) { try { clearTimeout(p.timer); } catch {} } } } catch {}
+    try { wsDeltaPending.clear(); } catch {}
     if (heartbeatTimer) {
       clearInterval(heartbeatTimer);
       heartbeatTimer = null;
@@ -1885,9 +1990,14 @@ export default function (pi: ExtensionAPI) {
       // revalidate. Serve validators + no-cache so it revalidates every load
       // and gets a cheap 304 when unchanged (this is what made the
       // Cloudflare-fronted origin keep an ancient client while LAN was fine).
+      // P7: versioned URLs (?v=, e.g. app.js?v=4) are content-addressed by
+      // the query — the bytes only change when the version does — so they
+      // get a long immutable max-age. Everything else stays no-cache.
       const lastModified = stats.mtime.toUTCString();
       const etag = `W/"${stats.size.toString(16)}-${Math.floor(stats.mtimeMs).toString(16)}"`;
-      res.setHeader("Cache-Control", "no-cache");
+      let hasVersionQuery = false;
+      try { hasVersionQuery = new URL(`http://localhost${req.url}`).searchParams.has("v"); } catch { hasVersionQuery = false; }
+      res.setHeader("Cache-Control", hasVersionQuery ? "public, max-age=31536000, immutable" : "no-cache");
       res.setHeader("Last-Modified", lastModified);
       res.setHeader("ETag", etag);
 
@@ -2568,9 +2678,17 @@ export default function (pi: ExtensionAPI) {
     }
 
     // Session file endpoint: /api/sessions/:dirName/:file
-    const sessionMatch = urlPath.match(/^\/api\/sessions\/([^/]+)\/([^/]+)$/);
+    // P3: optional ?limit=N&before=<entryId> windows the transfer (default
+    // unchanged: full file). urlPath still carries the query here, so match
+    // the path part and pass req.url through for the window params.
+    const sessionPathOnly = urlPath.split("?")[0];
+    const sessionMatch = sessionPathOnly.match(/^\/api\/sessions\/([^/]+)\/([^/]+)$/);
     if (sessionMatch && req.method === "GET") {
-      serveSessionFile(res, sessionMatch[1], sessionMatch[2]);
+      let sDir = sessionMatch[1];
+      let sFile = sessionMatch[2];
+      try { sDir = decodeURIComponent(sDir); } catch {}
+      try { sFile = decodeURIComponent(sFile); } catch {}
+      serveSessionFile(res, sDir, sFile, req.url);
       return;
     }
 
@@ -3074,10 +3192,31 @@ export default function (pi: ExtensionAPI) {
   // ═══════════════════════════════════════
   // Session file endpoint
   // ═══════════════════════════════════════
-  function serveSessionFile(res: http.ServerResponse, dirName: string, file: string) {
+  function serveSessionFile(res: http.ServerResponse, dirName: string, file: string, reqUrl?: string) {
     // Traversal rejection: dirName/file come from the URL. `..` segments
     // would otherwise escape SESSIONS_DIR (e.g. reading settings.json,
     // which may hold tau credentials).
+    // P3: optional ?limit=N&before=<entryId> windows the transfer so a huge
+    // session's first paint ships only the tail. Default unchanged: no
+    // limit/before serves the full file in the same {entries:[...]} shape.
+    // `before` is exclusive (entries strictly before that id); `limit` takes
+    // the last N of that prefix (capped — the uncapped default still serves
+    // everything). An unknown `before` id yields [] so Load-earlier stops
+    // instead of looping on duplicates.
+    let limit: number | null = null;
+    let before: string | null = null;
+    try {
+      if (reqUrl && reqUrl.includes("?")) {
+        const q = new URL(`http://localhost${reqUrl}`);
+        const limRaw = q.searchParams.get("limit");
+        if (limRaw !== null) {
+          const n = parseInt(limRaw, 10);
+          if (Number.isFinite(n) && n > 0) limit = Math.min(n, 5000);
+        }
+        const b = q.searchParams.get("before");
+        if (b) before = b;
+      }
+    } catch { limit = null; before = null; }
     if (!file.endsWith(".jsonl")) {
       res.writeHead(400, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: "Not a session file" }));
@@ -3116,8 +3255,14 @@ export default function (pi: ExtensionAPI) {
       if (buffer.trim()) {
         try { entries.push(JSON.parse(buffer)); } catch { /* skip */ }
       }
+      let out = entries;
+      if (before) {
+        const idx = entries.findIndex((e) => e && typeof e.id === "string" && e.id === before);
+        out = idx === -1 ? [] : entries.slice(0, idx);
+      }
+      if (limit !== null && out.length > limit) out = out.slice(out.length - limit);
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ entries }));
+      res.end(JSON.stringify({ entries: out }));
     });
 
     stream.on("error", (e: Error) => {
@@ -3480,6 +3625,7 @@ export default function (pi: ExtensionAPI) {
         tauDebug("[Mirror] Browser client disconnected");
         const subBefore = hubUplinkSubs.get(ws);
         clients.delete(ws);
+        try { dropWsDeltas(ws); } catch {}
         try { headless.detach(ws); } catch {}
         hubDetachUplink(ws);
         // S9: a browser that disconnects mid-dialog releases the dialog —
@@ -3493,6 +3639,7 @@ export default function (pi: ExtensionAPI) {
         tauLog("[Mirror] Client error:", e);
         const subBefore = hubUplinkSubs.get(ws);
         clients.delete(ws);
+        try { dropWsDeltas(ws); } catch {}
         try { headless.detach(ws); } catch {}
         hubDetachUplink(ws);
         try { releaseDialogsForBrowser(subBefore?.mirrorId); } catch {}
@@ -3505,6 +3652,7 @@ export default function (pi: ExtensionAPI) {
         if (client.readyState !== WebSocket.OPEN) {
           const subBefore = hubUplinkSubs.get(client);
           clients.delete(client);
+          try { dropWsDeltas(client); } catch {}
           try { headless.detach(client); } catch {}
           hubDetachUplink(client);
           try { releaseDialogsForBrowser(subBefore?.mirrorId); } catch {}
@@ -3515,6 +3663,7 @@ export default function (pi: ExtensionAPI) {
           const subBefore = hubUplinkSubs.get(client);
           try { client.terminate(); } catch {}
           clients.delete(client);
+          try { dropWsDeltas(client); } catch {}
           try { headless.detach(client); } catch {}
           hubDetachUplink(client);
           try { releaseDialogsForBrowser(subBefore?.mirrorId); } catch {}

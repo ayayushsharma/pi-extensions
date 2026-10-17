@@ -2217,18 +2217,43 @@ async function switchSession(sessionFile, session = null, project = null, opts =
 
       if (dirName && file) {
         try {
-          const res = await fetch(`/api/sessions/${dirName}/${file}`);
-          console.log('[App] History fetch status:', res.status);
-          const data = await res.json();
-          console.log('[App] History entries:', data.entries?.length || 0);
+          // P3: first paint ships only the tail window (?limit=); older
+          // entries are fetched on demand by Load-earlier (?limit=&before=).
+          // The default (no query) still serves the full file — the hub may
+          // be older than this client, so fall back to the full read if the
+          // windowed fetch 404s/fails.
+          let entries = null;
+          let exhausted = true;
+          try {
+            const tailRes = await fetch(`/api/sessions/${dirName}/${file}?limit=${VISIBLE_MESSAGE_WINDOW}`);
+            console.log('[App] History fetch status:', tailRes.status);
+            if (tailRes.ok) {
+              const tailData = await tailRes.json();
+              entries = tailData.entries || [];
+              exhausted = entries.length < VISIBLE_MESSAGE_WINDOW;
+              console.log('[App] History entries (tail):', entries.length, exhausted ? '(at beginning)' : '(more on server)');
+            }
+          } catch (e) { console.warn('[App] Tail history fetch failed, trying full:', e); }
+          if (!entries) {
+            const res = await fetch(`/api/sessions/${dirName}/${file}`);
+            console.log('[App] History fetch status:', res.status);
+            const data = await res.json();
+            entries = data.entries || [];
+            exhausted = true;
+            console.log('[App] History entries:', entries.length || 0);
+          }
 
           // Superseded while fetching (fast tab switch): the newer view
           // owns the screen — drop this payload so neither its content,
           // its title, nor its headless bind lands on the wrong tab.
           if (myEpoch !== bindingEpoch) return;
 
+          historyDirName = dirName;
+          historyFile = file;
+          historyExhausted = exhausted;
+          historyLoadingOlder = false;
           messageRenderer.clear();
-          renderSessionHistory(data.entries || []);
+          renderSessionHistory(entries);
           // Bind the headless backend to this file so prompts have a runner
           // even when no live TUI owns the session. Previews stay read-only
           // and don't move the headless backend. Files owned by a live TUI
@@ -2240,7 +2265,7 @@ async function switchSession(sessionFile, session = null, project = null, opts =
           }
           // File browser follows the viewed session (history entries carry
           // the authoritative cwd when the sidebar object lacks it).
-          refreshFileBrowser(sessionFile, session, project, data.entries || []);
+          refreshFileBrowser(sessionFile, session, project, entries);
         } catch (e) {
           console.error('[App] History fetch error:', e);
         }
@@ -2339,6 +2364,8 @@ function handleMirrorSync(data, fromUplink = false) {
   // Clear and render message history
   messageRenderer.clear();
   resetTokenTracking();
+  // Live snapshots are complete state, not a windowed tail page.
+  historyDirName = null; historyFile = null; historyExhausted = true; historyLoadingOlder = false;
 
   if (data.entries && data.entries.length > 0) {
     renderSessionHistory(data.entries);
@@ -2696,6 +2723,8 @@ async function startBackgroundWatch(dirName, cwd, file) {
 function refreshWatchedHistory(entries) {
   const sc = messagesContainer;
   const atBottom = sc.scrollHeight - sc.scrollTop - sc.clientHeight < 150;
+  // Background-watch polls serve the full file, so the view is complete.
+  historyExhausted = true; historyLoadingOlder = false;
   renderSessionHistory(entries);
   if (atBottom) sc.scrollTop = sc.scrollHeight;
 }
@@ -3257,13 +3286,22 @@ function updateMirrorInputState() {
 // Session history rendering
 // ═══════════════════════════════════════
 
-// Loaded session entries + render-window state. The full history stays in
-// memory (it came over the wire anyway); the DOM only holds the tail until
-// the user asks for older messages.
+// Loaded session entries + render-window state. The history endpoint can
+// window the transfer (?limit=&before=): first paint ships only the tail,
+// older entries are fetched on demand by Load-earlier. historyEntries holds
+// what has been loaded so far (not necessarily the whole file); the DOM
+// only holds the tail until the user asks for older messages.
 let historyEntries = [];
 let historyWindow = VISIBLE_MESSAGE_WINDOW;
 let historyLoadMoreEl = null;
 let historyToolResults = new Map();
+// P3 pagination: false while older entries may still remain on the server.
+// Set from the tail fetch (fewer than requested => at the beginning) and
+// from older-page fetches. historyDirName/historyFile address the next page.
+let historyExhausted = true;
+let historyLoadingOlder = false;
+let historyDirName = null;
+let historyFile = null;
 
 // Precompute toolCallId -> result so a tool call and its result stay paired
 // even when the window boundary falls between them (the card is created with
@@ -3356,24 +3394,32 @@ function renderHistoryEntries(slice) {
 
 // Boundary control at the top of the transcript: load older messages in
 // VISIBLE_MESSAGE_WINDOW steps. Inserted as the first child so it stays put
-// while older entries are prepended after it.
+// while older entries are prepended after it. With a windowed tail fetch
+// (P3) historyEntries holds only what has been loaded; while
+// !historyExhausted older entries remain on the server and the button
+// fetches the next page (?limit=&before=) instead of just widening the
+// in-memory window.
 function renderLoadMoreControl() {
   if (historyLoadMoreEl) { historyLoadMoreEl.remove(); historyLoadMoreEl = null; }
   const total = historyEntries.length;
-  if (total <= VISIBLE_MESSAGE_WINDOW) return;
+  if (historyExhausted && total <= VISIBLE_MESSAGE_WINDOW) return;
   const shown = Math.min(historyWindow, total);
-  const older = total - shown;
+  const olderInMemory = total - shown;
   const el = document.createElement('div');
   el.className = 'history-more system-message';
-  if (older > 0) {
+  if (!historyExhausted || olderInMemory > 0) {
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'history-more-btn';
-    btn.textContent = `↑ Load ${Math.min(older, VISIBLE_MESSAGE_WINDOW)} earlier messages`;
-    btn.addEventListener('click', loadEarlierMessages);
+    const next = olderInMemory > 0 ? Math.min(olderInMemory, VISIBLE_MESSAGE_WINDOW) : VISIBLE_MESSAGE_WINDOW;
+    btn.textContent = historyLoadingOlder ? 'Loading…' : `↑ Load ${next} earlier messages`;
+    if (historyLoadingOlder) btn.disabled = true;
+    else btn.addEventListener('click', loadEarlierMessages);
     const info = document.createElement('span');
     info.className = 'history-more-info';
-    info.textContent = `showing last ${shown} of ${total} entries`;
+    info.textContent = historyExhausted
+      ? `showing last ${shown} of ${total} entries`
+      : `showing last ${shown} loaded · more on server`;
     el.appendChild(btn);
     el.appendChild(info);
   } else {
@@ -3387,10 +3433,91 @@ function renderLoadMoreControl() {
   historyLoadMoreEl = el;
 }
 
+// Fetch the next older page (?limit=&before=<oldest id>) and prepend it.
+// Merges tool results so boundary cards pair, backfills results for tail
+// cards rendered before their results arrived, and folds older assistant
+// costs into the session total. An empty page means the beginning.
+async function fetchOlderHistory() {
+  if (historyExhausted || historyLoadingOlder) return;
+  if (!historyDirName || !historyFile || !historyEntries.length) return;
+  const before = historyEntries[0]?.id;
+  if (!before || typeof before !== 'string') { historyExhausted = true; renderLoadMoreControl(); return; }
+  // Stale-page guard (B1): capture the binding identity before the await.
+  // switchSession/handleMirrorSync bump bindingEpoch and rebind
+  // historyDirName/historyFile; a page that lands after a switch must not
+  // merge into the new session's transcript, cost, or loading state.
+  const reqEpoch = bindingEpoch;
+  const reqDir = historyDirName;
+  const reqFile = historyFile;
+  historyLoadingOlder = true;
+  renderLoadMoreControl();
+  try {
+    const res = await fetch(`/api/sessions/${reqDir}/${reqFile}?limit=${VISIBLE_MESSAGE_WINDOW}&before=${encodeURIComponent(before)}`);
+    if (!res.ok) throw new Error(`History page ${res.status}`);
+    const data = await res.json();
+    // Superseded while paging (session switch): drop the payload before
+    // any state/DOM mutation so it cannot pollute the new view.
+    if (reqEpoch !== bindingEpoch || reqDir !== historyDirName || reqFile !== historyFile) return;
+    const older = Array.isArray(data.entries) ? data.entries : [];
+    if (older.length === 0) { historyExhausted = true; return; }
+    const seen = new Set(historyEntries.map((e) => e?.id).filter(Boolean));
+    const fresh = older.filter((e) => !e?.id || !seen.has(e.id));
+    for (const e of fresh) {
+      if (e.type === 'message' && e.message?.role === 'toolResult' && e.message.toolCallId && !historyToolResults.has(e.message.toolCallId)) {
+        historyToolResults.set(e.message.toolCallId, { content: e.message.content || [], isError: e.message.isError });
+      }
+    }
+    historyEntries = [...fresh, ...historyEntries];
+    historyWindow += fresh.length;
+    // Fold older assistant costs into the displayed total (the tail already
+    // holds the latest model/tokens, so only the cost needs accumulating).
+    let extraCost = 0;
+    for (const e of fresh) {
+      const c = e?.message?.usage?.cost?.total;
+      if (e.type === 'message' && e.message?.role === 'assistant' && typeof c === 'number') extraCost += c;
+    }
+    if (extraCost) { sessionTotalCost += extraCost; updateCostDisplay(); }
+    const prevHeight = messagesContainer.scrollHeight;
+    const prevTop = messagesContainer.scrollTop;
+    const marker = document.createComment('older-messages');
+    messagesContainer.appendChild(marker);
+    renderHistoryEntries(fresh);
+    const frag = document.createDocumentFragment();
+    let node = marker.nextSibling;
+    while (node) { const next = node.nextSibling; frag.appendChild(node); node = next; }
+    marker.remove();
+    const anchor = historyLoadMoreEl ? historyLoadMoreEl.nextSibling : messagesContainer.firstChild;
+    messagesContainer.insertBefore(frag, anchor);
+    messagesContainer.scrollTop = prevTop + (messagesContainer.scrollHeight - prevHeight);
+    // Backfill results for tail cards rendered before their results arrived.
+    for (const e of fresh) {
+      if (e.type === 'message' && e.message?.role === 'toolResult' && e.message.toolCallId) {
+        try { toolCardRenderer.addHistoryResult(e.message.toolCallId, { content: e.message.content || [] }, e.message.isError); } catch {}
+      }
+    }
+    if (older.length < VISIBLE_MESSAGE_WINDOW) historyExhausted = true;
+  } catch (e) {
+    console.error('[History] Older page fetch failed:', e);
+  } finally {
+    // A stale page must not clear/redraw the new session's loading state
+    // (and must not race that session's own in-flight page fetch).
+    if (reqEpoch === bindingEpoch && reqDir === historyDirName && reqFile === historyFile) {
+      historyLoadingOlder = false;
+      renderLoadMoreControl();
+    }
+  }
+}
+
 // Prepend the next older slice without rebuilding the DOM. Scroll anchoring is
 // manual (CSS overflow-anchor is off on .messages): shift scrollTop by the
 // height the prepend added so the previously visible content stays put.
-function loadEarlierMessages() {
+async function loadEarlierMessages() {
+  // Everything loaded so far is shown but more may remain on the server:
+  // fetch the next page first (it prepends and grows the window itself).
+  if (!historyExhausted && historyWindow >= historyEntries.length) {
+    await fetchOlderHistory();
+    return;
+  }
   const total = historyEntries.length;
   const shownBefore = Math.min(historyWindow, total);
   const nextWindow = Math.min(historyWindow + VISIBLE_MESSAGE_WINDOW, total);

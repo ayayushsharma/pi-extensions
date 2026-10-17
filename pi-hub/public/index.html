@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en" data-theme="dusk">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#0b0e14" />
+  <title>Pi Hub</title>
+  <link rel="stylesheet" href="/css/tokens.css?v=1" />
+  <link rel="stylesheet" href="/css/app.css?v=1" />
+</head>
+<body>
+  <div id="login" class="overlay hidden" role="dialog" aria-modal="true" aria-labelledby="login-title">
+    <form id="login-form" class="card login-card">
+      <h1 id="login-title">Pi Hub</h1>
+      <label>User <input id="login-user" name="user" autocomplete="username" /></label>
+      <label>Password <input id="login-pass" name="pass" type="password" autocomplete="current-password" /></label>
+      <p id="login-error" class="error" role="alert"></p>
+      <button type="submit">Sign in</button>
+    </form>
+  </div>
+
+  <div id="app" class="app">
+    <header id="topbar" class="topbar">
+      <button id="sidebar-toggle" class="icon-btn" type="button" aria-label="Toggle sessions" aria-expanded="false">☰</button>
+      <div class="bar-title">
+        <span id="session-title">Pi Hub</span>
+        <span id="session-meta" class="meta"></span>
+      </div>
+      <div class="bar-right">
+        <button id="model-btn" class="pill" type="button" aria-haspopup="listbox" aria-expanded="false">model</button>
+        <div id="model-menu" class="menu hidden" role="listbox" aria-label="Models"></div>
+        <button id="thinking-btn" class="pill" type="button" aria-haspopup="listbox" aria-expanded="false">thinking</button>
+        <div id="thinking-menu" class="menu hidden" role="listbox" aria-label="Thinking level"></div>
+        <span id="cost-pill" class="pill cost hidden"></span>
+        <span id="status-dot" class="status-dot" data-state="off" title="disconnected" aria-label="connection status"></span>
+        <button id="settings-btn" class="icon-btn" type="button" aria-label="Settings">⚙</button>
+      </div>
+    </header>
+
+    <div class="body">
+      <aside id="sidebar" class="sidebar" aria-label="Sessions">
+        <div class="sidebar-head">
+          <input id="session-search" placeholder="Search sessions" aria-label="Search sessions" />
+          <button id="new-session-btn" type="button">New</button>
+        </div>
+        <div id="runner-list" class="list"></div>
+        <div id="session-list" class="list"></div>
+      </aside>
+      <div id="overlay" class="overlay-backdrop hidden"></div>
+
+      <main class="main">
+        <div id="banner" class="banner hidden" role="status"></div>
+        <div id="messages" class="messages"></div>
+        <form id="composer" class="composer">
+          <div id="queue" class="queue"></div>
+          <div class="composer-row">
+            <textarea id="input" rows="1" placeholder="Message…" aria-label="Message"></textarea>
+            <button id="send-btn" type="submit">Send</button>
+            <button id="abort-btn" class="danger hidden" type="button">Stop</button>
+          </div>
+          <div id="slash" class="menu hidden" role="listbox" aria-label="Commands"></div>
+        </form>
+      </main>
+
+      <aside id="file-panel" class="file-panel hidden" aria-label="Files">
+        <div class="panel-head">
+          <button id="file-up" type="button" class="icon-btn" aria-label="Parent directory">↑</button>
+          <span id="file-path" class="meta"></span>
+          <button id="file-close" type="button" class="icon-btn" aria-label="Close files">✕</button>
+        </div>
+        <div id="file-list" class="list"></div>
+      </aside>
+    </div>
+  </div>
+
+  <div id="picker" class="overlay hidden" role="dialog" aria-modal="true" aria-labelledby="picker-title">
+    <div class="card picker-card">
+      <div class="panel-head">
+        <h2 id="picker-title">Sessions</h2>
+        <input id="picker-path" class="path-input" placeholder="/path/to/project" aria-label="Directory" />
+        <button id="picker-start" type="button">New here</button>
+        <button id="picker-close" type="button" class="icon-btn" aria-label="Close">✕</button>
+      </div>
+      <div id="picker-projects" class="list projects"></div>
+      <div id="picker-dirs" class="list"></div>
+    </div>
+  </div>
+
+  <div id="settings" class="overlay hidden" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+    <div class="card settings-card">
+      <div class="panel-head">
+        <h2 id="settings-title">Settings</h2>
+        <button id="settings-close" type="button" class="icon-btn" aria-label="Close">✕</button>
+      </div>
+      <div class="settings-body">
+        <section>
+          <h3>Appearance</h3>
+          <div id="theme-picker" class="theme-picker" role="listbox" aria-label="Theme"></div>
+          <label class="row"><input id="toggle-thinking" type="checkbox" /> Show thinking</label>
+          <label class="row"><input id="toggle-costs" type="checkbox" /> Hide costs</label>
+        </section>
+        <section>
+          <h3>Server</h3>
+          <div id="server-info" class="meta"></div>
+          <button id="logout-btn" type="button">Log out</button>
+        </section>
+        <section>
+          <h3>Live pi processes</h3>
+          <button id="proc-refresh" type="button">Refresh</button>
+          <div id="proc-list" class="list"></div>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <div id="viewer" class="overlay hidden" role="dialog" aria-modal="true" aria-labelledby="viewer-title">
+    <div class="card viewer-card">
+      <div class="panel-head">
+        <h2 id="viewer-title">File</h2>
+        <button id="viewer-add" type="button">Add to prompt</button>
+        <button id="viewer-close" type="button" class="icon-btn" aria-label="Close">✕</button>
+      </div>
+      <pre id="viewer-body" class="viewer-body"></pre>
+    </div>
+  </div>
+
+  <div id="dialog-container"></div>
+  <div id="toast" class="toast hidden" role="status"></div>
+
+  <script type="module" src="/js/app.js?v=1"></script>
+</body>
+</html>

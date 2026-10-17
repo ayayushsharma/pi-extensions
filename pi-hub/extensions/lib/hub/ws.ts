@@ -129,7 +129,7 @@ export class WsHub {
         for (const missed of runner.replayFrom(c.lastSeq)) this.deliver(c, missed);
       }
       c.lastSeq = frame.seq;
-      if (frame.event?.type === "extension_ui_request") {
+      if (frame.event?.type === "extension_ui_request" && ["select", "confirm", "input", "editor"].includes(frame.event.method)) {
         this.deps.dialogs.registerHeadless(frame.runnerId, frame.event);
         continue;
       }
@@ -209,6 +209,12 @@ export class WsHub {
           return this.handleAttach(client, id, msg);
         case "detach":
           return this.handleDetach(client, id);
+        case "unbind": {
+          if (client.boundId) this.deps.registry.unbind(client.ws);
+          client.boundId = null;
+          client.lastSeq = 0;
+          return this.ack(client, id, { type: "unbound" });
+        }
         case "close":
           return this.handleClose(client, id, msg);
         case "extension_ui_response":

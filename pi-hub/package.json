@@ -29,5 +29,8 @@
     "test": "node tests/run.mjs",
     "test:unit": "node --test tests/unit/",
     "test:e2e": "node tests/run.mjs --e2e"
+  },
+  "devDependencies": {
+    "playwright-core": "^1.64.1"
   }
 }

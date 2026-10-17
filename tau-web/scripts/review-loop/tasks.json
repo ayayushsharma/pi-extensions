@@ -232,10 +232,12 @@
         "P4: message_update deltas are broadcast one WS frame per token. Coalesce them server-side in a short timer (~30-50ms) per client (or a shared batcher) before sending; final message_end/agent_end events must flush immediately and never be reordered after their deltas. Do not change the event envelope shape.",
         "P6: message-renderer _renderMath runs KaTeX auto-render on every finalized message; gate it on the content actually containing '$'.",
         "P7: static assets are served with no-cache+ETag even for ?v= URLs; add a long max-age/immutable for URLs carrying a ?v= query (keep no-cache for the rest).",
-        "Keep streaming smoothness and the epoch/stale-event guards intact."
+        "Keep streaming smoothness and the epoch/stale-event guards intact.",
+        "Round-2 blocker (docs/review-loop/reviewer-comments12.md): fetchOlderHistory() in public/app.js must capture bindingEpoch/historyDirName/historyFile before its await and bail out before any state mutation (and in the guarded finally) if any changed, so a Load-earlier page in flight during a session switch can never merge into the new session. Re-run the reviewer's 2.5s-delayed-fetch repro."
       ],
       "acceptance": [
         "A large session first paint requests/transfers less data (measure payload size) and Load-earlier still works.",
+        "A Load-earlier response that arrives after a session switch leaves only the new session's entries and consistent history/cost state (no cross-session contamination).",
         "Streaming still renders progressively (no long pauses) and final text is complete/ordered.",
         "`node tests/run.mjs` passes 16/16.",
         "Reviewer should confirm streaming UX with the deep-UI driver if available (run-complete step, one user + one assistant bubble)."

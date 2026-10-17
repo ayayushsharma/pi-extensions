@@ -231,6 +231,28 @@ def commit(repo: Path, message: str, paths: list[str] | None = None) -> str | No
     return git_head(repo)
 
 
+def preserve_failed(repo: Path, out: Path, tid: str) -> dict:
+    """On a final FAIL, save the attempt as a patch and stash tracked changes so the
+    next task cannot absorb them into its own commit. Untracked files (the review
+    comments in docs/review-loop/) are deliberately left in place as evidence."""
+    logs = out / "logs"
+    logs.mkdir(exist_ok=True)
+    diff = git(repo, "diff", check=False).stdout
+    status = git(repo, "status", "--porcelain", check=False).stdout
+    (logs / f"failed-{tid}.patch").write_text(diff, encoding="utf-8")
+    (logs / f"failed-{tid}.status").write_text(status, encoding="utf-8")
+    kept: dict = {
+        "patch": f"logs/failed-{tid}.patch",
+        "status": f"logs/failed-{tid}.status",
+    }
+    if status.strip():
+        stash = git(repo, "stash", "push", "-m", f"review-loop {tid} failed attempt", check=False)
+        out_lines = (stash.stdout + stash.stderr).strip().splitlines()
+        kept["stash"] = out_lines[0] if out_lines else ""
+        kept["stash_ok"] = stash.returncode == 0
+    return kept
+
+
 def coder_prompt(task: dict, repo: Path, out_rel: str, round_no: int, reviewer_file: Path | None) -> str:
     reqs = "\n".join(f"- {r}" for r in task["requirements"])
     accept = "\n".join(f"- {a}" for a in task.get("acceptance", []))
@@ -288,7 +310,8 @@ def reviewer_prompt(task: dict, repo: Path, out_rel: str, coder_file: Path, head
         f"If `{repo}/scripts/review-loop/deep_ui.py` exists and a Playwright python is available "
         f"(try `~/.local/share/uv/tools/playwright/bin/python`), you MAY run it for a real-browser UX pass:\n"
         f"`TAU_REVIEW_OUT=/tmp/tau-loop-deep-ui TAU_REVIEW_REPO={repo} <playwright-python> {repo}/scripts/review-loop/deep_ui.py`\n"
-        f"It boots its own hub on a random port; read the printed JSON report (pageerrors must be 0) and inspect at most 2 screenshots. "
+        f"It boots its own hub on a random port; read the printed JSON report (pageerrors must be 0). "
+        f"Do NOT open or attach screenshot/image files — this reviewer model cannot accept image content; rely on the JSON report and DOM/console output. "
         f"If it is unavailable, skip it and say so."
     )
     return f"""You are the independent REVIEWER for task **{task['id']} — {task['title']}**.
@@ -403,9 +426,11 @@ def main() -> int:
     if args.commit:
         if args.branch:
             ensure_branch(repo, args.branch)
-        if not git_clean(repo):
-            log("working tree is dirty; committing baseline for the loop branch")
+        if not git_clean(repo) and not state["tasks"]:
+            log("working tree is dirty (first run); committing baseline for the loop branch")
             commit(repo, "review-loop: baseline")
+        elif not git_clean(repo):
+            log("working tree is dirty and state exists — leaving it for the coder to build on")
 
     total = len(selected)
     for idx, task in enumerate(selected, 1):
@@ -466,6 +491,9 @@ def main() -> int:
             sha = commit(repo, f"tau-web: fix {', '.join(task.get('findings', []))} — {task['title']} (review-loop {tid})")
             rec["commit"] = sha
             log(f"  {tid} committed {sha[:8] if sha else '(nothing to commit)'}")
+        elif rec["status"] != "passed":
+            rec["failed_work"] = preserve_failed(repo, out, tid)
+            log(f"  {tid} failed work preserved: {rec['failed_work']}")
         state["tasks"][tid] = rec
         state_path.write_text(json.dumps(state, indent=2), encoding="utf-8")
         if rec["status"] != "passed" and args.stop_on_fail:

@@ -98,7 +98,7 @@ runtime across model switches instead of by hand.
 - A limit that leaves no room after Pi's reserve is **not** applied (with a note in `/ctx-status`) instead of compacting every turn.
 - Re-asserted on `session_start`, `model_select`, and `before_agent_start` (the registry can swap the live model object without a `model_select`).
 - **Virtual models:** Pi compacts against the physical model each request routes to, not the virtual model's declared window, so the cap is display-only for a virtual selection. Physical models are fully supported.
-- Works in all modes; the footer indicator (`ctx 12k/128k`) only renders where UI exists.
+- Works in all modes; no status-bar / footer UI — use `/ctx-status` for usage.
 
 ## Development
 

@@ -123,11 +123,6 @@ function fmt(n: number | null): string {
 	return n.toLocaleString("en-US");
 }
 
-function short(n: number): string {
-	if (n >= 1000) return `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k`;
-	return `${n}`;
-}
-
 // ─── Extension ───
 
 export default function (pi: ExtensionAPI) {
@@ -295,32 +290,9 @@ export default function (pi: ExtensionAPI) {
 		return { ...base, disabled: false, noHeadroom: false, effective, applied };
 	}
 
-	function updateStatus(ctx: ExtensionContext, a: Applied): void {
-		if (!ctx.hasUI) return;
-		if (!a.hasModel) {
-			ctx.ui.setStatus("ctx-limit", a.disabled ? "ctx-limit: off" : "ctx-limit: …");
-			return;
-		}
-		if (a.disabled) {
-			ctx.ui.setStatus("ctx-limit", "ctx-limit: off");
-			return;
-		}
-		if (a.noHeadroom) {
-			ctx.ui.setStatus("ctx-limit", "ctx-limit: !");
-			return;
-		}
-		const used = ctx.getContextUsage()?.tokens ?? null;
-		ctx.ui.setStatus(
-			"ctx-limit",
-			used === null ? `ctx →${short(a.effective!)}` : `ctx ${short(used)}/${short(a.effective!)}`,
-		);
-	}
-
-	/** Re-apply the cap and refresh the footer; returns the resulting state. */
+	/** Re-apply the cap; returns the resulting state. */
 	function refresh(ctx: ExtensionContext): Applied {
-		const a = applyCap(ctx);
-		updateStatus(ctx, a);
-		return a;
+		return applyCap(ctx);
 	}
 
 	function statusLines(ctx: ExtensionContext, a: Applied): string[] {
@@ -367,7 +339,6 @@ export default function (pi: ExtensionAPI) {
 		description: "Show the ctx-limit effective window and current usage",
 		handler: async (_args, ctx) => {
 			const a = applyCap(ctx);
-			updateStatus(ctx, a);
 			ctx.ui.notify(statusLines(ctx, a).join("\n"), "info");
 		},
 	});
@@ -441,10 +412,5 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_shutdown", async (_event, ctx) => {
 		sessionOverride = undefined;
 		restoreModel(ctx.model);
-		try {
-			ctx.ui.setStatus("ctx-limit", undefined);
-		} catch {
-			// Non-interactive modes may not support status — ignore.
-		}
 	});
 }

@@ -199,6 +199,7 @@ P0 — hub alive, core loop (Layers A–C, CI):
 | H18 | pure Node (no hub, no Chrome) | parse `app.js` segment colours + `style.css` selectors | every `ctx-*` variant has bar + legend rules and none of them is a bare global class (the old `.messages` variant inherited the transcript scroller's flex/padding) |
 | H19 | stub hub + browser, 390×844 phone viewport, drawer open | Settings-independent: sidebar `+` → Start/Resume picker → "Start new session" | the click binds a fresh session (`tau-web-binding` gets the new `stub-…` sessionKey), the picker closes, the drawer stays collapsed with no overlay, zero page errors (a null-`S` read would throw and never bind) |
 | H20 | pure Node (no hub, no Chrome) | strip comments/strings/templates/regex from `app.js`, collect declarations/imports/params | every bare call resolves; `scrollToBottom` (renderer method only) threw `ReferenceError` in the compaction + headless-continue handlers |
+| H21 | stub hub + browser; the stub's own `get_state` reports a *different* model/level than the session fixture | boot (hub state owns the header), select the history session, wait out the select's `get_state` round-trip, reload on the pinned hash | the pill shows the SESSION's model/thinking (from the history payload), never the hub's — the old code re-applied `get_state` after `renderSessionHistory`, and a `?limit=50` tail holds no change entries to fall back on |
 
 Hardening regressions (from `docs/code-review.md` §11; real hub,
 SKIP without `pi`):
@@ -210,6 +211,7 @@ SKIP without `pi`):
 | X3 | S6, S11 | nosniff/DENY/no-referrer/`frame-ancestors 'none'` on `/`, `/hub/`, health, 401s; no CORS for hostile `Origin` |
 | X4 | S5, S8, S12, S13 | oversized login 413; bad-login backoff; cookie `HttpOnly`/`SameSite=Lax`/`Max-Age`; TTL expiry → 401 + relogin; `set_auth` re-auth |
 | X5 | B3 | invalid cwd refused; dead spawn leaves no zombie binding; rejoin reaped |
+| X6 | N3 | `?limit=5` over a 125-entry fixture ships the 5-entry tail **and** the whole-file `model`/`thinkingLevel` (derived from the top-of-file change entries); paging with `before=` keeps the same identity; a session with no change entries reports `null` |
 
 P1 — sessions, dialogs, dead contracts (C–D):
 
@@ -278,6 +280,7 @@ P2 — hardening:
 | Hub markup well-formedness + ARIA state (buttons, dialogs, tabs, switches, listboxes, toggles) | `public/hub/index.html`, `public/app.js` (picker/tabs/toggles), `public/dialogs.js` | H16 |
 | Display prefs (`Hide costs`, `Show thinking`) + settings toggles | `public/hub/index.html`, `public/app.js` (toggle wiring), `public/style.css` (`body.hide-*`) | H17 |
 | Context popover geometry (bar segments + legend dots) | `public/app.js` (segment colours), `public/style.css` (`.ctx-*` variants) | H18 |
+| Session identity in the header (model/thinking of the session being viewed) | `extensions/mirror-server.ts` (`serveSessionFile`), `public/app.js` (`renderSessionHistory` meta, `serverStateOwnsView`) | H21, X6 |
 | Session picker → Start new session (bind + phone drawer) | `public/session-picker.js`, `public/app.js` (`applyFreshSession`/`resetToScratchView`) | H19 |
 | Free-function wiring in `app.js` (undefined-helper crashes) | `public/app.js` | H20 |
 | Session picker (summaries/mkdir/fork) | `mirror-server.ts`, `app.js` | H13 |

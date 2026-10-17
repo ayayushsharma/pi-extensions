@@ -34,6 +34,7 @@ const ORDER = [
   "h18-class-collision.test.mjs",
   "h19-picker-start.test.mjs",
   "h20-free-calls.test.mjs",
+  "h21-session-model.test.mjs",
   "d1-drive-attach.test.mjs",
   "d5-auth.test.mjs",
   "p2-guards.test.mjs",
@@ -42,6 +43,7 @@ const ORDER = [
   "x3-response-hardening.test.mjs",
   "x4-auth-lifecycle.test.mjs",
   "x5-headless-failure.test.mjs",
+  "x6-session-meta.test.mjs",
 ];
 
 // Runtime requirements a case may declare as `export const requires`.

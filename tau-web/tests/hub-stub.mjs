@@ -65,7 +65,7 @@ function isAllowedHostName(hostname, bindHost) {
   return !!bindHost && bindHost === hostname;
 }
 
-export function startHubStub({ port, staticDir, auth = null, version = "e2e-stub", processes = [] }) {
+export function startHubStub({ port, staticDir, auth = null, version = "e2e-stub", processes = [], sessions = null, sessionFile = null, serverState = null }) {
   const authEnabled = !!(auth && auth.user && auth.pass);
   const tokens = new Set();
   const startedAt = new Date().toISOString();
@@ -184,8 +184,26 @@ export function startHubStub({ port, staticDir, auth = null, version = "e2e-stub
     }
     if (urlPath === "/api/sessions") {
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ projects: [] }));
+      res.end(JSON.stringify({ projects: sessions || [] }));
       return;
+    }
+    // Session-history fixture (H19): the caller supplies the payload the real
+    // `serveSessionFile` returns — windowed `entries` plus the whole-file
+    // `model`/`thinkingLevel`. `?limit` windows the tail exactly like the hub.
+    if (sessionFile && req.method === "GET") {
+      const m = urlPath.match(/^\/api\/sessions\/([^/]+)\/([^/]+)$/);
+      if (m) {
+        const [, dirName, file] = m.map(decodeURIComponent);
+        if (dirName === sessionFile.dirName && file === sessionFile.file) {
+          let out = sessionFile.entries || [];
+          const lim = new URL(`http://x${req.url}`).searchParams.get("limit");
+          const n = lim === null ? NaN : parseInt(lim, 10);
+          if (Number.isFinite(n) && n > 0 && out.length > n) out = out.slice(out.length - n);
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ entries: out, model: sessionFile.model || null, thinkingLevel: sessionFile.thinkingLevel || null }));
+          return;
+        }
+      }
     }
     // ADR-013: table-backed process list + kill with the real hub's
     // validation semantics (400 bad/self pid, 404 stale pid).
@@ -245,6 +263,14 @@ export function startHubStub({ port, staticDir, auth = null, version = "e2e-stub
             // no socket to keep silent on — the answer is the rejection).
             res.writeHead(200, { "Content-Type": "application/json" });
             res.end(JSON.stringify({ type: "response", command: command.type, success: false, error: `Unknown command: ${command.type}`, id: command.id }));
+            return;
+          }
+          if (command && command.type === "get_state") {
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({
+              type: "response", command: "get_state", success: true,
+              data: serverState || {}, id: command.id,
+            }));
             return;
           }
           if (command && command.type === "get_available_models") {

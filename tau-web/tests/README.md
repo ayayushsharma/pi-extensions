@@ -16,7 +16,7 @@ tests/
   hub-stub.mjs       # CI hub: headless-only HTTP + WS contracts without a pi process
   hub-real.mjs       # Real hub boot (`pi -e ./tau-web --mode rpc`, stdin held open)
   browser.mjs        # CDP driver: system Chrome, pageerror-first, screenshots on fail
-  e2e/               # one file per case (H1–H20, D1/D5, P2, X1–X5)
+  e2e/               # one file per case (H1–H21, D1/D5, P2, X1–X6)
 ```
 
 ## Run
@@ -139,6 +139,21 @@ Chrome):
   existed only as a renderer method, so the auto-compaction handler and
   the headless-continue path threw `ReferenceError` in production while
   `node --check` stayed green.
+- H21: the header's model/thinking pill describes the SESSION being
+  viewed, not the hub's own pi process. The stub's own `get_state`
+  reports a different model/level than the history fixture, so a leak is
+  visible: after selecting the session (and after its `get_state`
+  round-trip lands), the pill must show the fixture's model/thinking —
+  also on a reload of the pinned hash. It guards both halves of the bug:
+  the history payload's whole-file `model`/`thinkingLevel` (the `?limit`
+  tail contains no change entries) and `serverStateOwnsView()` keeping
+  `get_state` from overwriting them.
+- X6: real-hub contract for the same fix, HTTP only —
+  `/api/sessions/:dir/:file?limit=N` windows `entries` to the tail but
+  must still report the file's last `model_change`/`thinking_level_change`
+  (they usually sit at the top, outside the window), keep them across
+  `before=` paging, and report `null` for a session with no change
+  entries.
 - D1: relay frames answered, dead mirror frames silent, socket alive.
 - D5: auth — 401 + overlay, login → WS, logout revokes.
 - P2: hardening — traversal, rebinding, dead WS contract.

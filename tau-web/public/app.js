@@ -205,6 +205,22 @@ let uplinkContextUsage = null;
 function uplinkOwnsView() {
   return !!(uplinkActive || uplinkPreview || uplinkLastDetached);
 }
+// `get_state` reports the hub's OWN pi session. While the view shows any other
+// session — a sidebar history load, or a live TUI (uplinkOwnsView covers that)
+// — its model/thinking must not leak into the header. The history payload
+// carries the viewed session's own model/thinking (mirror-server derives them
+// from the whole file even when ?limit windows the entries) and
+// renderSessionHistory applies them.
+function serverStateOwnsView(stateFile = null) {
+  if (uplinkOwnsView()) return false;
+  const viewed = sessionKeyOf(sidebar.activeSessionFile || parseSessionHash()?.key || null);
+  const own = sessionKeyOf(stateFile || serverOwnSessionFile);
+  // Both identities known: trust the comparison over the position flag, which
+  // is only maintained on the mirror_sync path (a client that never got a
+  // snapshot still selects sessions). Otherwise the flag stands.
+  if (viewed && own) return viewed === own;
+  return viewingActiveSession;
+}
 let rpcSeq = 0;
 const pendingRpc = new Map(); // id -> { resolve, command } for start_session / uplink_list acks
 function sendRpc(command) {
@@ -1655,10 +1671,10 @@ async function fetchModelInfo() {
     if (modelsData.success && modelsData.data?.models) {
       availableModels = modelsData.data.models;
     }
-    // The server's own state is authoritative only when no live-TUI view owns
-    // the screen — otherwise the uplink snapshot / session entries supply the
-    // model, thinking level, cost and context for the session being viewed.
-    if (stateData.success && stateData.data?.model && !uplinkOwnsView()) {
+    // The server's own state is authoritative only while the view shows the
+    // server's own session — otherwise the uplink snapshot / session history
+    // supplies the model and thinking level for the session being viewed.
+    if (stateData.success && stateData.data?.model && serverStateOwnsView(stateData.data.sessionFile)) {
       currentModelId = stateData.data.model.id || '';
       updateModelLabel();
     }
@@ -1666,7 +1682,7 @@ async function fetchModelInfo() {
       const model = availableModels.find(m => m.id === currentModelId);
       if (model?.contextWindow) setContextWindow(model.contextWindow);
     }
-    if (stateData.success && stateData.data?.thinkingLevel && !uplinkOwnsView()) {
+    if (stateData.success && stateData.data?.thinkingLevel && serverStateOwnsView(stateData.data.sessionFile)) {
       currentThinkingLevel = stateData.data.thinkingLevel;
       updateThinkingBtn();
     }
@@ -2253,12 +2269,17 @@ async function switchSession(sessionFile, session = null, project = null, opts =
           // windowed fetch 404s/fails.
           let entries = null;
           let exhausted = true;
+          // `model`/`thinkingLevel` describe the whole session file, not the
+          // windowed `entries` — the change entries live at the top of the
+          // file, so a long session's first paint needs them from here.
+          let sessionMeta = null;
           try {
             const tailRes = await fetch(`/api/sessions/${dirName}/${file}?limit=${VISIBLE_MESSAGE_WINDOW}`);
             console.log('[App] History fetch status:', tailRes.status);
             if (tailRes.ok) {
               const tailData = await tailRes.json();
               entries = tailData.entries || [];
+              sessionMeta = tailData;
               exhausted = entries.length < VISIBLE_MESSAGE_WINDOW;
               console.log('[App] History entries (tail):', entries.length, exhausted ? '(at beginning)' : '(more on server)');
             }
@@ -2268,6 +2289,7 @@ async function switchSession(sessionFile, session = null, project = null, opts =
             console.log('[App] History fetch status:', res.status);
             const data = await res.json();
             entries = data.entries || [];
+            sessionMeta = data;
             exhausted = true;
             console.log('[App] History entries:', entries.length || 0);
           }
@@ -2282,7 +2304,7 @@ async function switchSession(sessionFile, session = null, project = null, opts =
           historyExhausted = exhausted;
           historyLoadingOlder = false;
           messageRenderer.clear();
-          renderSessionHistory(entries);
+          renderSessionHistory(entries, sessionMeta);
           // Bind the headless backend to this file so prompts have a runner
           // even when no live TUI owns the session. Previews stay read-only
           // and don't move the headless backend. Files owned by a live TUI
@@ -2397,7 +2419,7 @@ function handleMirrorSync(data, fromUplink = false) {
   historyDirName = null; historyFile = null; historyExhausted = true; historyLoadingOlder = false;
 
   if (data.entries && data.entries.length > 0) {
-    renderSessionHistory(data.entries);
+    renderSessionHistory(data.entries, data);
   } else {
     messageRenderer.renderWelcome();
   }
@@ -2744,17 +2766,17 @@ async function startBackgroundWatch(dirName, cwd, file) {
       const sig = histSignature(h?.entries);
       if (h?.entries && sig !== lastSig) {
         lastSig = sig;
-        refreshWatchedHistory(h.entries);
+        refreshWatchedHistory(h.entries, h);
       }
     } catch {}
   }
 }
-function refreshWatchedHistory(entries) {
+function refreshWatchedHistory(entries, meta = null) {
   const sc = messagesContainer;
   const atBottom = sc.scrollHeight - sc.scrollTop - sc.clientHeight < 150;
   // Background-watch polls serve the full file, so the view is complete.
   historyExhausted = true; historyLoadingOlder = false;
-  renderSessionHistory(entries);
+  renderSessionHistory(entries, meta);
   if (atBottom) sc.scrollTop = sc.scrollHeight;
 }
 async function refreshUplinkList() {
@@ -3570,7 +3592,7 @@ async function loadEarlierMessages() {
   renderLoadMoreControl();
 }
 
-function renderSessionHistory(entries) {
+function renderSessionHistory(entries, meta = null) {
   // Full-session accounting + last known model/thinking, independent of the
   // rendered window: an attached/history session must show its own model,
   // thinking level, cost and context — not the web server's own state.
@@ -3590,6 +3612,12 @@ function renderSessionHistory(entries) {
       if (Number.isFinite(usage?.input)) { histTokens = usage.input + (usage.cacheRead || 0); histUsage = usage; }
     }
   }
+  // Whole-file model/thinking from the payload (see serveSessionFile) — the
+  // tail window usually holds no change entries, so this, not the scan, is
+  // what keeps a long session's header honest. An older hub omits it and the
+  // scan above stands.
+  if (meta?.model?.id) histModel = meta.model.id;
+  if (meta?.thinkingLevel) histThinking = meta.thinkingLevel;
   if (histModel && histModel !== currentModelId) { currentModelId = histModel; updateModelLabel(); }
   if (histThinking && histThinking !== currentThinkingLevel) { currentThinkingLevel = histThinking; updateThinkingBtn(); }
   sessionTotalCost = histCost;

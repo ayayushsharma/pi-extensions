@@ -3243,6 +3243,11 @@ export default function (pi: ExtensionAPI) {
     const entries: any[] = [];
     const stream = fs.createReadStream(filePath, { encoding: "utf8" });
     let buffer = "";
+    // Session identity for the header. The model/thinking change entries are
+    // usually at the TOP of the file — far outside a `limit` tail window — so
+    // track them over every parsed line, not just the slice that ships.
+    let lastModelId: string | null = null;
+    let lastThinkingLevel: string | null = null;
 
     stream.on("data", (chunk: string) => {
       buffer += chunk;
@@ -3250,7 +3255,12 @@ export default function (pi: ExtensionAPI) {
       buffer = lines.pop() || "";
       for (const line of lines) {
         if (line.trim()) {
-          try { entries.push(JSON.parse(line)); } catch { /* skip */ }
+          try {
+            const entry = JSON.parse(line);
+            if (entry?.type === "model_change" && entry.modelId) lastModelId = entry.modelId;
+            else if (entry?.type === "thinking_level_change" && entry.thinkingLevel) lastThinkingLevel = entry.thinkingLevel;
+            entries.push(entry);
+          } catch { /* skip */ }
         }
       }
     });
@@ -3266,7 +3276,11 @@ export default function (pi: ExtensionAPI) {
       }
       if (limit !== null && out.length > limit) out = out.slice(out.length - limit);
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ entries: out }));
+      res.end(JSON.stringify({
+        entries: out,
+        model: lastModelId ? { id: lastModelId } : null,
+        thinkingLevel: lastThinkingLevel,
+      }));
     });
 
     stream.on("error", (e: Error) => {

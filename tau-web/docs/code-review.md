@@ -480,3 +480,16 @@ picker/drawer, and a prompt sent afterwards streams its reply. H19 fails with
 the old handler (the binding never changes, page error), H20 fails with the
 old calls (unresolved `scrollToBottom`). Neither bug was introduced by the
 review loop — `git show main:...` carries both verbatim.
+
+### N3 — header showed the hub's own model/thinking for every session
+
+| # | Symptom | Root cause | Fix | Guard |
+|---|---------|-----------|-----|-------|
+| N3 | The header's model/thinking pill showed the *hub's* model and level for every session opened from the sidebar (live: `muse-spark-1.3-contributor`/`xhigh` for sessions whose files recorded `deepseek-v4.1-flash`/`max`), including 18-entry sessions whose whole history is one page | Two independent bugs. (a) `renderSessionHistory()` ends with `fetchContextWindow()` → `fetchModelInfo()`, whose `get_state` answer describes the hub's OWN pi session and overwrote the values history had just applied (`viewingActiveSession` was the only guard, and it is only maintained on the `mirror_sync` path). (b) First paint is a `?limit=50` tail while `model_change`/`thinking_level_change` entries sit at the TOP of the file — for any session over 50 entries the history scan found nothing to apply | `serveSessionFile` now returns the whole-file `model`/`thinkingLevel` alongside the windowed `entries`; the client applies them in `renderSessionHistory(entries, meta)` (meta wins, entry scan still covers older hubs) and `serverStateOwnsView()` compares the viewed session key (sidebar/hash) with the `get_state` session file before letting it drive the header | H21, X6 |
+
+Reproduced live before the fix (all six sidebar sessions showed the hub's
+model; the tail of a 1550-entry session contains no change entries at all),
+re-verified after it (UI model/thinking == the file's last change for a
+1704-, 1269-, 825- and 19-entry session), and pinned to 29/29 + 1 skipped.
+H21 fails with the meta ignored *and* with the guard neutered; X6 fails
+without the server-side identity.

@@ -3623,7 +3623,7 @@ function resetTokenTracking() {
 
 function updateCostDisplay() {
   if (sessionTotalCost > 0) {
-    sessionCostEl.textContent = `$${sessionTotalCost.toFixed(4)} (sub)`;
+    sessionCostEl.textContent = `$${sessionTotalCost.toFixed(4)}`;
     sessionCostEl.classList.add('visible');
   } else {
     sessionCostEl.classList.remove('visible');

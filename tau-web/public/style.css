@@ -523,8 +523,13 @@ html {
 
 /* Phone-only reload button (see #phone-refresh in hub/index.html): desktop
    has Ctrl+R, phones get a tap target. Coarse pointer = touch phones and
-   tablets; desktop/laptop stays uncluttered. */
-#phone-refresh { display: none; }
+   tablets; desktop/laptop stays uncluttered. Colour matches the
+   hamburger/gear (--text-secondary): .icon-btn's default --text-dim reads
+   as a thinner icon next to them even with an identical stroke. */
+#phone-refresh {
+  display: none;
+  color: var(--text-secondary);
+}
 @media (pointer: coarse) {
   #phone-refresh { display: flex; }
 }

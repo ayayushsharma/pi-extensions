@@ -416,6 +416,7 @@ a.tab, a.vtab { text-decoration: none; }
   align-items: flex-start;
   justify-content: center;
   padding: min(18vh, 150px) 16px 16px;
+  padding: min(18dvh, 150px) 16px 16px;
 }
 .session-home.hidden { display: none; }
 
@@ -433,6 +434,7 @@ a.tab, a.vtab { text-decoration: none; }
   width: 100%;
   max-width: 620px;
   max-height: 70vh;
+  max-height: 70dvh;
   display: flex;
   flex-direction: column;
   background: var(--bg-frosted);
@@ -473,6 +475,7 @@ a.tab, a.vtab { text-decoration: none; }
 
 .session-home-list {
   overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
   padding: 6px;
   overscroll-behavior: contain;
 }
@@ -588,7 +591,7 @@ a.tab, a.vtab { text-decoration: none; }
      pill with an ellipsized label. */
   .hub-shell .model-dropdown-btn { width: auto; max-width: 34vw; }
 
-  .session-home { padding-top: 10vh; }
+  .session-home { padding-top: 10vh; padding-top: 10dvh; }
   .session-bar .sb-text { max-width: 40vw; }
 }
 
@@ -601,6 +604,7 @@ a.tab, a.vtab { text-decoration: none; }
   align-items: center;
   justify-content: center;
   padding: 6vh 20px 20px;
+  padding: 6dvh 20px 20px;
 }
 .fv-overlay.hidden { display: none; }
 .fv-backdrop {
@@ -612,6 +616,7 @@ a.tab, a.vtab { text-decoration: none; }
   position: relative;
   width: min(920px, 100%);
   max-height: 88vh;
+  max-height: 88dvh;
   display: flex;
   flex-direction: column;
   background: var(--bg-elevated, #1a1a1e);
@@ -664,6 +669,8 @@ a.tab, a.vtab { text-decoration: none; }
 .fv-body {
   display: flex;
   overflow: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
   flex: 1;
   min-height: 0;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -725,6 +732,7 @@ a.tab, a.vtab { text-decoration: none; }
   align-items: center;
   justify-content: center;
   padding: 6vh 20px 20px;
+  padding: 6dvh 20px 20px;
 }
 .sp-overlay.hidden { display: none; }
 .sp-backdrop {
@@ -736,6 +744,7 @@ a.tab, a.vtab { text-decoration: none; }
   position: relative;
   width: min(560px, 100%);
   max-height: 88vh;
+  max-height: 88dvh;
   display: flex;
   flex-direction: column;
   background: var(--bg-elevated, #1a1a1e);
@@ -752,7 +761,7 @@ a.tab, a.vtab { text-decoration: none; }
   flex-shrink: 0;
 }
 .sp-title { font-weight: 600; font-size: 15px; }
-.sp-scroll { overflow-y: auto; padding: 4px 12px 14px; }
+.sp-scroll { overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; padding: 4px 12px 14px; }
 .sp-section { margin-top: 12px; }
 .sp-section.hidden { display: none; }
 .sp-label {
@@ -887,4 +896,6 @@ a.tab, a.vtab { text-decoration: none; }
 @media (max-width: 768px) {
   .sp-overlay { padding: 0; align-items: stretch; }
   .sp-panel { width: 100%; max-height: none; height: 100%; border: none; border-radius: 0; }
+  /* Stable bottom inset under the home indicator when the toolbar toggles. */
+  .sp-scroll { padding-bottom: calc(14px + env(safe-area-inset-bottom)); }
 }

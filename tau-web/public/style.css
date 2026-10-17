@@ -339,12 +339,18 @@ body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   font-size: 15px;
+  /* Kills double-tap-to-zoom everywhere (the zoom jump on rapid taps).
+     Pan and pinch-zoom still work; stricter rules below override per region. */
+  touch-action: manipulation;
 }
 
 html {
   height: 100%;
   overflow: hidden;
   overscroll-behavior: none;
+  /* iOS inflates text on rotation without this, shifting the layout. */
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
 }
 
 /* ═══════════════════════════════════════════════════════
@@ -1071,6 +1077,7 @@ html {
   align-items: center;
   justify-content: center;
   background: rgba(0, 0, 0, 0.45);
+  -webkit-backdrop-filter: blur(2px);
   backdrop-filter: blur(2px);
 }
 .login-card {
@@ -1224,6 +1231,7 @@ html {
   inset: 0;
   background: rgba(0, 0, 0, 0.4);
   z-index: 99;
+  -webkit-backdrop-filter: blur(8px);
   backdrop-filter: blur(8px);
 }
 
@@ -1839,6 +1847,7 @@ html {
   max-width: 92vw;
   /* Phones clip a fixed sheet: cap the height and scroll the panes. */
   max-height: min(88vh, 680px);
+  max-height: min(88dvh, 680px);
   display: flex;
   flex-direction: column;
   box-shadow: var(--shadow-lg), var(--shadow-inset);
@@ -2339,6 +2348,7 @@ html {
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
+  -webkit-backdrop-filter: blur(12px);
   backdrop-filter: blur(12px);
 }
 
@@ -2560,6 +2570,7 @@ html {
   overflow: hidden;
   border: 1px solid var(--border);
   background: rgba(0, 0, 0, 0.25);
+  -webkit-backdrop-filter: blur(12px);
   backdrop-filter: blur(12px);
 }
 
@@ -2668,6 +2679,7 @@ code {
   align-self: flex-start;
   width: 100%;
   flex-shrink: 0;
+  -webkit-backdrop-filter: blur(12px);
   backdrop-filter: blur(12px);
   transition: border-color var(--duration) var(--ease), box-shadow var(--duration) var(--ease);
 }
@@ -2742,6 +2754,7 @@ body.hide-costs .message-usage { display: none !important; }
   align-self: flex-start;
   width: 100%;
   flex-shrink: 0;
+  -webkit-backdrop-filter: blur(12px);
   backdrop-filter: blur(12px);
   transition: border-color var(--duration) var(--ease);
 }
@@ -3252,7 +3265,9 @@ body.hide-costs .message-usage { display: none !important; }
   overflow-y: auto;
   backdrop-filter: blur(var(--blur));
   -webkit-backdrop-filter: blur(var(--blur));
-  transition: all var(--duration) var(--ease);
+  /* Narrow: `all` would animate padding/height during the iOS keyboard
+     resize, which reads as input-box jumping. */
+  transition: border-color var(--duration) var(--ease), box-shadow var(--duration) var(--ease);
 }
 
 #message-input:focus {
@@ -3566,6 +3581,8 @@ body.hide-costs .message-usage { display: none !important; }
 .command-list,
 .model-list {
   overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
   padding: 6px;
 }
 
@@ -4559,4 +4576,12 @@ body.no-tts .message-speak-btn { display: none; }
 
 .katex-html {
   white-space: normal;
+}
+
+/* ── iOS Safari stability (touch devices only — desktop untouched) ── */
+@media (pointer: coarse) {
+  /* iOS zooms the whole page when a sub-16px field focuses and rarely
+     zooms back out cleanly — the classic input jump. The composer already
+     uses 16px; every other field is raised to match, touch devices only. */
+  input, textarea, select { font-size: 16px !important; }
 }

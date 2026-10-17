@@ -53,7 +53,7 @@ export async function run() {
       // is read-only) and the headless child spawns with this cwd.
       const started = await rpc(ws, { type: "start_session", cwd: os.tmpdir() });
       assert(started.event?.success === true, `start_session failed: ${JSON.stringify(started)}`);
-      assert(started.event?.data?.sessionKey, "start_session missing sessionKey");
+      assert(started.event?.data?.backendKey, "start_session missing backendKey");
 
       if (real) {
         // Real headless child: ask it to echo. The child is a live pi agent;

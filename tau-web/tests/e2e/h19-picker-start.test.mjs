@@ -55,7 +55,7 @@ export async function run() {
 
       const after = await page.evaluate(STATE);
       assert(after.pickerHidden, "picker stayed open after Start");
-      assert(String(after.binding).includes('"sessionKey":"stub-'),
+      assert(String(after.binding).includes('"backendKey":"stub-'),
         `binding was not refreshed with the new stub session: ${after.binding}`);
       assert(after.sidebarCollapsed, "phone drawer stayed open over the fresh session");
       assert(!after.overlayVisible, "phone drawer overlay is still visible — taps land on it, not the composer");

@@ -50,8 +50,8 @@ export async function run() {
       // registry entry must disappear once 'error'/'close' lands.
       const started = await wsRpc(ws, { type: "start_session", cwd: os.tmpdir() });
       assert(started.event?.success === true, `spawn attempt acked, got ${JSON.stringify(started).slice(0, 140)}`);
-      const key = started.event?.data?.sessionKey;
-      assert(key, "start_session returned a sessionKey");
+      const key = started.event?.data?.backendKey;
+      assert(key, "start_session returned a backendKey");
       await waitFor(async () => {
         const list = await sessionList(ws);
         return list.some((s) => s.cwd === os.tmpdir()) ? null : true;
@@ -59,7 +59,7 @@ export async function run() {
 
       // Re-joining with the leaked key must not resurrect a corpse either:
       // it spawns again (fails again) and is reaped again.
-      const rejoin = await wsRpc(ws, { type: "start_session", cwd: os.tmpdir(), sessionKey: key });
+      const rejoin = await wsRpc(ws, { type: "start_session", cwd: os.tmpdir(), backendKey: key });
       assert(rejoin.event?.success === true, `rejoin acked, got ${JSON.stringify(rejoin).slice(0, 140)}`);
       await waitFor(async () => {
         const list = await sessionList(ws);

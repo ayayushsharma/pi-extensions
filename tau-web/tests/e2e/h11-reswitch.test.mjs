@@ -110,7 +110,7 @@ export async function run() {
     // 1. First bind: fresh backend, the child must be told to load the file.
     const ack1 = await rpc(ws, { type: "start_session", cwd: projDir, sessionFile: fileA });
     assert(ack1.event?.success, `start_session A ok: ${JSON.stringify(ack1.event).slice(0, 200)}`);
-    const keyA = ack1.event?.data?.sessionKey;
+    const keyA = ack1.event?.data?.backendKey;
     assert(ack1.event?.data?.isAgentRunning === false, `fresh bind reports idle`);
     await waitFor(() => switchCount(logFile, fileA) === 1, { timeout: 10000, label: "first switch for A" });
 
@@ -127,7 +127,7 @@ export async function run() {
     // must rebind to the SAME backend and must NOT send switch_session again.
     const ack2 = await rpc(ws, { type: "start_session", cwd: projDir, sessionFile: fileA });
     assert(ack2.event?.success, `rejoin A ok: ${JSON.stringify(ack2.event).slice(0, 200)}`);
-    assert(ack2.event?.data?.sessionKey === keyA, `rejoin binds the same backend (got ${ack2.event?.data?.sessionKey}, want ${keyA})`);
+    assert(ack2.event?.data?.backendKey === keyA, `rejoin binds the same backend (got ${ack2.event?.data?.backendKey}, want ${keyA})`);
     assert(ack2.event?.data?.isAgentRunning === true, `rejoin reports the run still in flight (client watch keys on this)`);
     await sleep(800); // give a redundant switch time to land, then assert absence
     assert(switchCount(logFile, fileA) === 1, `no second switch_session for A on rejoin (log:\n${fs.readFileSync(logFile, "utf8").slice(0, 500)})`);
@@ -139,7 +139,7 @@ export async function run() {
     // 3. A different file still binds a new backend and switches it.
     const ack3 = await rpc(ws, { type: "start_session", cwd: projDir, sessionFile: fileB });
     assert(ack3.event?.success, `start_session B ok: ${JSON.stringify(ack3.event).slice(0, 200)}`);
-    assert(ack3.event?.data?.sessionKey !== keyA, `B binds a different backend`);
+    assert(ack3.event?.data?.backendKey !== keyA, `B binds a different backend`);
     await waitFor(() => switchCount(logFile, fileB) === 1, { timeout: 10000, label: "first switch for B" });
     assert(switchCount(logFile, fileA) === 1, `A still switched exactly once`);
   } finally {

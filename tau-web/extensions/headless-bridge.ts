@@ -188,7 +188,7 @@ export class HeadlessRegistry {
     return { isActive: false, isWorking: false };
   }
 
-  attach(ws: any, cwdRaw?: string, sessionFileRaw?: string | null, opts?: { fresh?: boolean; sessionKey?: string | null }): ManagedHeadless {
+  attach(ws: any, cwdRaw?: string, sessionFileRaw?: string | null, opts?: { fresh?: boolean; backendKey?: string | null }): ManagedHeadless {
     const cwd = cwdRaw && cwdRaw.trim().length > 0 ? resolve(cwdRaw) : this.homeDir;
     const sessionFile = sessionFileRaw && sessionFileRaw.length > 0 ? basename(sessionFileRaw) : null;
     // One backend per session (shared across tabs on the same file).
@@ -199,7 +199,7 @@ export class HeadlessRegistry {
     // last start_session ack. Matched against live registry ids only, so a
     // stale key can never attach a wrong or recycled session — it just
     // misses and falls through to the file scan below.
-    const wantKey = opts?.sessionKey;
+    const wantKey = opts?.backendKey;
     if (wantKey && !opts?.fresh) {
       for (const m of this.sessions.values()) {
         if (!m.isClosing && m.id === wantKey) { managed = m; break; }

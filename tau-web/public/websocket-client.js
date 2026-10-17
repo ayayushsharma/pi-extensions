@@ -126,7 +126,7 @@ export class WebSocketClient extends EventTarget {
         break;
       case 'rpc_event': {
         // tau-web unified envelope (ADR-004): { type:'rpc_event', event, uplink?, port? }.
-        // Responses (start_session / uplink_list acks) correlate by id; everything
+        // Responses (start_session / instances acks) correlate by id; everything
         // else flows through the normal rpcEvent path so one UI speaks both dialects.
         const inner = message.event;
         if (inner && inner.type === 'response') {
@@ -153,14 +153,14 @@ export class WebSocketClient extends EventTarget {
       case 'pong':
         this.dispatchEvent(new CustomEvent('pong'));
         break;
-      case 'uplink_attached':
-        this.dispatchEvent(new CustomEvent('uplinkAttached', { detail: message }));
+      case 'attached':
+        this.dispatchEvent(new CustomEvent('attached', { detail: message }));
         break;
-      case 'uplink_detached':
-        this.dispatchEvent(new CustomEvent('uplinkDetached', { detail: message }));
+      case 'detached':
+        this.dispatchEvent(new CustomEvent('detached', { detail: message }));
         break;
-      case 'uplink_dead':
-        this.dispatchEvent(new CustomEvent('uplinkDead', { detail: message }));
+      case 'tui_dead':
+        this.dispatchEvent(new CustomEvent('tuiDead', { detail: message }));
         break;
       case 'mirrors_changed':
         // A TUI mirror joined/left. Cheap to just re-poll the list.

@@ -3985,10 +3985,6 @@ body.no-tts .message-speak-btn { display: none; }
   transform: scale(0.99);
 }
 
-.file-item.dragging {
-  opacity: 0.5;
-}
-
 .file-icon {
   font-size: 14px;
   width: 20px;

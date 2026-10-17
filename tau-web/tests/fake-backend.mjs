@@ -1,6 +1,6 @@
 // Layer B — static + fake WS backend speaking the WS contract (§4).
 // Modes:
-//   default   ack new_session {sessionKey, cwd}, NO session_file → UI stays put.
+//   default   ack new_session {backendKey, cwd}, NO session_file → UI stays put.
 //   late-file ack + delayed session_file → #session=<base> pin + New session tab.
 //   no-ack    answer nothing → client 15s timeout message.
 import http from "node:http";
@@ -65,7 +65,7 @@ export function startFakeBackend({ port, staticDir, mode = "default" }) {
           id,
           event: {
             type: "response", id, command: "new_session", success: true,
-            data: { sessionKey: `fake-${Date.now().toString(36)}`, cwd: msg.cwd || "/tmp/e2e" },
+            data: { backendKey: `fake-${Date.now().toString(36)}`, cwd: msg.cwd || "/tmp/e2e" },
           },
         };
         ws.send(JSON.stringify(ack));

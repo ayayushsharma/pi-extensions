@@ -1,5 +1,5 @@
 /**
- * File Browser — right sidebar file tree with drag-and-drop
+ * File Browser — right sidebar file tree with click-to-preview
  */
 
 import { fileKindIcon } from './icons.js';
@@ -83,8 +83,6 @@ export class FileBrowser {
     for (const item of items) {
       const el = document.createElement('div');
       el.className = `file-item${item.isDirectory ? ' directory' : ''}`;
-      // Nothing accepts drops anymore (prompt-insert removed): not draggable.
-      el.draggable = false;
       el.dataset.path = item.path;
       el.dataset.name = item.name;
       el.dataset.isDirectory = item.isDirectory;
@@ -114,17 +112,6 @@ export class FileBrowser {
         if (!item.isDirectory) {
           this.openNatively(item.path);
         }
-      });
-
-      // Drag start
-      el.addEventListener('dragstart', (e) => {
-        e.dataTransfer.setData('text/plain', item.path);
-        e.dataTransfer.effectAllowed = 'copy';
-        el.classList.add('dragging');
-      });
-
-      el.addEventListener('dragend', () => {
-        el.classList.remove('dragging');
       });
 
       this.container.appendChild(el);

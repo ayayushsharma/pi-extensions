@@ -1,4 +1,4 @@
-// H7 — uplink relay contract: `uplink_list` acks over WS with instances,
+// H7 — uplink relay contract: `instances` acks over WS with instances,
 // /api/instances lists the live TUI, and uplink verbs require WS over HTTP
 // (400, like the real hub — ADR-014).
 import { WebSocket } from "ws";
@@ -25,12 +25,12 @@ export async function run() {
     const { res: rres, json: rj } = await fetchJson(`${hub.url}/api/rpc`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ type: "uplink_list", id: "h7" }),
+      body: JSON.stringify({ type: "instances", id: "h7" }),
     });
-    assert(rres.status === 400, `uplink_list HTTP status: ${rres.status}, want 400`);
+    assert(rres.status === 400, `instances HTTP status: ${rres.status}, want 400`);
     assert(/requires a WebSocket/.test(rj?.error || ""), `wrong error: ${JSON.stringify(rj)}`);
 
-    // Over WS, uplink_list acks with the same instances.
+    // Over WS, instances acks with the same instances.
     const ws = new WebSocket(`${hub.url.replace("http", "ws")}/ws`);
     try {
       await new Promise((resolve, reject) => {
@@ -41,9 +41,9 @@ export async function run() {
       ws.on("message", (raw) => {
         try { frames.push(JSON.parse(String(raw))); } catch {}
       });
-      ws.send(JSON.stringify({ type: "uplink_list", id: "h7-ws" }));
+      ws.send(JSON.stringify({ type: "instances", id: "h7-ws" }));
       await new Promise((r) => setTimeout(r, 1500));
-      const ack = frames.find((f) => f?.event?.command === "uplink_list");
+      const ack = frames.find((f) => f?.event?.command === "instances");
       assert(ack?.event?.success === true, `no ack: ${JSON.stringify(frames).slice(0, 400)}`);
       assert(Array.isArray(ack.event.data?.instances) && ack.event.data.instances.length > 0,
         `no instances in ack: ${JSON.stringify(ack).slice(0, 300)}`);

@@ -1,6 +1,6 @@
 // D1 — uplink relay over raw WS: stale mirror frames stay dead (no answer,
-// ADR-011); uplink_list acks, uplink_attach answers uplink_attached,
-// uplink_detach answers uplink_detached; unknown commands are rejected.
+// ADR-011); instances acks, attach answers attached,
+// detach answers detached; unknown commands are rejected.
 // The socket stays usable throughout.
 import { WebSocket } from "ws";
 import { startHubStub } from "../hub-stub.mjs";
@@ -28,25 +28,25 @@ export async function run() {
       ws.send(JSON.stringify({ type, id: `d1-dead-${i}` }));
     }
     // Live relay: list acks, attach/detach answer, unknown rejected.
-    ws.send(JSON.stringify({ type: "uplink_list", id: "d1-list" }));
-    ws.send(JSON.stringify({ type: "uplink_attach", port: 18777, pid: 42421, id: "d1-attach" }));
+    ws.send(JSON.stringify({ type: "instances", id: "d1-list" }));
+    ws.send(JSON.stringify({ type: "attach", port: 18777, pid: 42421, id: "d1-attach" }));
     ws.send(JSON.stringify({ type: "frobnicate", id: "d1-frob" }));
     await new Promise((r) => setTimeout(r, 1500));
     assert(!frames.some((f) => ["mirror_sync", "session_switch", "mirror_sync_request", "session_switch_request"].includes(f?.event?.command)),
       `dead frame answered: ${JSON.stringify(frames).slice(0, 300)}`);
-    const list = frames.find((f) => f?.event?.command === "uplink_list");
+    const list = frames.find((f) => f?.event?.command === "instances");
     assert(list?.event?.success === true && Array.isArray(list.event.data?.instances),
-      `uplink_list not acked: ${JSON.stringify(frames).slice(0, 400)}`);
-    assert(frames.some((f) => f.type === "uplink_attached" && f.port === 18777),
-      `uplink_attached missing: ${JSON.stringify(frames).slice(0, 400)}`);
+      `instances not acked: ${JSON.stringify(frames).slice(0, 400)}`);
+    assert(frames.some((f) => f.type === "attached" && f.port === 18777),
+      `attached missing: ${JSON.stringify(frames).slice(0, 400)}`);
     const rej = frames.find((f) => f?.event?.command === "frobnicate");
     assert(rej?.event?.success === false && /Unknown command: frobnicate/.test(rej.event.error || ""),
       `frobnicate not rejected: ${JSON.stringify(frames).slice(0, 300)}`);
 
     // Detach answers; socket still alive.
-    ws.send(JSON.stringify({ type: "uplink_detach", id: "d1-detach" }));
+    ws.send(JSON.stringify({ type: "detach", id: "d1-detach" }));
     await new Promise((r) => setTimeout(r, 1000));
-    assert(frames.some((f) => f.type === "uplink_detached"), "uplink_detached missing");
+    assert(frames.some((f) => f.type === "detached"), "detached missing");
     ws.send(JSON.stringify({ type: "ping" }));
     await new Promise((r) => setTimeout(r, 1000));
     assert(frames.some((f) => f.type === "pong"), "socket died");

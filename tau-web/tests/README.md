@@ -129,7 +129,7 @@ Chrome):
   stretched the legend row to 271px and the popover to 443px.)
 - H19: session picker → "Start new session" on a 390×844 phone viewport
   with the drawer open: the click must bind a fresh session (localStorage
-  `tau-web-binding` carries the new `stub-…` sessionKey), close the
+  `tau-web-binding` carries the new `stub-…` backendKey), close the
   picker, leave the drawer collapsed and the overlay hidden, and raise no
   page error. Guard against `S.opts` being read after
   `closeSessionPicker()` nulls `S` (that throw made the button a no-op

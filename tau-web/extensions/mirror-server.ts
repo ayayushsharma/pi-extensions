@@ -1147,7 +1147,7 @@ export default function (pi: ExtensionAPI) {
   // the socket can steer a TUI but never start/close/switch sessions on it.
   const HUB_DRIVE_DENY = new Set([
     "start_session", "new_session", "close_session", "list_sessions",
-    "detach_session", "uplink_list", "uplink_attach", "uplink_detach", "uplink_command",
+    "release_session", "instances", "attach", "detach", "tui_command",
   ]);
 
   /** Hub: start the private listener and fan mirror traffic to browsers. */
@@ -1163,7 +1163,7 @@ export default function (pi: ExtensionAPI) {
         for (const [bw, sub] of hubUplinkSubs) {
           if (sub.mirrorId !== rec.id) continue;
           hubUplinkSubs.delete(bw);
-          sendTo(bw, { type: "uplink_dead", port: sub.port, pid: sub.pid, headlessContinue: true });
+          sendTo(bw, { type: "tui_dead", port: sub.port, pid: sub.pid, headlessContinue: true });
         }
         // S9: drop hub bookkeeping for this mirror's dialogs so a
         // disconnected mirror cannot leave parked entries behind.
@@ -1229,13 +1229,13 @@ export default function (pi: ExtensionAPI) {
       return;
     }
     hubUplinkSubs.set(browserWs, { mirrorId: rec.id, pid: rec.pid, port: rec.port || rec.pid });
-    sendTo(browserWs, { type: "uplink_attached", port: rec.port || rec.pid, pid: rec.pid, sessionFile: rec.sessionFile, cwd: rec.cwd });
+    sendTo(browserWs, { type: "attached", port: rec.port || rec.pid, pid: rec.pid, sessionFile: rec.sessionFile, cwd: rec.cwd });
     // Ask for a fresh snapshot so a browser joining mid-session is current.
     hubSockets?.send(rec.id, { type: "snapshot" });
   }
 
   function hubDetachUplink(browserWs: WebSocket) {
-    if (hubUplinkSubs.delete(browserWs)) sendTo(browserWs, { type: "uplink_detached" });
+    if (hubUplinkSubs.delete(browserWs)) sendTo(browserWs, { type: "detached" });
   }
 
   // S9: parked dialogs must not outlive their answerer. Headless dialogs
@@ -1399,7 +1399,7 @@ export default function (pi: ExtensionAPI) {
     // Lifecycle: sessions are PERSISTENT — browser close/reload only
     // detaches (unbinds WS); the pi child keeps running. Kill only via
     // close_session (bound session) or TTL opt-in. /new == new_session.
-    if (command && typeof command.type === "string" && ["start_session", "new_session", "close_session", "list_sessions", "detach_session", "rpc_command", "ping", "uplink_list", "uplink_attach", "uplink_detach", "uplink_command", "extension_ui_response"].includes(command.type)) {
+    if (command && typeof command.type === "string" && ["start_session", "new_session", "close_session", "list_sessions", "release_session", "rpc_command", "ping", "instances", "attach", "detach", "tui_command", "extension_ui_response"].includes(command.type)) {
       try {
         switch (command.type) {
           case "start_session": {
@@ -1408,7 +1408,7 @@ export default function (pi: ExtensionAPI) {
             const fresh = command.fresh === true;
             let managed;
             try {
-              managed = headless.attach(ws, cwd, file, { fresh, sessionKey: typeof command.sessionKey === "string" ? command.sessionKey : undefined });
+              managed = headless.attach(ws, cwd, file, { fresh, backendKey: typeof command.backendKey === "string" ? command.backendKey : undefined });
             } catch (e: any) {
               sendTo(ws, { type: "rpc_event", event: { type: "response", command: "start_session", success: false, error: e?.message || "invalid cwd" }, id: command.id });
               return;
@@ -1421,7 +1421,7 @@ export default function (pi: ExtensionAPI) {
               // its run and bake "Command aborted" into the transcript.
               if (abs && fs.existsSync(abs) && managed.switchedFile !== abs) headless.switchToFile(managed, abs);
             }
-            sendTo(ws, { type: "rpc_event", event: { type: "response", command: "start_session", success: true, data: { sessionKey: managed.id, cwd: managed.cwd, isAgentRunning: managed.isAgentRunning } }, id: command.id });
+            sendTo(ws, { type: "rpc_event", event: { type: "response", command: "start_session", success: true, data: { backendKey: managed.id, cwd: managed.cwd, isAgentRunning: managed.isAgentRunning } }, id: command.id });
             return;
           }
           case "new_session": {
@@ -1435,7 +1435,7 @@ export default function (pi: ExtensionAPI) {
               sendTo(ws, { type: "rpc_event", event: { type: "response", command: "new_session", success: false, error: e?.message || "invalid cwd" }, id: command.id });
               return;
             }
-            sendTo(ws, { type: "rpc_event", event: { type: "response", command: "new_session", success: true, data: { sessionKey: managed.id, cwd: managed.cwd } }, id: command.id });
+            sendTo(ws, { type: "rpc_event", event: { type: "response", command: "new_session", success: true, data: { backendKey: managed.id, cwd: managed.cwd } }, id: command.id });
             return;
           }
           case "close_session": {
@@ -1447,9 +1447,9 @@ export default function (pi: ExtensionAPI) {
             sendTo(ws, { type: "rpc_event", event: { type: "response", command: "list_sessions", success: true, data: { sessions: headless.listSessions() } }, id: command.id });
             return;
           }
-          case "detach_session": {
+          case "release_session": {
             headless.detach(ws);
-            sendTo(ws, { type: "rpc_event", event: { type: "response", command: "detach_session", success: true }, id: command.id });
+            sendTo(ws, { type: "rpc_event", event: { type: "response", command: "release_session", success: true }, id: command.id });
             return;
           }
           case "rpc_command": {
@@ -1463,7 +1463,7 @@ export default function (pi: ExtensionAPI) {
             return;
           }
           case "ping": { sendTo(ws, { type: "pong" }); return; }
-          case "uplink_list": {
+          case "instances": {
             // Hub: the shared mirror list (all TUIs that dialed hub.sock). A
             // mirror does not proxy other TUIs (ADR-010) — cross-attach is
             // hub-only — so it reports an empty list and the UI offers no
@@ -1474,20 +1474,20 @@ export default function (pi: ExtensionAPI) {
                   sessionName: r.sessionName, active: r.isStreaming, hub: true,
                 }))
               : [];
-            sendTo(ws, { type: "rpc_event", event: { type: "response", command: "uplink_list", success: true, data: { instances: list } }, id: command.id });
+            sendTo(ws, { type: "rpc_event", event: { type: "response", command: "instances", success: true, data: { instances: list } }, id: command.id });
             return;
           }
-          case "uplink_attach": {
+          case "attach": {
             if (role === "hub") hubAttachUplink(ws, Number(command.pid));
             else sendTo(ws, { type: "error", message: "Cross-session attach is only available through the hub" });
             return;
           }
-          case "uplink_detach": {
+          case "detach": {
             if (role === "hub") hubDetachUplink(ws);
-            else sendTo(ws, { type: "uplink_detached" });
+            else sendTo(ws, { type: "detached" });
             return;
           }
-          case "uplink_command": {
+          case "tui_command": {
             if (role === "hub") { hubDrive(ws, command.command); return; }
             sendTo(ws, { type: "error", message: "No uplink on a mirror — attach through the hub" });
             return;
@@ -2194,7 +2194,7 @@ export default function (pi: ExtensionAPI) {
     if (urlPath === "/api/instances") {
       res.writeHead(200, { "Content-Type": "application/json" });
       // ADR-010: only the hub owns the switchboard. A mirror cannot dial other
-      // TUIs (uplink_attach is hub-only), so exposing the whole registry here
+      // TUIs (the attach verb is hub-only), so exposing the whole registry here
       // would advertise Attach buttons for servers this process cannot drive.
       // Scope a mirror to its own row; the hub still sees every instance.
       const registry = getRunningInstances();
@@ -2704,10 +2704,10 @@ export default function (pi: ExtensionAPI) {
           // Binding/routing commands need a real browser WS: the fake socket
           // below never closes, so start_session would leak a headless
           // backend (persistent now — no TTL to save us) and
-          // uplink_attach would leak a proxied TUI connection. The UI speaks
+          // attach would leak a proxied TUI connection. The UI speaks
           // these over /ws; over HTTP they are rejected, never half-run.
           if (command && typeof command.type === "string" &&
-            ["start_session", "new_session", "close_session", "list_sessions", "detach_session", "rpc_command", "uplink_attach", "uplink_detach", "uplink_command", "extension_ui_response", "ping"].includes(command.type)) {
+            ["start_session", "new_session", "close_session", "list_sessions", "release_session", "rpc_command", "instances", "attach", "detach", "tui_command", "extension_ui_response", "ping"].includes(command.type)) {
             res.writeHead(400, { "Content-Type": "application/json" });
             res.end(JSON.stringify({ success: false, error: `${command.type} requires a WebSocket connection`, id: command.id }));
             return;

@@ -10,9 +10,9 @@
 // check, WS router (new/start/rpc/ping/uplink/unknown; stale mirror frames
 // stay dead).
 //
-// The fake live TUI is relay-shaped, not a real pi: uplink_attach is
-// answered with uplink_attached, uplink_detach with uplink_detached, and
-// uplink_command acks success. No hub.sock listener — the stub answers
+// The fake live TUI is relay-shaped, not a real pi: attach is
+// answered with attached, detach with detached, and
+// tui_command acks success. No hub.sock listener — the stub answers
 // the relay protocol directly. drive=1 pins and the Drive/preview/banner
 // flow work against it (H8/H9/D1).
 import http from "node:http";
@@ -251,8 +251,8 @@ export function startHubStub({ port, staticDir, auth = null, version = "e2e-stub
         try {
           const command = JSON.parse(body);
           const wsOnly = ["start_session", "new_session", "close_session", "list_sessions",
-            "detach_session", "rpc_command", "extension_ui_response", "ping",
-            "uplink_list", "uplink_attach", "uplink_detach", "uplink_command"];
+            "release_session", "rpc_command", "extension_ui_response", "ping",
+            "instances", "attach", "detach", "tui_command"];
           if (command && wsOnly.includes(command.type)) {
             res.writeHead(400, { "Content-Type": "application/json" });
             res.end(JSON.stringify({ success: false, error: `${command.type} requires a WebSocket connection`, id: command.id }));
@@ -376,10 +376,10 @@ export function startHubStub({ port, staticDir, auth = null, version = "e2e-stub
       switch (msg.type) {
         case "ping": send(ws, { type: "pong" }); return;
         case "new_session":
-          ack("new_session", { sessionKey: `stub-${Date.now().toString(36)}`, cwd: msg.cwd || "/tmp/e2e" });
+          ack("new_session", { backendKey: `stub-${Date.now().toString(36)}`, cwd: msg.cwd || "/tmp/e2e" });
           return;
         case "start_session":
-          ack("start_session", { sessionKey: `stub-${Date.now().toString(36)}`, cwd: msg.cwd || "/tmp/e2e" });
+          ack("start_session", { backendKey: `stub-${Date.now().toString(36)}`, cwd: msg.cwd || "/tmp/e2e" });
           if (msg.sessionFile) {
             setTimeout(() => send(ws, { type: "session_file", sessionFile: msg.sessionFile, cwd: msg.cwd || "/tmp/e2e" }), 50);
           }
@@ -398,30 +398,30 @@ export function startHubStub({ port, staticDir, auth = null, version = "e2e-stub
           if (id) ack(inner.type || "rpc_command", {});
           return;
         }
-        case "detach_session":
+        case "release_session":
         case "close_session":
         case "list_sessions":
           ack(msg.type, msg.type === "list_sessions" ? { sessions: [] } : {});
           return;
-        case "uplink_list":
-          ack("uplink_list", { instances: [FAKE_LIVE] });
+        case "instances":
+          ack("instances", { instances: [FAKE_LIVE] });
           return;
-        case "uplink_attach": {
+        case "attach": {
           const row = msg.port === FAKE_LIVE.port ? FAKE_LIVE : null;
           send(ws, {
-            type: "uplink_attached",
+            type: "attached",
             port: msg.port, pid: msg.pid,
             sessionFile: (row && row.sessionFile) || msg.sessionFile || null,
           });
           return;
         }
-        case "uplink_detach":
-          send(ws, { type: "uplink_detached" });
+        case "detach":
+          send(ws, { type: "detached" });
           return;
-        case "uplink_command":
+        case "tui_command":
           // Relay ack (covers pollAttachedState get_state and routed
           // prompts): success with no payload, id-correlated.
-          if (id) ack("uplink_command", {});
+          if (id) ack("tui_command", {});
           return;
         default:
           // Dead contract: stale mirror frames stay dead — no answer, and

@@ -34,7 +34,7 @@ export class DialogHandler {
       this.respond(id, { cancelled: true });
       try {
         if (req?.uplink) {
-          this.wsClient.send({ type: 'uplink_command', command: { type: 'abort' } });
+          this.wsClient.send({ type: 'tui_command', command: { type: 'abort' } });
         } else if (req?.headless) {
           this.wsClient.send({ type: 'rpc_command', command: { type: 'abort' } });
         } else if (typeof this.onAbortRequest === 'function') {

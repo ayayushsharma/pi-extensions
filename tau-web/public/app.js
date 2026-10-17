@@ -182,8 +182,8 @@ const VISIBLE_MESSAGE_WINDOW = 50; // render only the last 50; older loads on de
 let restoreInFlight = false;
 let suppressHashWrite = false;
 let urlRestorePending = !!parseSessionHash()?.key; // suppresses the first server snapshot race
-let headlessSessionKey = null; // acked by start_session response; null = headless not bound
-let headlessBinding = null; // { cwd, sessionFile } — rejoin target persisted per browser
+let headlessBackendKey = null; // acked by start_session response; null = headless not bound
+let headlessBinding = null; // { cwd, sessionFile, backendKey } — rejoin target persisted per browser
 try { headlessBinding = JSON.parse(localStorage.getItem('tau-web-binding') || 'null'); } catch {}
 let uplinkActive = null; // { port, pid } while attached to a live TUI via uplink proxy
 // tau-web preview-then-drive: driving a live TUI is two-phase. Picking Drive
@@ -222,7 +222,7 @@ function serverStateOwnsView(stateFile = null) {
   return viewingActiveSession;
 }
 let rpcSeq = 0;
-const pendingRpc = new Map(); // id -> { resolve, command } for start_session / uplink_list acks
+const pendingRpc = new Map(); // id -> { resolve, command } for start_session / instances acks
 function sendRpc(command) {
   const id = `web-${Date.now().toString(36)}-${(rpcSeq++).toString(36)}`;
   return new Promise((resolve) => {
@@ -440,10 +440,10 @@ wsClient.addEventListener('connected', async () => {
     // file or a different file binds by path and lets the server resolve.
     const sameFile = !pinnedLive && (headlessBinding?.sessionFile || null) === pinned.key;
     bindHeadless(found?.project?.path || null, pinnedLive ? null : pinned.key,
-      sameFile ? headlessBinding?.sessionKey || null : null);
+      sameFile ? headlessBinding?.backendKey || null : null);
   } else {
     bindHeadless(headlessBinding?.cwd || null, headlessBinding?.sessionFile || null,
-      headlessBinding?.sessionKey || null);
+      headlessBinding?.backendKey || null);
   }
   // The server detaches uplinks on WS close; re-drive the same TUI.
   if (uplinkActive) attachUplink(uplinkActive.port, uplinkActive.pid, uplinkTargetSessionFile);
@@ -485,8 +485,8 @@ wsClient.addEventListener('rpcResponse', (e) => {
   const pend = id ? pendingRpc.get(id) : null;
   if (pend) { pendingRpc.delete(id); try { pend.resolve(response || {}); } catch {} }
   if (response?.command === 'start_session' && response?.success) {
-    headlessSessionKey = response?.data?.sessionKey || 'bound';
-  } else if (response?.command === 'uplink_list' && response?.success) {
+    headlessBackendKey = response?.data?.backendKey || 'bound';
+  } else if (response?.command === 'instances' && response?.success) {
     renderLiveSection(response?.data?.instances || []);
   } else if (response?.command === 'prompt') {
     // A rejected prompt must never be silent (ADR-007): the backend refused it
@@ -505,7 +505,7 @@ wsClient.addEventListener('rpcResponse', (e) => {
     }
   }
 });
-wsClient.addEventListener('uplinkAttached', (e) => {
+wsClient.addEventListener('attached', (e) => {
   uplinkActive = { port: e.detail.port, pid: e.detail.pid };
   // Authoritative target from the server (banner retry / reconnect paths
   // carry no file — without this the file browser keeps a stale directory).
@@ -525,8 +525,8 @@ wsClient.addEventListener('uplinkAttached', (e) => {
   closeSidebarOnMobile(); // reveal the Driving banner + live transcript
   messageRenderer.renderSystemMessage(`Now driving the live TUI on :${e.detail.port} — your prompts go to that session.`);
 });
-wsClient.addEventListener('uplinkDetached', () => {
-  // Echo of our own uplink_detach — teardown already happened synchronously
+wsClient.addEventListener('detached', () => {
+  // Echo of our own detach — teardown already happened synchronously
   // at the send site. Re-applying it here would clobber whatever view was
   // opened since (e.g. backToLive's fresh live session).
   if (!uplinkActive && !uplinkPreview && !uplinkAttachPending) return;
@@ -543,7 +543,7 @@ wsClient.addEventListener('uplinkDetached', () => {
   syncUplinkControls();
   closeSidebarOnMobile(); // reveal the Drive-again banner
 });
-wsClient.addEventListener('uplinkDead', (e) => {
+wsClient.addEventListener('tuiDead', (e) => {
   const was = uplinkActive;
   uplinkActive = null;
   uplinkAttachPending = false;
@@ -560,7 +560,7 @@ wsClient.addEventListener('uplinkDead', (e) => {
   if (e.detail.headlessContinue && was) offerHeadlessContinue(e.detail);
 });
 wsClient.addEventListener('sessionEnded', (e) => {
-  headlessSessionKey = null;
+  headlessBackendKey = null;
   messageRenderer.renderError(`Headless session ended (exit ${e.detail.code ?? '?'}). Pick a session from the sidebar to continue.`);
 });
 
@@ -574,13 +574,13 @@ wsClient.addEventListener('sessionFile', (e) => {
   const pinned = parseSessionHash();
   const key = sessionKeyOf(file);
   if (pinned?.key && pinned.key !== key) return;
-  if (!headlessBinding) headlessBinding = { cwd: e.detail?.cwd || null, sessionFile: null, sessionKey: null };
+  if (!headlessBinding) headlessBinding = { cwd: e.detail?.cwd || null, sessionFile: null, backendKey: null };
   // Keep the backend id only when this discovery belongs to the bound file
   // (or the file is still unknown) — a late event for a previous session
   // must not label the new one.
   const prevFile = headlessBinding.sessionFile || null;
-  const keepKey = !prevFile || prevFile === key ? headlessBinding.sessionKey || null : null;
-  headlessBinding = { cwd: headlessBinding.cwd || e.detail?.cwd || null, sessionFile: key, sessionKey: keepKey };
+  const keepKey = !prevFile || prevFile === key ? headlessBinding.backendKey || null : null;
+  headlessBinding = { cwd: headlessBinding.cwd || e.detail?.cwd || null, sessionFile: key, backendKey: keepKey };
   persistBinding();
   updateSessionHash(file, false);
   // Fresh headless identity: the backend is bound and the hash is pinned,
@@ -1577,7 +1577,7 @@ async function rpcCommand(cmd, statusMsg) {
       });
       data = await resp.json();
     } else if (uplinkActive) {
-      data = await sendRpc({ type: 'uplink_command', command: cmd });
+      data = await sendRpc({ type: 'tui_command', command: cmd });
     } else if (isMirrorMode && viewingActiveSession) {
       // The web server's own session lives in the same pi process as /api/rpc.
       const resp = await fetch('/api/rpc', {
@@ -1586,7 +1586,7 @@ async function rpcCommand(cmd, statusMsg) {
         body: JSON.stringify(cmd),
       });
       data = await resp.json();
-    } else if (headlessSessionKey) {
+    } else if (headlessBackendKey) {
       data = await sendRpc({ type: 'rpc_command', command: cmd });
     } else {
       const resp = await fetch('/api/rpc', {
@@ -2133,8 +2133,8 @@ async function applyFreshSession(data) {
   console.time('[NewSession] applyFreshSession (reset + bind)');
   setNewSessionStage('Starting backend…');
   const cwd = data?.data?.cwd || null;
-  headlessSessionKey = data?.data?.sessionKey || 'bound';
-  headlessBinding = { cwd, sessionFile: null, sessionKey: data?.data?.sessionKey || null };
+  headlessBackendKey = data?.data?.backendKey || 'bound';
+  headlessBinding = { cwd, sessionFile: null, backendKey: data?.data?.backendKey || null };
   persistBinding();
   await resetToScratchView();
   if (cwd) {
@@ -2478,7 +2478,7 @@ function currentConnectionInfo() {
     return { state: 'detached', label: `Detached · :${uplinkLastDetached.port}` };
   }
   const boundKey = headlessBinding?.sessionFile ? sessionKeyOf(headlessBinding.sessionFile) : null;
-  if (headlessSessionKey && boundKey && boundKey === sessionKeyOf(activeFile)) {
+  if (headlessBackendKey && boundKey && boundKey === sessionKeyOf(activeFile)) {
     return { state: 'headless', label: 'Headless runner' };
   }
   // The hub has no session of its own — never label its view "This server".
@@ -2665,41 +2665,41 @@ function routeCommand(cmd) {
   // The envelope id lets the server inject it into the forwarded command so
   // the backend's response resolves back to this browser request.
   if (uplinkActive) {
-    wsClient.send({ type: 'uplink_command', id: cmd.id, command: cmd });
+    wsClient.send({ type: 'tui_command', id: cmd.id, command: cmd });
     return;
   }
   if (isMirrorMode && viewingActiveSession) {
     wsClient.send(cmd);
     return;
   }
-  if (headlessSessionKey) {
+  if (headlessBackendKey) {
     wsClient.send({ type: 'rpc_command', id: cmd.id, command: cmd });
     return;
   }
   wsClient.send(cmd);
 }
-function bindHeadless(cwd, sessionFile, sessionKey = null, opts = {}) {
-  headlessSessionKey = null; // cleared until the ack re-arms it
+function bindHeadless(cwd, sessionFile, backendKey = null, opts = {}) {
+  headlessBackendKey = null; // cleared until the ack re-arms it
   // Reload-proof rejoin: name the exact backend from the last ack. A caller
   // key wins; otherwise keep the stored key when the file is unchanged, so a
   // plain history reselect doesn't lose the id. A stale key only misses —
   // the server falls back to the cwd+file scan, never to a wrong backend.
   const prev = headlessBinding;
   const file = sessionFile || null;
-  const key = sessionKey ?? (prev && (prev.sessionFile || null) === file ? prev.sessionKey || null : null);
-  headlessBinding = (cwd || file) ? { cwd: cwd || null, sessionFile: file, sessionKey: key || null } : null;
+  const key = backendKey ?? (prev && (prev.sessionFile || null) === file ? prev.backendKey || null : null);
+  headlessBinding = (cwd || file) ? { cwd: cwd || null, sessionFile: file, backendKey: key || null } : null;
   persistBinding();
   const payload = { type: 'start_session' };
   if (cwd) payload.cwd = cwd;
   if (file) payload.sessionFile = file;
-  if (key) payload.sessionKey = key;
+  if (key) payload.backendKey = key;
   sendRpc(payload).then((data) => {
     if (data && !data.timeout) {
-      headlessSessionKey = data?.data?.sessionKey || 'bound';
+      headlessBackendKey = data?.data?.backendKey || 'bound';
       // Learn the backend id — but only if the tab hasn't moved on to
       // another file while the ack was in flight.
-      if (data?.data?.sessionKey && headlessBinding && (headlessBinding.sessionFile || null) === file) {
-        headlessBinding.sessionKey = data.data.sessionKey;
+      if (data?.data?.backendKey && headlessBinding && (headlessBinding.sessionFile || null) === file) {
+        headlessBinding.backendKey = data.data.backendKey;
         persistBinding();
       }
       // Rejoined a backend that's still running (e.g. returned to a
@@ -2781,7 +2781,7 @@ function refreshWatchedHistory(entries, meta = null) {
 }
 async function refreshUplinkList() {
   try {
-    const data = await sendRpc({ type: 'uplink_list' });
+    const data = await sendRpc({ type: 'instances' });
     if (data && !data.timeout) renderLiveSection(data?.data?.instances || []);
   } catch {}
 }
@@ -2992,7 +2992,7 @@ async function backToLive(sessionFile) {
   // Leaving a driven TUI for the server session ends the drive: prompts
   // must not keep flowing to a TUI the view no longer shows.
   if (uplinkActive) {
-    wsClient.send({ type: 'uplink_detach' });
+    wsClient.send({ type: 'detach' });
     uplinkActive = null;
   }
   uplinkPreview = null;
@@ -3038,7 +3038,7 @@ async function previewAttach(port, pid, sessionFile, lastActive, opts = {}) {
   // Switching targets: drop local "driving" state; the server detaches the old
   // uplink when the new attach arrives.
   if (uplinkActive && uplinkActive.port !== port) {
-    wsClient.send({ type: 'uplink_detach' });
+    wsClient.send({ type: 'detach' });
     uplinkActive = null;
     uplinkLastDetached = null;
     syncUplinkControls();
@@ -3047,7 +3047,7 @@ async function previewAttach(port, pid, sessionFile, lastActive, opts = {}) {
   uplinkLastDetached = null; // a new preview supersedes any frozen-detached view
   uplinkTargetSessionFile = sessionFile || null;
   // URL pin (per-tab sessions) — skipped on restore so a drive=1 pin is not
-  // downgraded before uplinkAttached confirms the attach.
+  // downgraded before the attached frame confirms the attach.
   if (!opts.fromRestore) updateSessionHash(sessionFile, false);
   const found = findSidebarSession(sessionFile);
   uplinkPreview = {
@@ -3123,13 +3123,13 @@ async function attachUplink(port, pid, sessionFile) {
   uplinkAttachPending = true;
   uplinkAttachError = null;
   renderSessionBanner();
-  wsClient.send({ type: 'uplink_attach', port, pid });
+  wsClient.send({ type: 'attach', port, pid });
 }
 
 function detachUplink() {
   if (!uplinkActive) return;
   const prev = uplinkActive;
-  wsClient.send({ type: 'uplink_detach' });
+  wsClient.send({ type: 'detach' });
   uplinkActive = null;
   uplinkPreview = null;
   uplinkAttachPending = false;
@@ -3257,7 +3257,7 @@ function applyAttachedState(d) {
 async function pollAttachedState() {
   if (!uplinkActive) return;
   try {
-    const data = await sendRpc({ type: 'uplink_command', command: { type: 'get_state' } });
+    const data = await sendRpc({ type: 'tui_command', command: { type: 'get_state' } });
     if (data && !data.timeout && data.success && data.data) applyAttachedState(data.data);
   } catch {}
 }

@@ -713,7 +713,7 @@ function handleCompactionStart(event) {
   }
   el.classList.remove('compaction-done');
   el.innerHTML = `<span class="compaction-spinner svg-wrap">${icon('spinner', 13)}</span> Compacting context${reason ? ` — ${escapeHtml(reason)}` : ''}…`;
-  scrollToBottom();
+  messageRenderer.scrollToBottom();
 }
 
 function handleCompactionEnd(event) {
@@ -3149,7 +3149,7 @@ function offerHeadlessContinue(detail) {
     bindHeadless(null, null);
     messageRenderer.renderSystemMessage('Continuing headless — prompts now run in a background backend.');
   });
-  scrollToBottom();
+  messageRenderer.scrollToBottom();
 }
 function renderLiveSection(instances) {
   const host = document.getElementById('live-section');

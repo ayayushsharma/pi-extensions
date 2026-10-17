@@ -32,6 +32,8 @@ const ORDER = [
   "h16-markup-aria.test.mjs",
   "h17-hide-costs.test.mjs",
   "h18-class-collision.test.mjs",
+  "h19-picker-start.test.mjs",
+  "h20-free-calls.test.mjs",
   "d1-drive-attach.test.mjs",
   "d5-auth.test.mjs",
   "p2-guards.test.mjs",

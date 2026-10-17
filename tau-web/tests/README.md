@@ -16,7 +16,7 @@ tests/
   hub-stub.mjs       # CI hub: headless-only HTTP + WS contracts without a pi process
   hub-real.mjs       # Real hub boot (`pi -e ./tau-web --mode rpc`, stdin held open)
   browser.mjs        # CDP driver: system Chrome, pageerror-first, screenshots on fail
-  e2e/               # one file per case (H1–H18, D1/D5, P2, X1–X5)
+  e2e/               # one file per case (H1–H20, D1/D5, P2, X1–X5)
 ```
 
 ## Run
@@ -121,13 +121,24 @@ Chrome):
   preference applied on the next load. Its `.visible` class is forced
   before reading the pill, so the check is about the toggle, not about
   whether the stub happened to have a nonzero cost.
-- H18: pure-Node class-namespace guard — the `ctx-*` variant classes
-  the context popover applies to its bar segments and legend dots are
-  parsed out of `app.js` and asserted to have matching rules in
-  `style.css` and to not be bare global classes. (The original
-  `.messages` variant collided with the transcript scroller: `flex: 1`
-  + scroller padding stretched the legend row to 271px and the popover
-  to 443px.)
+- H18: pure-Node class-namespace guard — the `ctx-*` variant classes the
+  context popover applies to its bar segments and legend dots are parsed
+  out of `app.js` and asserted to have matching rules in `style.css` and
+  to not be bare global classes. (The original `.messages` variant
+  collided with the transcript scroller: `flex: 1` + scroller padding
+  stretched the legend row to 271px and the popover to 443px.)
+- H19: session picker → "Start new session" on a 390×844 phone viewport
+  with the drawer open: the click must bind a fresh session (localStorage
+  `tau-web-binding` carries the new `stub-…` sessionKey), close the
+  picker, leave the drawer collapsed and the overlay hidden, and raise no
+  page error. Guard against `S.opts` being read after
+  `closeSessionPicker()` nulls `S` (that throw made the button a no-op
+  and left the drawer + overlay covering the composer).
+- H20: pure-Node guard that every bare call in `public/app.js` resolves
+  to a declaration, import, parameter or browser global. `scrollToBottom`
+  existed only as a renderer method, so the auto-compaction handler and
+  the headless-continue path threw `ReferenceError` in production while
+  `node --check` stayed green.
 - D1: relay frames answered, dead mirror frames silent, socket alive.
 - D5: auth — 401 + overlay, login → WS, logout revokes.
 - P2: hardening — traversal, rebinding, dead WS contract.

@@ -94,8 +94,9 @@ function ensureShell() {
   ov.querySelector('#sp-start').addEventListener('click', () => {
     const starter = ov.querySelector('#sp-starter').value.trim();
     const dir = S.dir;
+    const onNew = S.opts.onNew; // capture before closeSessionPicker() nulls S
     closeSessionPicker();
-    S.opts.onNew?.(dir, starter);
+    onNew?.(dir, starter);
   });
   ov.querySelector('#sp-resume').addEventListener('click', () => choose('resume'));
   ov.querySelector('#sp-fork').addEventListener('click', () => choose('fork'));

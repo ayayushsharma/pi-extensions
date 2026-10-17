@@ -462,3 +462,21 @@ asserting the ARIA state tracks the visual one. It fails on the pre-fix tree
 (38 markup issues; `aria-selected`/`aria-expanded` absent) — see
 `docs/testing.md`. `#model-dropdown-menu`'s structure is unchanged, so H15's
 scroll/pin contract still holds.
+
+## 13. Post-review smoke findings (2026-10-17)
+
+Two pre-existing bugs surfaced on the phone after the fix loop, both present
+on `main` since the unified UI landed, neither caught by the review or by
+`node --check`.
+
+| # | Symptom | Root cause | Fix | Guard |
+|---|---------|-----------|-----|-------|
+| N1 | Sidebar `+` → "Start new session" did nothing: no session created, picker closed, and on phones the drawer's overlay stayed over the composer so a prompt could not be sent ("new session + prompt does nothing") | `session-picker.js` `#sp-start` read `S.opts.onNew` *after* `closeSessionPicker()` had set `S = null` → `TypeError: Cannot read properties of null (reading 'opts')` inside the click handler. The drawer then stayed open because `onNew` never ran, so `resetToScratchView()`'s `closeSidebarOnMobile()` never fired | capture `onNew` before closing (`public/session-picker.js`) | H19 |
+| N2 | Auto-compaction start (and the "Live session ended → Continue headless" affordance) threw `ReferenceError: scrollToBottom is not defined` in the browser; on the phone this was reported through `/api/client-error`. The compaction handler died after already flipping the header to "Compacting…" | `app.js` called `scrollToBottom()` as a free function, but it exists only as `messageRenderer.scrollToBottom()` / `toolCardRenderer.scrollToBottom()`. The identifier was never declared anywhere in the module's history | call `messageRenderer.scrollToBottom()` at both sites | H20 |
+
+Both were reproduced live (phone-emulated Chromium against the running hub),
+fixed, and re-verified end-to-end: picker start binds the session, closes the
+picker/drawer, and a prompt sent afterwards streams its reply. H19 fails with
+the old handler (the binding never changes, page error), H20 fails with the
+old calls (unresolved `scrollToBottom`). Neither bug was introduced by the
+review loop — `git show main:...` carries both verbatim.

@@ -197,6 +197,8 @@ P0 — hub alive, core loop (Layers A–C, CI):
 | H16 | stub hub + browser (static audit + live clicks) | audit the served `/hub/` HTML, then open settings, switch tabs, toggle a switch, pick a model, open the thinking menu | no markup issue (tag balance, duplicate ids, button `type`, accessible names, labelled inputs, dialog/switch/tab/listbox attributes with live id targets); `aria-expanded`/`aria-selected`/`aria-checked` follow the widgets, and the announced model row is the painted `.active` one |
 | H17 | stub hub + browser | flip Settings → Appearance "Hide costs", reload, flip it back | toggle `on` class, `aria-checked` and `localStorage.tau-hide-costs` agree; `body.hide-costs` hides the header cost pill and a planted `.message-usage` span; the pref is re-applied on load |
 | H18 | pure Node (no hub, no Chrome) | parse `app.js` segment colours + `style.css` selectors | every `ctx-*` variant has bar + legend rules and none of them is a bare global class (the old `.messages` variant inherited the transcript scroller's flex/padding) |
+| H19 | stub hub + browser, 390×844 phone viewport, drawer open | Settings-independent: sidebar `+` → Start/Resume picker → "Start new session" | the click binds a fresh session (`tau-web-binding` gets the new `stub-…` sessionKey), the picker closes, the drawer stays collapsed with no overlay, zero page errors (a null-`S` read would throw and never bind) |
+| H20 | pure Node (no hub, no Chrome) | strip comments/strings/templates/regex from `app.js`, collect declarations/imports/params | every bare call resolves; `scrollToBottom` (renderer method only) threw `ReferenceError` in the compaction + headless-continue handlers |
 
 Hardening regressions (from `docs/code-review.md` §11; real hub,
 SKIP without `pi`):
@@ -276,6 +278,8 @@ P2 — hardening:
 | Hub markup well-formedness + ARIA state (buttons, dialogs, tabs, switches, listboxes, toggles) | `public/hub/index.html`, `public/app.js` (picker/tabs/toggles), `public/dialogs.js` | H16 |
 | Display prefs (`Hide costs`, `Show thinking`) + settings toggles | `public/hub/index.html`, `public/app.js` (toggle wiring), `public/style.css` (`body.hide-*`) | H17 |
 | Context popover geometry (bar segments + legend dots) | `public/app.js` (segment colours), `public/style.css` (`.ctx-*` variants) | H18 |
+| Session picker → Start new session (bind + phone drawer) | `public/session-picker.js`, `public/app.js` (`applyFreshSession`/`resetToScratchView`) | H19 |
+| Free-function wiring in `app.js` (undefined-helper crashes) | `public/app.js` | H20 |
 | Session picker (summaries/mkdir/fork) | `mirror-server.ts`, `app.js` | H13 |
 | Attach relay + dead frames | `mirror-server.ts` (relay block), `lib/hub-socket.ts` | H7–H9, D1 |
 | Live processes scan/kill | `lib/processes.ts`, `headless-bridge.ts` (`closeByPid`/`childPids`), `app.js` server pane | H10 (stub + real) |

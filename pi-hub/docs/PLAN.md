@@ -323,6 +323,20 @@ Deployment (myserver / Termux, per its AGENTS.md):
 LOC budget: server ≈ 1.9k, client JS ≈ 3.6k, CSS ≈ 1.8k, HTML ≈ 0.3k,
 tests ≈ 2.4k → **≈ 10k vs tau-web's ≈ 23.6k incl. tests**.
 
+## 7.1 Known gaps (next session)
+
+- History `readWindow` still reads the whole JSONL; the P3 tail-read budget
+  is not met yet. Session list caching is in place (`mtime+size`, 15 s TTL).
+- Reconnect re-binds and refetches the window; the per-runner 200-event ring
+  exists server-side but the client does not request `replayFrom` yet.
+- Fork/rename are API-complete with no UI affordance; export is not wired.
+- The selenium/geckodriver backend is a CLI smoke only (interaction-heavy
+  browser cases still require Playwright).
+- `tests/cases.json` registry + meta-test not yet added (results print by
+  name and fail the run).
+- LRU eviction, TTL reaping and the pool cap have unit-level coverage only
+  (integration covers close/rejoin/reuse).
+
 ## 8. Open decisions (need sign-off)
 
 1. **Playwright**: `@playwright/test@1.64` as devDep, `channel: "chrome"`

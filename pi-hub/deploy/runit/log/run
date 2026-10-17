@@ -1,0 +1,6 @@
+#!/data/data/com.termux/files/usr/bin/sh
+# svlogd for pi-hub (same shape as the tau-web service logger).
+pwd=${PWD%/*}
+service=${pwd##*/}
+mkdir -p "$LOGDIR/sv/$service"
+exec svlogd -tt "$LOGDIR/sv/$service"

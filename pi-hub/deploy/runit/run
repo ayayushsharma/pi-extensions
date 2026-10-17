@@ -1,0 +1,92 @@
+#!/data/data/com.termux/files/usr/bin/sh
+# pi-hub — runit service (supervised, auto-restarts on crash).
+#
+# SECURITY MODEL (same as the tau-web service this replaces):
+#   * Binds 127.0.0.1 ONLY. Remote access arrives via the cloudflared tunnel
+#     (pi.sharmaayush.com -> localhost:12045); nothing else can reach it.
+#   * Cookie auth is mandatory: refuse to start without PI_HUB_USER/PASS.
+#   * Credentials are never printed; children never receive them.
+#   * Host/Origin allowlist admits only the tunnel hostname.
+#   * Phone guardrail: at most 3 concurrent headless runners.
+export HOME=/data/data/com.termux/files/home
+export PREFIX=/data/data/com.termux/files/usr
+export PATH=$PREFIX/bin:$PREFIX/bin/applets:/system/bin:/product/bin
+export TMPDIR=$PREFIX/tmp
+
+HUB_DIR=$HOME/projects/personal/pi-extensions/pi-hub
+NODE=$PREFIX/bin/node
+BUNDLE=$PREFIX/lib/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js
+FIFO=$PREFIX/tmp/pi-hub-stdin.fifo
+PORT=12045
+
+# Auth + any overrides come from ~/.env (mode 600, never logged).
+if [ -f "$HOME/.env" ]; then
+  set -a
+  # shellcheck disable=SC1091
+  . "$HOME/.env"
+  set +a
+fi
+
+if [ -z "$PI_HUB_USER" ] || [ -z "$PI_HUB_PASS" ]; then
+  echo "pi-hub: refusing to start without PI_HUB_USER/PI_HUB_PASS in ~/.env" >&2
+  exit 1
+fi
+
+export PI_HUB_HOST=127.0.0.1
+export PI_HUB_PORT=$PORT
+export PI_HUB_STATIC_DIR=$HUB_DIR/public
+export PI_HUB_ALLOWED_HOSTS=pi.sharmaayush.com
+export PI_HUB_MAX_HEADLESS=3
+# Spawned by runsv (no LD_PRELOAD): bare `pi` dies with ENOENT on its
+# `#!/usr/bin/env node` shebang. The wrapper execs node + the bundle.
+export PI_HUB_PI_BIN=$HOME/scripts/pi-node.sh
+# Keep an installed tau-web inert while both packages are present.
+export TAU_DISABLED=1
+unset PI_HUB_DISABLED
+
+if [ ! -x "$NODE" ]; then
+  echo "pi-hub: no executable $NODE" >&2
+  exit 1
+fi
+if [ ! -f "$BUNDLE" ]; then
+  echo "pi-hub: no bundle $BUNDLE (reinstall pi)" >&2
+  exit 1
+fi
+
+# Drop stale jiti bytecode (needed after any .ts change).
+rm -rf "$TMPDIR/jiti"
+
+cd "$HUB_DIR" || exit 1
+
+# Fail loudly — instead of bumping to :12046 while the tunnel still points at
+# :12045 — when the canonical port is busy. runsv retries with backoff.
+if ! "$NODE" -e '
+  const net = require("node:net");
+  const s = net.connect({ port: Number(process.env.PI_HUB_PORT), host: "127.0.0.1" });
+  s.on("connect", () => { s.destroy(); process.exit(0); });
+  s.on("error", () => process.exit(1));
+  setTimeout(() => process.exit(1), 1500);
+' 2>/dev/null; then
+  echo "pi-hub: :$PORT is busy — stopping the other holder, then \`sv restart pi-hub\`" >&2
+  exit 1
+fi
+
+# Runit-safe stdin: pi --mode rpc treats stdin EOF as orderly shutdown and
+# runsv hands us /dev/null, so feed a FIFO held open by a sibling sleeper.
+# Wait on the hub pid only (a dead hub must not be masked by a live sleeper).
+[ -p "$FIFO" ] || { rm -f "$FIFO" 2>/dev/null; mkfifo "$FIFO" && chmod 600 "$FIFO"; } || exit 1
+_cleanup() {
+  for _p in $(ps -o pid= -o ppid= -o args= 2>/dev/null | awk -v me="$$" '$2==me {print $1}'); do
+    kill -TERM "$_p" 2>/dev/null
+  done
+  unset _p
+}
+trap '_cleanup; exit 0' TERM INT
+sleep infinity > "$FIFO" &
+"$NODE" "$BUNDLE" -e . --mode rpc < "$FIFO" 2>&1 &
+HUB_PID=$!
+wait "$HUB_PID"
+rc=$?
+_cleanup 2>/dev/null
+[ "$rc" -ne 0 ] && sleep 2
+exit "$rc"

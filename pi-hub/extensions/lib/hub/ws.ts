@@ -249,8 +249,6 @@ export class WsHub {
     } else if (msg.dirName && msg.file) {
       const abs = this.deps.resolveSessionPath(msg.dirName, msg.file);
       runner = await this.deps.registry.bindHeadless(client.ws, { cwd: msg.cwd || this.deps.defaultCwd, absFile: abs });
-    } else if (msg.file) {
-      runner = await this.deps.registry.bindHeadless(client.ws, { cwd: msg.cwd || this.deps.defaultCwd, absFile: String(msg.file) });
     } else {
       const cwd = String(msg.cwd || this.deps.defaultCwd);
       runner = await this.deps.registry.bindHeadless(client.ws, { cwd, absFile: null });

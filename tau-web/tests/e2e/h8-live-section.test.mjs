@@ -4,6 +4,7 @@ import { startHubStub } from "../hub-stub.mjs";
 import { launchBrowser } from "../browser.mjs";
 import { assert, assertPortFree, basePort, PUBLIC_DIR } from "../helpers.mjs";
 
+export const requires = ["browser"];
 export const id = "H8";
 export const title = "Live section lists the running TUI with Drive controls";
 

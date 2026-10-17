@@ -28,7 +28,9 @@ Test layers, cheapest first:
 | D. Full stack | real hub | real hub + real headless children (+ real dialed-in TUIs for attach) | headless round-trip, real relay, auth, dialogs (opt-in via `TEST_REAL_HUB=1`) |
 
 Layers A–C run anywhere (CI-friendly, no TTY, no `pi` binary). Layer D
-needs a real `pi` process and stays opt-in.
+needs a real `pi` process. Browser cases need system Chrome. Any case
+whose requirement is missing is reported as `SKIP (<reason>)` and the
+run stays green; `TAU_STRICT=1` turns skips into failures for CI.
 
 ## 2. Environment contract
 
@@ -47,13 +49,19 @@ TAU_MIRROR_PORT=<port> TAU_HOST=127.0.0.1 TAU_STATIC_DIR=$PWD/public \
 | `TAU_ROLE` | force `hub`/`mirror` without relying on pi mode detection |
 | `TAU_DISABLED=1` | injected into headless children; also kills the server (negative case) |
 | `TAU_HEADLESS_TTL_MS` / `TAU_MAX_HEADLESS` | small/1 values for reap + LRU-eviction cases |
+| `TAU_AUTH_TOKEN_TTL_MS` | token lifetime override (X4 sets 400ms to watch expiry) |
+| `TAU_FS_ROOTS` | extra allowed filesystem roots (X1 pins its fixture dirs) |
+| `CHROME_BIN` / `PI_BIN` | binary overrides for the browser / real-hub layers |
+| `TAU_NO_BROWSER=1` / `TAU_NO_PI=1` | force-SKIP a layer instead of probing |
+| `TAU_STRICT=1` | exit 1 if any case was skipped |
 
 Hygiene per run (the suite must be re-runnable, ports must not bump):
 
 - Kill by **parent PID** (`pkill -P <hubpid>` for children, then the hub).
   Never `pkill -f <pattern>` — the pattern matches the killer's own
   command line and suicides mid-run (exit 143, half-torn-down)
-  (learned the hard way).
+  (learned the hard way). On hosts without `pkill` (some Termux
+  installs), `helpers.mjs` scans `/proc` for descendants instead.
 - Clear the instance registry (`~/.pi/tau-instances/*.json`) and confirm
   `ss -tln` shows the test ports free.
 - Bump no ports implicitly: two servers on one port → the second bumps
@@ -181,6 +189,21 @@ P0 — hub alive, core loop (Layers A–C, CI):
 | H8 | stub hub + browser | read the hub shell DOM | `#live-section` lists RUNNING TUIs with Drive; banner hidden pre-preview |
 | H9 | stub hub + browser | Drive → Cancel → Drive → Drive this TUI → Detach | preview banner → cancel clears → Driving banner + notice → Drive-again |
 | H10 | stub hub + browser; `TEST_REAL_HUB=1` re-runs against a real hub + `exec -a pi sleep` double | Settings → Server lists fixture rows with owner tags; kill removes the row; `400` bad/self, `404` stale (stub asserts UI, real asserts scan + reap) |
+| H11 | real hub (`TEST_REAL_HUB=1`; self-SKIP otherwise) | session rejoin never re-sends `switch_session`, ack carries `isAgentRunning`, `/api/headless/status` tracks the run |
+| H12 | real hub | `/api/files/content` jails reads to the viewed session's cwd |
+| H13 | real hub | session-picker summaries + mkdir jail + fork |
+| H14 | pure Node (no hub, no Chrome) | hostile image blocks accepted/rejected by `isValidMessageImage`; `%%CODEBLOCK_n%%`-style placeholders stay literal (B1/B2/S1) |
+
+Hardening regressions (from `docs/code-review.md` §11; real hub,
+SKIP without `pi`):
+
+| # | Covers | Assert |
+|---|---|---|
+| X1 | S3, S4, S4b, S14 | symlinked preview escape 403, dangling 404, non-image 415, `dir.png` 404, SVG attachment+sandbox, `/api/open` escape, mkdir jail incl. symlinked parent, `export_html` store jail |
+| X2 | S5, S7 | 300 KiB JSON body → 413 + health OK; 20 beacons → 429; sessions API unaffected |
+| X3 | S6, S11 | nosniff/DENY/no-referrer/`frame-ancestors 'none'` on `/`, `/hub/`, health, 401s; no CORS for hostile `Origin` |
+| X4 | S5, S8, S12, S13 | oversized login 413; bad-login backoff; cookie `HttpOnly`/`SameSite=Lax`/`Max-Age`; TTL expiry → 401 + relogin; `set_auth` re-auth |
+| X5 | B3 | invalid cwd refused; dead spawn leaves no zombie binding; rejoin reaped |
 
 P1 — sessions, dialogs, dead contracts (C–D):
 
@@ -212,6 +235,20 @@ P2 — hardening:
   `CACHE_NAME` bump is covered by the SW case above.
 - **Second-server port bump**: two hubs on one port → silent +1 with
   stale code. Pre-flight port check (§2) exists for this.
+- **`saveTauSetting` ignores `PI_CODING_AGENT_DIR`**: it writes
+  `$HOME/.pi/agent/settings.json` (and only *updates* an existing
+  file). Real-hub cases that toggle auth must run with a throwaway
+  `HOME` and a seeded settings file, or the developer's real config
+  gets `authEnabled:false` persisted into it (X4).
+- **Local commands don't answer as `rpc_event`**: top-level WS frames
+  like `export_html` / `set_auth` reply with a plain
+  `{type:"response"}` (the browser reaches them through `/api/rpc`),
+  unlike `start_session`/`list_sessions`, which are `rpc_event`-wrapped.
+  Probes must use the same route the browser uses.
+- **Jail fixtures must live outside the repo**: the repo checkout is a
+  configured project root, so an in-repo "outside" directory is still
+  inside an allowed root and false-passes (X1 uses `mkdtemp()` in the
+  OS temp dir).
 - **`pkill -f` suicide** (§2): kill by parent PID only.
 - **Stdin-closed hub exit**: boot helper must hold stdin open or the hub
   vanishes mid-suite with no error.
@@ -225,8 +262,13 @@ P2 — hardening:
 
 | Area | Files | Layers |
 |---|---|---|
-| Boot/role/static/auth | `extensions/mirror-server.ts`, `lib/config.ts` | H1, P2 |
-| WS router + headless spawn/stdio/TTL/LRU | `mirror-server.ts`, `headless-bridge.ts` | H6, P2 |
+| Boot/role/static/auth | `extensions/mirror-server.ts`, `lib/config.ts` | H1, P2, X3, X4 |
+| WS router + headless spawn/stdio/TTL/LRU | `mirror-server.ts`, `headless-bridge.ts` | H6, P2, X5 |
+| FS jails (preview/open/mkdir/files/export) | `mirror-server.ts` | H12, X1 |
+| Request/response hardening (body cap, beacon cap, headers, CORS) | `mirror-server.ts` | X2, X3 |
+| Auth lifecycle (login cap, backoff, cookie, TTL, set_auth) | `mirror-server.ts` | D5, X4 |
+| Renderer safety (images, markdown placeholders) | `public/message-renderer.js`, `public/markdown.js` | H14 |
+| Session picker (summaries/mkdir/fork) | `mirror-server.ts`, `app.js` | H13 |
 | Attach relay + dead frames | `mirror-server.ts` (relay block), `lib/hub-socket.ts` | H7–H9, D1 |
 | Live processes scan/kill | `lib/processes.ts`, `headless-bridge.ts` (`closeByPid`/`childPids`), `app.js` server pane | H10 (stub + real) |
 | Dialog relay | `mirror-server.ts`, `public/dialogs.js` | D2 (manual) |

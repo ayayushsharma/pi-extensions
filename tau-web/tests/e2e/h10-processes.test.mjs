@@ -9,6 +9,7 @@ import { bootRealHub } from "../hub-real.mjs";
 import { launchBrowser } from "../browser.mjs";
 import { assert, assertPortFree, basePort, PUBLIC_DIR, fetchJson, waitFor } from "../helpers.mjs";
 
+export const requires = ["browser"];
 export const id = "H10";
 export const title = "live pi processes list + kill (stub UI, real scan/kill)";
 

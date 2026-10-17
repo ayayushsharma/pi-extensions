@@ -3,6 +3,7 @@ import { startFakeBackend } from "../fake-backend.mjs";
 import { launchBrowser } from "../browser.mjs";
 import { assert, assertPortFree, basePort, PUBLIC_DIR } from "../helpers.mjs";
 
+export const requires = ["browser"];
 export const id = "H3";
 export const title = "late session_file pins #session + tab";
 

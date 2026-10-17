@@ -5,6 +5,7 @@ import { startHubStub } from "../hub-stub.mjs";
 import { launchBrowser } from "../browser.mjs";
 import { assert, assertPortFree, basePort, fetchJson, PUBLIC_DIR } from "../helpers.mjs";
 
+export const requires = ["browser"];
 export const id = "D5";
 export const title = "auth: 401 + overlay, login → WS, logout revokes";
 

@@ -2,23 +2,49 @@
 // Uses `playwright-core` if installed (same selectors/assertions), else a
 // raw-CDP client over the existing `ws` dependency. Every page attaches a
 // pageerror listener; any uncaught exception fails the run (§6 zero-tolerance).
-import { spawn, execSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { WebSocket } from "ws";
-import { getFreePort, waitFor, TMP_DIR } from "./helpers.mjs";
+import { getFreePort, waitFor, TMP_DIR, skipCase } from "./helpers.mjs";
 
-function chromeBin() {
+// Chrome/Chromium lookup without `which` (absent on some Termux installs):
+// explicit env → well-known Linux paths → every PATH entry. Returns null when
+// nothing is found so the runner can SKIP browser cases instead of crashing.
+const CHROME_NAMES = [
+  "google-chrome", "google-chrome-stable", "chromium", "chromium-browser",
+  "chrome", "brave-browser", "brave", "msedge",
+];
+
+function findOnPath(name) {
+  const dirs = String(process.env.PATH || "").split(path.delimiter).filter(Boolean);
+  const exts = process.platform === "win32" ? [".exe", ".cmd", ""] : [""];
+  for (const dir of dirs) {
+    for (const ext of exts) {
+      const p = path.join(dir, name + ext);
+      try { if (fs.statSync(p).isFile()) return p; } catch { /* next */ }
+    }
+  }
+  return null;
+}
+
+export function findChrome() {
   if (process.env.CHROME_BIN && fs.existsSync(process.env.CHROME_BIN)) return process.env.CHROME_BIN;
   for (const c of ["/opt/google/chrome/chrome", "/usr/bin/google-chrome-stable", "/usr/bin/google-chrome"]) {
     if (fs.existsSync(c)) return c;
   }
-  try {
-    const out = execSync("which google-chrome-stable || which google-chrome || which chromium", { encoding: "utf8" }).trim().split("\n")[0];
-    if (out && fs.existsSync(out)) return out;
-  } catch {}
-  throw new Error("no system Chrome found (need /opt/google/chrome/chrome or google-chrome-stable)");
+  for (const name of CHROME_NAMES) {
+    const p = findOnPath(name);
+    if (p) return p;
+  }
+  return null;
+}
+
+/** True when browser-layer cases can run on this host. */
+export function browserAvailable() {
+  if (process.env.TAU_NO_BROWSER === "1") return false;
+  return !!findChrome();
 }
 
 async function tryPlaywright() {
@@ -157,10 +183,12 @@ class CdpPage {
 }
 
 export async function launchBrowser({ viewport = { width: 1280, height: 800 } } = {}) {
+  if (process.env.TAU_NO_BROWSER === "1") skipCase("browser cases disabled (TAU_NO_BROWSER=1)");
+  const bin = findChrome();
+  if (!bin) skipCase("no Chrome/Chromium on this host (install one, set CHROME_BIN, or TAU_NO_BROWSER=1 to silence)");
   // Prefer playwright-core when present (doc §10); same contract otherwise.
   const pwChromium = await tryPlaywright();
   if (pwChromium) {
-    const bin = chromeBin();
     const browser = await pwChromium.launch({ executablePath: bin, args: ["--no-sandbox"] });
     const ctx = await browser.newContext({ viewport });
     const page = await ctx.newPage();
@@ -197,7 +225,6 @@ export async function launchBrowser({ viewport = { width: 1280, height: 800 } } 
   }
 
   // Raw CDP path (zero new deps).
-  const bin = chromeBin();
   const dbgPort = await getFreePort();
   const userDir = fs.mkdtempSync(path.join(os.tmpdir(), "tau-e2e-chrome-"));
   const proc = spawn(bin, [

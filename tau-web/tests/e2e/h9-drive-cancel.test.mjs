@@ -5,6 +5,7 @@ import { startHubStub } from "../hub-stub.mjs";
 import { launchBrowser } from "../browser.mjs";
 import { assert, assertPortFree, basePort, PUBLIC_DIR } from "../helpers.mjs";
 
+export const requires = ["browser"];
 export const id = "H9";
 export const title = "preview-then-drive flow: preview, cancel, drive, detach";
 

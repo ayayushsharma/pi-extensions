@@ -15,8 +15,9 @@ import os from "node:os";
 import path from "node:path";
 import { WebSocket } from "ws";
 import { bootRealHub } from "../hub-real.mjs";
-import { assert, assertPortFree, basePort, TMP_DIR, ensureTmp, waitFor, sleep } from "../helpers.mjs";
+import { assert, assertPortFree, basePort, TMP_DIR, ensureTmp, waitFor, sleep, skipCase } from "../helpers.mjs";
 
+export const requires = () => (process.env.TEST_REAL_HUB === "1" ? ["pi"] : []);
 export const id = "H11";
 export const title = "session rejoin: no re-switch + running state for the background watch";
 
@@ -70,8 +71,7 @@ function switchCount(logFile, sessionFile) {
 
 export async function run() {
   if (process.env.TEST_REAL_HUB !== "1") {
-    console.log("  SKIP H11 (needs TEST_REAL_HUB=1: asserts real-hub registry behavior the stub cannot cover)");
-    return;
+    skipCase("needs TEST_REAL_HUB=1: asserts real-hub registry behavior the stub cannot cover");
   }
   ensureTmp();
   const tag = `h11-${process.pid}`;

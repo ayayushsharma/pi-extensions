@@ -4,6 +4,7 @@ import { startStaticServer } from "../static-server.mjs";
 import { launchBrowser, VIEWPORTS } from "../browser.mjs";
 import { assert, assertPortFree, basePort, PUBLIC_DIR } from "../helpers.mjs";
 
+export const requires = ["browser"];
 export const id = "H2";
 export const title = "static-only renders with zero pageerrors (desktop + mobile)";
 

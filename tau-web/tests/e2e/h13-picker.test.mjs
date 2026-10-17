@@ -11,6 +11,7 @@ import path from "node:path";
 import { bootRealHub } from "../hub-real.mjs";
 import { assert, assertPortFree, basePort, TMP_DIR, ensureTmp } from "../helpers.mjs";
 
+export const requires = ["pi"];
 export const id = "H13";
 export const title = "picker endpoints: summaries + mkdir + fork";
 

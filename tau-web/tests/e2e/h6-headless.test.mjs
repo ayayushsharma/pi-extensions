@@ -7,6 +7,7 @@ import { startHubStub } from "../hub-stub.mjs";
 import { bootRealHub } from "../hub-real.mjs";
 import { assert, assertPortFree, basePort, PUBLIC_DIR, waitFor } from "../helpers.mjs";
 
+export const requires = () => (process.env.TEST_REAL_HUB === "1" ? ["pi"] : []);
 export const id = "H6";
 export const title = "start_session + prompt HEADLESS-OK round-trip";
 

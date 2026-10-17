@@ -4,6 +4,7 @@ import { startStaticServer } from "../static-server.mjs";
 import { launchBrowser } from "../browser.mjs";
 import { assert, assertPortFree, basePort, PUBLIC_DIR } from "../helpers.mjs";
 
+export const requires = ["browser"];
 export const id = "H4";
 export const title = "disconnected + shows exact fail-fast (no 15s wait)";
 export const FAILFAST =

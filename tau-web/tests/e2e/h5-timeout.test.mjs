@@ -4,6 +4,7 @@ import { startFakeBackend } from "../fake-backend.mjs";
 import { launchBrowser } from "../browser.mjs";
 import { assert, assertPortFree, basePort, PUBLIC_DIR } from "../helpers.mjs";
 
+export const requires = ["browser"];
 export const id = "H5";
 export const title = "no-ack backend shows exact 15s timeout message";
 export const TIMEOUT_MSG =

@@ -98,13 +98,13 @@ Unified envelope: every backend event arrives as `{type: "rpc_event", event}`.
 
 | Client → server | Effect |
 |---|---|
-| `start_session {cwd?, sessionFile?}` | bind (or rejoin) headless backend; ack `{sessionKey}` |
+| `start_session {cwd?, sessionFile?, backendKey?}` | bind (or rejoin) headless backend; ack `{backendKey}` |
 | `rpc_command {command}` | forward to headless stdin (e.g. `{type:"prompt"}`, `{type:"abort"}`) |
-| `detach_session` | release headless binding (persistent by default — TTL only if configured) |
-| `uplink_list` | list live TUIs dialed in over hub.sock (relay) |
-| `uplink_attach {port, pid}` | previewed → drive the live TUI; answers `uplink_attached` |
-| `uplink_detach` | stop driving (frozen view + Drive-again banner) |
-| `uplink_command {command}` | route a command to the driven TUI (prompt, abort, …) |
+| `release_session` | release headless binding (persistent by default — TTL only if configured) |
+| `instances` | list live TUIs dialed in over hub.sock (relay) |
+| `attach {port, pid}` | previewed → drive the live TUI; answers `attached` |
+| `detach` | stop driving (frozen view + Drive-again banner) |
+| `tui_command {command}` | route a command to the driven TUI (prompt, abort, …) |
 | `extension_ui_response {id, …}` | answer a dialog; routed to headless child, driven TUI, or hub waiter |
 | `ping` | `pong` |
 | legacy `prompt` `/reload` | built-in `/reload` command reloads extensions/skills/prompts |

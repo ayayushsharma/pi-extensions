@@ -80,7 +80,7 @@ Hygiene per run (the suite must be re-runnable, ports must not bump):
 | `GET /api/instances` | `{instances:[{port, pid, sessionFile, cwd, local, startedAt}]}` — live TUIs dialed in over hub.sock (ADR-014) |
 | `GET /api/processes` | `{processes:[{pid, argv, cwd, rssKb, ageSec, owner, sessionHint}], unsupported}` — live `pi` scan (ADR-013) |
 | `POST /api/processes/kill {pid}` | `{ok, owner, signal, exited}`; hub pids retire via the registry, live pids get TERM→KILL; bad pid `400`, stale pid `404`, hub-self `400` |
-| `uplink_*` over `/api/rpc` | `400` requires-WebSocket (binding commands never run over HTTP) |
+| `attach` / `detach` / `instances` / `tui_command` over `/api/rpc` | `400` requires-WebSocket (binding commands never run over HTTP) |
 | rename / export / download | traversal-guarded (history files only; `..` rejected) |
 
 ## 4. Browser↔server WS contract (`/ws`)
@@ -94,20 +94,20 @@ Client → server (all must keep working):
 
 | Message | Effect under test |
 |---|---|
-| `new_session {cwd?}` | ack `{sessionKey}` → optional `session_file` pin → `#session=<base>` + tab |
-| `start_session {cwd?, sessionFile?, sessionKey?}` | bind/rejoin headless backend; ack `{sessionKey}` — replaying it rejoins the exact backend across reloads (stale keys fall back to the file scan, never a wrong backend) |
+| `new_session {cwd?}` | ack `{backendKey}` → optional `session_file` pin → `#session=<base>` + tab |
+| `start_session {cwd?, sessionFile?, backendKey?}` | bind/rejoin headless backend; ack `{backendKey}` — replaying it rejoins the exact backend across reloads (stale keys fall back to the file scan, never a wrong backend) |
 | `rpc_command {command}` | forwarded to headless stdin (`prompt`, `abort`, …) |
-| `detach_session` | release headless binding |
+| `release_session` | release headless binding |
 | `extension_ui_response {id,…}` | answer a dialog; routed to headless child or hub waiter |
 | `ping` | `pong` |
-| `uplink_list` | ack `{instances}` → Live section renders (H7) |
-| `uplink_attach {port, pid}` | `uplink_attached` → Driving banner + hash `&drive=1` (H9/D1) |
-| `uplink_detach` | `uplink_detached` → frozen view + Drive-again banner (H9/D1) |
-| `uplink_command {command}` | relayed to the driven TUI; acked `{success:true}` (D1) |
+| `instances` | ack `{instances}` → Live section renders (H7) |
+| `attach {port, pid}` | `attached` → Driving banner + hash `&drive=1` (H9/D1) |
+| `detach` | `detached` → frozen view + Drive-again banner (H9/D1) |
+| `tui_command {command}` | relayed to the driven TUI; acked `{success:true}` (D1) |
 
 Server → browser events the client must handle:
 `response`, `state`, `session_file`, `extension_ui_request`,
-`mirror_sync`, `uplink_attached`, `uplink_detached`, `uplink_dead`,
+`mirror_sync`, `attached`, `detached`, `tui_dead`,
 `mirrors_changed`.
 Deleted with ADR-011 and **must stay dead**: top-level `mirror_sync`
 (non-uplink), `session_switch`, `mirror_sync_request`,
@@ -118,7 +118,7 @@ and the UI must not hang (D1).
 
 A ~30-line node `ws` (or raw-socket) server with three modes:
 
-- default: ack `new_session` with `{sessionKey, cwd}` and **no**
+- default: ack `new_session` with `{backendKey, cwd}` and **no**
   `session_file` → UI stays put (no pin, no tab).
 - `--late-file`: after ack, send `{type:"session_file", sessionFile, cwd}`
   → expect `#session=fresh-….jsonl` + `New session` tab.
@@ -139,7 +139,7 @@ completes without a real `pi`). The fake row is relay-shaped
 (port/pid/sessionFile/cwd/local/startedAt) so the full client flow
 works: list → Live section → preview → drive → detach (H7–H9, D1):
 
-- `uplink_list` acks `{instances}` over WS; `GET /api/instances`
+- `instances` acks `{instances}` over WS; `GET /api/instances`
   lists the fake row; uplink verbs over `/api/rpc` 400 (WS-only);
 - `#live-section` renders RUNNING TUIs with Drive buttons;
   `#session-banner` walks preview → Driving → Drive-again;
@@ -185,7 +185,7 @@ P0 — hub alive, core loop (Layers A–C, CI):
 | H4 | Layer A | click `#tab-new` | exact fail-fast message, no 15s wait |
 | H5 | Layer B `--no-ack` | click `#tab-new`, wait 17s | exact timeout message |
 | H6 | real hub (D-lite, no TUI) | WS `start_session` + prompt | `HEADLESS-OK` round-trip on own backend |
-| H7 | stub hub | `uplink_list` via WS + `/api/rpc`, `GET /api/instances` | WS acks `{instances}`; HTTP 400 (WS-only); instances lists the fake TUI |
+| H7 | stub hub | `instances` via WS + `/api/rpc`, `GET /api/instances` | WS acks `{instances}`; HTTP 400 (WS-only); instances lists the fake TUI |
 | H8 | stub hub + browser | read the hub shell DOM | `#live-section` lists RUNNING TUIs with Drive; banner hidden pre-preview |
 | H9 | stub hub + browser | Drive → Cancel → Drive → Drive this TUI → Detach | preview banner → cancel clears → Driving banner + notice → Drive-again |
 | H10 | stub hub + browser; `TEST_REAL_HUB=1` re-runs against a real hub + `exec -a pi sleep` double | Settings → Server lists fixture rows with owner tags; kill removes the row; `400` bad/self, `404` stale (stub asserts UI, real asserts scan + reap) |
@@ -197,7 +197,7 @@ P0 — hub alive, core loop (Layers A–C, CI):
 | H16 | stub hub + browser (static audit + live clicks) | audit the served `/hub/` HTML, then open settings, switch tabs, toggle a switch, pick a model, open the thinking menu | no markup issue (tag balance, duplicate ids, button `type`, accessible names, labelled inputs, dialog/switch/tab/listbox attributes with live id targets); `aria-expanded`/`aria-selected`/`aria-checked` follow the widgets, and the announced model row is the painted `.active` one |
 | H17 | stub hub + browser | flip Settings → Appearance "Hide costs", reload, flip it back | toggle `on` class, `aria-checked` and `localStorage.tau-hide-costs` agree; `body.hide-costs` hides the header cost pill and a planted `.message-usage` span; the pref is re-applied on load |
 | H18 | pure Node (no hub, no Chrome) | parse `app.js` segment colours + `style.css` selectors | every `ctx-*` variant has bar + legend rules and none of them is a bare global class (the old `.messages` variant inherited the transcript scroller's flex/padding) |
-| H19 | stub hub + browser, 390×844 phone viewport, drawer open | Settings-independent: sidebar `+` → Start/Resume picker → "Start new session" | the click binds a fresh session (`tau-web-binding` gets the new `stub-…` sessionKey), the picker closes, the drawer stays collapsed with no overlay, zero page errors (a null-`S` read would throw and never bind) |
+| H19 | stub hub + browser, 390×844 phone viewport, drawer open | Settings-independent: sidebar `+` → Start/Resume picker → "Start new session" | the click binds a fresh session (`tau-web-binding` gets the new `stub-…` backendKey), the picker closes, the drawer stays collapsed with no overlay, zero page errors (a null-`S` read would throw and never bind) |
 | H20 | pure Node (no hub, no Chrome) | strip comments/strings/templates/regex from `app.js`, collect declarations/imports/params | every bare call resolves; `scrollToBottom` (renderer method only) threw `ReferenceError` in the compaction + headless-continue handlers |
 | H21 | stub hub + browser; the stub's own `get_state` reports a *different* model/level than the session fixture | boot (hub state owns the header), select the history session, wait out the select's `get_state` round-trip, reload on the pinned hash | the pill shows the SESSION's model/thinking (from the history payload), never the hub's — the old code re-applied `get_state` after `renderSessionHistory`, and a `?limit=50` tail holds no change entries to fall back on |
 
@@ -217,7 +217,7 @@ P1 — sessions, dialogs, dead contracts (C–D):
 
 | # | Case | Needs |
 |---|---|---|
-| D1 | relay frames answered (`uplink_list` ack, `uplink_attached`/`detached`), dead mirror frames unanswered, unknown rejected, socket alive | stub hub WS |
+| D1 | relay frames answered (`instances` ack, `attached`/`detached`), dead mirror frames unanswered, unknown rejected, socket alive | stub hub WS |
 | D2 | dialog relay: headless `select` → browser modal → answer → run resumes | real hub (wrapUiDialogs is in-process) — manual |
 | D3 | reload with `#session=<base>` resumes same headless session | browser + stub/real hub — manual |
 | D4 | two tabs run independently (separate headless backends) | two browser contexts — manual |

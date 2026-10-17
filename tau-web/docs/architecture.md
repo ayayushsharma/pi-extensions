@@ -63,7 +63,7 @@ never serves a browser directly.
        │
        ▼
   ┌────────────────┐  yes   ┌─────────────────────────────┐
-  │ driving a live │──────▶ │ {type:"uplink_command"}       │──▶ relayed to the
+  │ driving a live │──────▶ │ {type:"tui_command"}       │──▶ relayed to the
   │ TUI (uplink)?  │        └─────────────────────────────┘    driven TUI
   └───────┬────────┘
           │ no
@@ -78,7 +78,7 @@ never serves a browser directly.
 
 Driving is preview-first (ADR-009): picking a live session loads its
 history read-only with a confirm banner; only "Drive this TUI" wires
-the uplink (`uplink_attach` → `uplink_attached`). Detach freezes the
+the uplink (`attach` → `attached`). Detach freezes the
 view with a Drive-again banner — the file is never resumed headless
 while its TUI runs (two writers, ADR-003).
 
@@ -98,8 +98,8 @@ last 100 entries with a Load-earlier control; the full log stays on disk.
 Mirror frames (hub.sock → browser): a dialed-in TUI's live state
 arrives as hello/status/snapshot/event frames over the socket and is
 forwarded to attached browsers as `mirror_sync` snapshots and
-`uplink_attached` / `uplink_detached` / `uplink_dead` / `mirrors_changed`
-frames; the Live section (`/api/instances` + `uplink_list`) is the
+`attached` / `detached` / `tui_dead` / `mirrors_changed`
+frames; the Live section (`/api/instances` + `instances`) is the
 human-visible side of the same data.
 
 ## Dialogs (ADR-007, no fallbacks, no two-drivers)

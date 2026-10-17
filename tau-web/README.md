@@ -40,7 +40,8 @@ tau-web/
   extensions/mirror-server.ts   # HTTP+WS hub server: headless backends + dialogs
   extensions/headless-bridge.ts # HeadlessRegistry: one `pi --mode rpc` child per WS
   public/                       # vanilla JS UI (app.js, dialogs.js, websocket-client.js, …)
-  docs/adr/                     # 001 base on tau … 011 hub-only, 013 live-processes, 014 attach-relay
+  docs/adr/                     # 001 base on tau … 014 attach-relay, 015 rejoin-noop,
+                              # 016 fork-by-copy, 017 preview-first-files, 018 file-mutation-scope
                               # (012 headless-only: superseded, kept as history)
   docs/testing.md               # e2e test design: layers, doubles, P0–P2 matrix
   docs/code-review.md           # code/security/perf review + open fix scopes (2026-10)

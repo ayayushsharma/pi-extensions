@@ -194,7 +194,7 @@ export class WsHub {
     } catch {
       return this.send(client, { type: "error", message: "invalid JSON" });
     }
-    hubLog(`ws[${client.id}] recv ${msg.type}${msg.id ? ` id=${msg.id}` : ""}`);
+    hubDebug(`ws[${client.id}] recv ${msg.type}${msg.id ? ` id=${msg.id}` : ""}`);
     const id = typeof msg.id === "string" ? msg.id : undefined;
     try {
       switch (msg.type) {

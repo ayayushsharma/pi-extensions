@@ -6,6 +6,21 @@ document is the contract; `tests/cases.json` is the machine-readable
 registry (added in P0) and a meta-test fails when a case is missing from a
 spec, silently skipped, or has no assertion.
 
+### As built (2026-10-18)
+
+- Runner: `node tests/run.mjs` (integration) / `--e2e` (Playwright) /
+  `--all` (+ Firefox CLI smoke); there is no `cases.json` registry yet —
+  checks print `PASS/FAIL <name>`, and a failing check exits non-zero.
+- Browser driver: `playwright-core` + system Chrome (`channel: "chrome"`,
+  bundled-Cromium fallback) instead of `@playwright/test`: same engine, no
+  test-runner dependency, and the same spec functions can move under
+  `@playwright/test` later without rewriting assertions.
+- Cross-platform backend implemented as the zero-dependency `CLI` smoke
+  (`firefox --headless --dump-dom/--screenshot`, ADR-020). The
+  selenium/geckodriver backend for interaction on Termux is the next step.
+- Testability contract shipped: `body[data-ready="1"]`, `window.__errs`,
+  `data-runner-*` hooks; every browser case asserts no page errors.
+
 ## 1. Layers
 
 | Layer | What | Needs | Runs |

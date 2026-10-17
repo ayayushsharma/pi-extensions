@@ -1,0 +1,4 @@
+node_modules/
+tests/.tmp/
+tests/.bin/
+*.log

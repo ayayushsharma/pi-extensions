@@ -9,7 +9,7 @@ import { EventEmitter } from "node:events";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { statSync } from "node:fs";
 import { basename, resolve } from "node:path";
-import { hubLog } from "../log.js";
+import { hubLog, hubDebug } from "../log.js";
 import { randId } from "../protocol.js";
 import { Runner, type RunnerKind } from "./runner.js";
 
@@ -188,7 +188,7 @@ export class HeadlessRunner extends Runner {
   }
 
   private onRpcFrame(frame: any): void {
-    hubLog(`child[${this.pid}] frame ${frame?.type}${frame?.command ? ":" + frame.command : ""}${frame?.id ? " id=" + frame.id : ""}`);
+    hubDebug(`child[${this.pid}] frame ${frame?.type}${frame?.command ? ":" + frame.command : ""}${frame?.id ? " id=" + frame.id : ""}`);
     if (frame?.type === "response" && frame?.command === "get_state" && frame.success) {
       const sf = frame?.data?.sessionFile;
       if (typeof sf === "string" && sf) this.setFile(sf);
@@ -238,7 +238,7 @@ export class HeadlessRunner extends Runner {
 
   command(cmd: any): void {
     if (this.dead) return;
-    hubLog(`child[${this.pid}] <- ${cmd?.type}${cmd?.id ? " id=" + cmd.id : ""}`);
+    hubDebug(`child[${this.pid}] <- ${cmd?.type}${cmd?.id ? " id=" + cmd.id : ""}`);
     this.rpc.send(cmd);
   }
 

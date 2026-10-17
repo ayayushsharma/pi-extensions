@@ -2,10 +2,12 @@
 import { findPi } from "./helpers.mjs";
 import { runIntegration } from "./integration.mjs";
 import { runE2E } from "./e2e.mjs";
+import { runFirefoxSmoke } from "./firefox-smoke.mjs";
 
 const args = process.argv.slice(2);
 const wantIntegration = !args.includes("--e2e") || args.includes("--integration");
 const wantE2E = args.includes("--e2e") || args.includes("--all");
+const wantFirefox = args.includes("--firefox") || args.includes("--all");
 const strict = args.includes("--strict");
 
 const log = (line) => process.stdout.write(`${line}\n`);
@@ -24,6 +26,10 @@ if (wantIntegration) {
 if (wantE2E || args.includes("--all")) {
   log("── e2e (Playwright) ──");
   results = results.concat(await runE2E({ log }));
+}
+if (wantFirefox) {
+  log("── firefox smoke (cross-platform CLI backend) ──");
+  results = results.concat(await runFirefoxSmoke({ log }));
 }
 
 const failed = results.filter((r) => !r.ok && !r.skip);

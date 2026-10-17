@@ -67,11 +67,32 @@ export async function runE2E({ log }) {
     await page.fill("#picker-path", "/tmp/pihub-fixtures");
     await page.click("#picker-start");
     await page.waitForFunction(() => document.querySelector('#runner-list [data-runner-kind="headless"]'), null, { timeout: 30000 });
+    await page.waitForFunction(() => !document.querySelector("#input").disabled, null, { timeout: 30000 });
     const inputEnabled = await page.locator("#input").isEnabled();
     check("E4 new session binds a headless runner", inputEnabled);
     const boundInfo = await (await fetch(`${hub.url}/api/runners`)).json();
     const fresh = boundInfo.runners.find((r) => r.kind === "headless" && r.cwd === "/tmp/pihub-fixtures");
     check("E4b runner has a pid", !!fresh?.pid, JSON.stringify(boundInfo.runners.map((r) => r.pid)));
+    if (process.env.PI_HUB_E2E_PROMPT === "1" && fresh) {
+      // Real model round-trip (opt-in: costs a call). Assert on the
+      // ASSISTANT bubble so the prompt echo cannot satisfy the wait.
+      await page.fill("#input", "Reply with just the word DONE.");
+      await page.click("#send-btn");
+      try {
+        await page.waitForFunction(
+          () => [...document.querySelectorAll("#messages .msg.assistant")].some((m) => (m.textContent || "").includes("DONE")),
+          null,
+          { timeout: 240000 },
+        );
+      } catch (e) {
+        log(`E8 diagnostic messages: ${(await page.textContent("#messages")).replace(/\s+/g, " ").slice(0, 400)}`);
+        log(`E8 diagnostic hub log:\n${hub.log().split("\n").slice(-15).join("\n")}`);
+        throw e;
+      }
+      check("E8 real prompt round-trip", true);
+      await page.waitForFunction(() => document.querySelector("#abort-btn").classList.contains("hidden"), null, { timeout: 120000 });
+      check("E8b run settled (stop hidden after agent_end)", true);
+    }
     if (fresh) await jsonFetch(`${hub.url}/api/runners/close`, { method: "POST", body: { runnerId: fresh.id } });
 
     // E5 — live TUI preview → drive → detach (C1/ADR-009/014)

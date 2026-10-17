@@ -1,7 +1,7 @@
 // composer — prompt vs steer, queue pills, slash palette.
 import { $, el, show } from "../core/dom.js";
 
-export function createComposer({ form, input, sendBtn, abortBtn, queueEl, slashEl, actions }) {
+export function createComposer({ form, input, sendBtn, abortBtn, queueEl, slashEl }, actions) {
   let commands = [];
   let sel = 0;
 
@@ -114,9 +114,17 @@ export function createComposer({ form, input, sendBtn, abortBtn, queueEl, slashE
       show(abortBtn, working);
       show(sendBtn, !working || true);
       renderQueue(state.queue);
-      const disabled = state.bound?.kind === "live" && state.driving !== state.bound.id;
+      const previewing = state.bound?.kind === "live" && state.driving !== state.bound.id;
+      const disabled = !state.bound || state.binding || previewing;
       input.disabled = !!disabled;
-      input.placeholder = disabled ? "Previewing live session — attach to drive" : state.bound ? "Message…" : "Bind a session first";
+      sendBtn.disabled = !!disabled;
+      input.placeholder = state.binding
+        ? "Loading session…"
+        : !state.bound
+        ? "Connecting…"
+        : previewing
+          ? "Previewing live session — attach to drive"
+          : "Message…";
     },
   };
 }

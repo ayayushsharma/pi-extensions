@@ -18,6 +18,7 @@ export const state = {
   runners: new Map(), // id -> RunnerInfo
   boundId: null,
   bound: null, // RunnerInfo of the bound runner
+  binding: false, // a bind request is in flight (switching sessions)
   driving: null, // runnerId while driving a live runner
   driverBusy: null, // { runnerId, heldBy } while attach was refused
   banner: null, // { kind, text, actions: [...] }

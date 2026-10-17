@@ -344,18 +344,33 @@ async function loadEarlier() {
 }
 
 async function bindRunner(id) {
-  const msg = await socket.request({ type: "bind", runnerId: id ?? undefined, cwd: state.bound?.cwd });
-  await applyBound(msg);
+  set({ binding: true });
+  try {
+    const msg = await socket.request({ type: "bind", runnerId: id ?? undefined, cwd: state.bound?.cwd });
+    await applyBound(msg);
+  } finally {
+    set({ binding: false });
+  }
 }
 
 async function bindSession(session) {
-  const msg = await socket.request({ type: "bind", dirName: session.dirName, file: session.file, cwd: session.cwd });
-  await applyBound(msg, session);
+  set({ binding: true });
+  try {
+    const msg = await socket.request({ type: "bind", dirName: session.dirName, file: session.file, cwd: session.cwd });
+    await applyBound(msg, session);
+  } finally {
+    set({ binding: false });
+  }
 }
 
 async function newSession(cwd) {
-  const msg = await socket.request({ type: "bind", cwd });
-  await applyBound(msg);
+  set({ binding: true });
+  try {
+    const msg = await socket.request({ type: "bind", cwd });
+    await applyBound(msg);
+  } finally {
+    set({ binding: false });
+  }
 }
 
 async function attach(runner, take) {

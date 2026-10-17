@@ -11,6 +11,8 @@ and no shared build — do not add one.
 pi-extensions/
 ├── AGENTS.md               # this file — repo conventions (you are here)
 ├── tau-web/                # tau-web — unified Pi web UI (mirror + headless + uplink)
+├── ctx-limit/              # pi-ctx-limit — cap the effective context window
+├── session-clear/          # pi-session-clear — true /clear session wipe
 └── extension-template/     # scaffold for a new package — copy it, don't edit it
 ```
 
@@ -32,6 +34,7 @@ my-package/
 |-----|-----|------|
 | `tau-web/` | `tau-web` | Unified Pi web UI: live TUI mirror + headless backends + uplink proxy + cookie auth. Supersedes the retired `tau` package (removed). See `tau-web/README.md`. |
 | `ctx-limit/` | `pi-ctx-limit` | Caps the model's effective context window at `min(manual, model)` so Pi's own auto-compaction triggers early and still continues the run, via `--context-size` / `ctxLimit` settings. See `ctx-limit/README.md`. |
+| `session-clear/` | `pi-session-clear` | `/clear` deletes the current session file and starts fresh — no history survives (`/new` leaves the old file resumable). See `session-clear/README.md`. |
 | `extension-template/` | n/a (not published) | Minimal working package. Starting point for every new extension. |
 
 ## Creating a new extension

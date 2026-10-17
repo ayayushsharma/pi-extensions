@@ -123,16 +123,21 @@ export class WsHub {
   private fanOut(frame: any): void {
     const runner = this.deps.registry.get(frame.runnerId);
     if (!runner) return;
+    // Dialog requests are registered once (owner-broker) and broadcast as
+    // `dialog` frames — never re-sent per bound client (ADR-007).
+    if (
+      frame.event?.type === "extension_ui_request" &&
+      ["select", "confirm", "input", "editor"].includes(frame.event.method)
+    ) {
+      this.deps.dialogs.registerHeadless(frame.runnerId, frame.event);
+      return;
+    }
     for (const c of this.clients) {
       if (c.boundId !== frame.runnerId) continue;
       if (frame.seq > c.lastSeq + 1 && c.lastSeq > 0) {
         for (const missed of runner.replayFrom(c.lastSeq)) this.deliver(c, missed);
       }
       c.lastSeq = frame.seq;
-      if (frame.event?.type === "extension_ui_request" && ["select", "confirm", "input", "editor"].includes(frame.event.method)) {
-        this.deps.dialogs.registerHeadless(frame.runnerId, frame.event);
-        continue;
-      }
       hubDebug(`ws[${c.id}] <- ${frame.runnerId} seq=${frame.seq} ${frame.event?.type || "?"}`);
       this.deliver(c, frame);
     }

@@ -212,10 +212,16 @@ export class Mirror {
           });
           break;
         case "get_available_models":
-          ctx?.modelRegistry
-            ?.getAvailable?.()
+          Promise.resolve(ctx?.modelRegistry?.getAvailable?.() ?? [])
             .then((models: any[]) => this.reply(command, { models }))
             .catch((e: any) => this.reply(command, undefined, e?.message || String(e)));
+          break;
+        case "get_commands":
+          try {
+            this.reply(command, { commands: pi.getCommands?.() || [] });
+          } catch (e: any) {
+            this.reply(command, undefined, e?.message || String(e));
+          }
           break;
         case "set_model": {
           Promise.resolve(ctx?.modelRegistry?.getAvailable?.() ?? [])

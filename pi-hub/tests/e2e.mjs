@@ -2,7 +2,9 @@
 import { chromium } from "playwright-core";
 import fs from "node:fs";
 import path from "node:path";
-import { fixtureSessionDir, freePort, jsonFetch, startHub, startMirror, waitFor } from "./helpers.mjs";
+import { fileURLToPath } from "node:url";
+const hubRoot = () => path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+import { findPi, fixtureSessionDir, freePort, jsonFetch, startHub, startMirror, waitFor } from "./helpers.mjs";
 
 export async function runE2E({ log }) {
   const results = [];
@@ -26,7 +28,15 @@ export async function runE2E({ log }) {
 
   const port = await freePort();
   const sessions = fixtureSessionDir();
-  const hub = await startHub({ port, sessionDir: sessions });
+  // Children load the dialog fixture extension through a wrapper binary.
+  const hub = await startHub({
+    port,
+    sessionDir: sessions,
+    env: {
+      PI_HUB_PI_BIN: path.join(hubRoot(), "tests", "fixtures", "pi-with-dialog.sh"),
+      PI_HUB_TEST_REAL_PI: findPi(),
+    },
+  });
   const pageErrors = [];
   try {
     // E1 — boot, login-free, ready marker, sessions
@@ -70,9 +80,10 @@ export async function runE2E({ log }) {
     await page.waitForFunction(() => !document.querySelector("#input").disabled, null, { timeout: 30000 });
     const inputEnabled = await page.locator("#input").isEnabled();
     check("E4 new session binds a headless runner", inputEnabled);
+    const boundId = await page.evaluate(() => JSON.parse(localStorage.getItem("pi-hub-binding") || "null")?.runnerId || null);
     const boundInfo = await (await fetch(`${hub.url}/api/runners`)).json();
-    const fresh = boundInfo.runners.find((r) => r.kind === "headless" && r.cwd === "/tmp/pihub-fixtures");
-    check("E4b runner has a pid", !!fresh?.pid, JSON.stringify(boundInfo.runners.map((r) => r.pid)));
+    const fresh = boundInfo.runners.find((r) => r.id === boundId);
+    check("E4b bound runner has a pid", !!fresh?.pid, JSON.stringify({ boundId, runners: boundInfo.runners.map((r) => r.id) }));
     if (process.env.PI_HUB_E2E_PROMPT === "1" && fresh) {
       // Real model round-trip (opt-in: costs a call). Assert on the
       // ASSISTANT bubble so the prompt echo cannot satisfy the wait.
@@ -93,7 +104,27 @@ export async function runE2E({ log }) {
       await page.waitForFunction(() => document.querySelector("#abort-btn").classList.contains("hidden"), null, { timeout: 120000 });
       check("E8b run settled (stop hidden after agent_end)", true);
     }
-    if (fresh) await jsonFetch(`${hub.url}/api/runners/close`, { method: "POST", body: { runnerId: fresh.id } });
+    if (fresh) {
+      // E10 — extension dialog relay (ADR-007): child asks, browser answers.
+      await page.fill("#input", "/ask");
+      await page.click("#send-btn");
+      await page.waitForSelector("#dialog-container .dialog-card", { timeout: 30000 });
+      check("E10 confirm dialog rendered", (await page.textContent("#dialog-container")).includes("Test dialog"));
+      await page.getByRole("button", { name: "Confirm" }).click();
+      await page.waitForFunction(() => (document.querySelector("#toast")?.textContent || "").includes("DIALOG-YES"), null, { timeout: 30000 });
+      check("E10b confirm answer relayed to the child", true);
+
+      await page.fill("#input", "/askselect");
+      await page.click("#send-btn");
+      await page.waitForSelector("#dialog-container .dialog-card", { timeout: 30000 });
+      await page.getByRole("button", { name: "beta" }).click();
+      await page.waitForFunction(() => (document.querySelector("#toast")?.textContent || "").includes("DIALOG-beta"), null, { timeout: 30000 });
+      check("E10c select answer relayed to the child", true);
+
+      await jsonFetch(`${hub.url}/api/runners/close`, { method: "POST", body: { runnerId: fresh.id } });
+      await page.waitForFunction(() => (document.querySelector("#banner")?.textContent || "").includes("Session ended"), null, { timeout: 15000 });
+      check("E4c closed runner surfaces resume banner", true);
+    }
 
     // E5 — live TUI preview → drive → detach (C1/ADR-009/014)
     const mirror = await startMirror({ sock: path.join(hub.dir, "hub.sock"), cwd: "/tmp/pihub-fixtures", sessionDir: sessions });
@@ -107,6 +138,11 @@ export async function runE2E({ log }) {
       await page.getByRole("button", { name: "Attach & Drive" }).click();
       await page.waitForFunction(() => document.querySelector("#banner").textContent.includes("Driving"), null, { timeout: 15000 });
       check("E5c attach flips to driving + input enabled", await page.locator("#input").isEnabled());
+      // drive the live TUI through the relay: get_available_models round-trip
+      await page.click("#model-btn");
+      await page.waitForFunction(() => document.querySelectorAll("#model-menu .item").length > 0, null, { timeout: 20000 });
+      check("E5f relay drive round-trip (model list via TUI)", true);
+      await page.keyboard.press("Escape");
       await page.getByRole("button", { name: "Detach" }).click();
       await page.waitForFunction(() => document.querySelector("#banner").textContent.includes("Previewing"), null, { timeout: 15000 });
       check("E5d detach freezes back to preview", !(await page.locator("#input").isEnabled()));
@@ -115,6 +151,16 @@ export async function runE2E({ log }) {
     }
     await waitFor(async () => (await (await fetch(`${hub.url}/api/instances`)).json()).instances.length === 0, { timeoutMs: 10000, what: "mirror gone" });
     check("E5e dead mirror removed from Live", (await page.locator('#runner-list [data-runner-kind="live"]').count()) === 0);
+
+    // E9 — WS flap: offline → online must reconnect and re-bind without errors
+    const ctx = page.context();
+    await ctx.setOffline(true);
+    await page.waitForTimeout(1500);
+    await ctx.setOffline(false);
+    await page.waitForFunction(() => document.querySelector("#status-dot").dataset.state !== "off", null, { timeout: 30000 });
+    await page.waitForFunction(() => document.querySelectorAll("#messages .msg").length > 0 || document.querySelector("#banner:not(.hidden)"), null, { timeout: 30000 });
+    const errs9 = await page.evaluate(() => window.__errs || []);
+    check("E9 reconnect after WS flap", errs9.length === 0, JSON.stringify(errs9));
 
     await page.screenshot({ path: path.join(hub.dir, "e2e-desktop.png") });
 

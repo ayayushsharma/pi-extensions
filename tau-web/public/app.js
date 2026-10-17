@@ -1697,20 +1697,37 @@ function toggleModelDropdown() {
   }
 }
 
+// The composer controls sit right of centre, so a left-anchored popover runs
+// past the right edge of a phone screen; the page then scrolls sideways and
+// the whole UI shifts. Nudge the open menu back inside the viewport.
+function clampMenuToViewport(menu) {
+  if (!menu) return;
+  menu.style.transform = '';
+  const pad = 8;
+  const vw = document.documentElement.clientWidth;
+  const r = menu.getBoundingClientRect();
+  let dx = 0;
+  if (r.right > vw - pad) dx = vw - pad - r.right;
+  if (r.left + dx < pad) dx = pad - r.left;
+  if (dx) menu.style.transform = `translateX(${dx}px)`;
+}
+
 function openModelDropdown() {
   modelDropdownMenu.innerHTML = '';
 
-  // Search input
+  // Items container — the only scroller.
+  const itemsContainer = document.createElement('div');
+  itemsContainer.className = 'model-dropdown-items';
+  modelDropdownMenu.appendChild(itemsContainer);
+
+  // Search input pinned at the bottom of the menu: with the on-screen
+  // keyboard up, the bottom is the one place guaranteed to stay in view
+  // (and it is where the finger/keyboard already is).
   const search = document.createElement('input');
   search.className = 'model-dropdown-search';
   search.placeholder = 'Search models…';
   search.type = 'text';
   modelDropdownMenu.appendChild(search);
-
-  // Items container
-  const itemsContainer = document.createElement('div');
-  itemsContainer.className = 'model-dropdown-items';
-  modelDropdownMenu.appendChild(itemsContainer);
 
   function renderItems(filter) {
     itemsContainer.innerHTML = '';
@@ -1753,7 +1770,10 @@ function openModelDropdown() {
 
   modelDropdownMenu.classList.remove('hidden');
   modelDropdown.classList.add('open');
-  requestAnimationFrame(() => search.focus());
+  requestAnimationFrame(() => {
+    clampMenuToViewport(modelDropdownMenu);
+    search.focus();
+  });
 }
 
 function closeModelDropdown() {
@@ -1800,8 +1820,10 @@ function renderThinkingMenu() {
 thinkingBtn.addEventListener('click', (e) => {
   e.stopPropagation();
   renderThinkingMenu();
+  const opening = thinkingMenu?.classList.contains('hidden');
   thinkingMenu?.classList.toggle('hidden');
   thinkingDropdown?.classList.toggle('open');
+  if (opening) clampMenuToViewport(thinkingMenu);
 });
 document.addEventListener('click', () => {
   thinkingMenu?.classList.add('hidden');

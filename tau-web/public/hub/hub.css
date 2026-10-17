@@ -387,6 +387,19 @@ a.tab, a.vtab { text-decoration: none; }
   bottom: calc(100% + 8px);
 }
 
+@media (max-width: 768px) {
+  /* The composer controls sit right of centre, so a left-anchored menu runs
+     past the right edge on a phone and makes the whole app horizontally
+     scrollable. Anchor these two menus to their right edge instead
+     (context-viz already anchors right); app.js also measures and nudges
+     them if a very narrow screen still clips one. */
+  .hub-shell .model-dropdown-menu,
+  .hub-shell .thinking-menu {
+    left: auto;
+    right: 0;
+  }
+}
+
 /* Connection status keeps its dot on small screens: style.css already hides
    .status-text below 768px, so the hub needs no breakpoint of its own here. */
 /* ─── Session home / search overlay ─────────────────────────────────── */

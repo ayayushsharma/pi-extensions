@@ -38,6 +38,8 @@ Everything customised for mobile (≤768px) compared to the desktop experience.
 - **16px font size** — prevents iOS Safari auto-zoom on focus (pinch-zoom left enabled)
 - **No autofocus** — keyboard doesn't hijack the screen on load/navigation
 - **Form buttons removed from tab order** — `tabindex="-1"` on all non-textarea elements
+- **Popovers stay on screen** — the model picker and thinking menu sit right of centre, so ≤768px they anchor to their right edge and `clampMenuToViewport()` measures and nudges them back in if a narrow screen would still clip one; opening either can no longer make the page scroll sideways
+- **Model picker is keyboard-proof** — the search field is the *bottom* element of the menu (the list scrolls above it) and the menu is capped at `min(360px, 45dvh)`, so with the on-screen keyboard up it stays above the composer instead of pushing the field off screen
 
 ## Connection & Lifecycle
 - **Auto-reconnect on return** — detects visibility change and silently reconnects WebSocket instead of showing disconnected state

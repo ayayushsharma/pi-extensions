@@ -1606,8 +1606,16 @@ html {
   top: calc(100% + 4px);
   left: 0;
   min-width: 260px;
+  min-width: min(260px, calc(100vw - 16px));
+  max-width: calc(100vw - 16px);
   max-height: 360px;
-  overflow-y: auto;
+  /* Shrink with the (keyboard-shrunk) viewport so the menu + its search field
+     still fit above the composer while typing. */
+  max-height: min(360px, 45dvh);
+  /* List scrolls, search stays pinned at the bottom. */
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   background: var(--bg-solid);
   border: 1px solid var(--border-hover);
   border-radius: var(--radius-md);
@@ -1622,6 +1630,12 @@ html {
   to { opacity: 1; transform: translateY(0); }
 }
 
+.model-dropdown-items {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+
 .model-dropdown-search {
   width: 100%;
   padding: 8px 12px;
@@ -1632,7 +1646,9 @@ html {
   font-size: 12px;
   font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
   outline: none;
-  margin-bottom: 4px;
+  /* Bottom of the menu, below the scrolling list. */
+  margin: 4px 0 0;
+  flex-shrink: 0;
   box-sizing: border-box;
 }
 

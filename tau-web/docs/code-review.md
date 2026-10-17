@@ -373,4 +373,45 @@ curl -s -u tau:tpass "http://127.0.0.1:$PORT/api/file/preview?path=$TAU_FS_ROOTS
   playwright-core" path passes H3/H4/H5. (`tests/browser.mjs`, function
   `launchBrowser`.)
 
-Everything else in this document is open.
+Everything else in this document was fixed by the review-fix loop — see §11.
+
+## 11. Fix loop — final status (2026-10-17)
+
+All 13 tasks in `scripts/review-loop/tasks.json` ran through an independent
+coder (`opencode-go/muse-spark-1.3-contributor`, xhigh) + reviewer
+(`opencode-go/deepseek-v4.1-flash`, max) pair, one git commit per passed task.
+Final result: **13/13 passed, 0 failed** on branch `code-review-fixes`;
+`node tests/run.mjs` = 16/16 on the final tree. `main` is untouched.
+
+| Findings | Task | Verdict | Commit |
+|---|---|---|---|
+| B1, S1, B2 | T1 stored XSS + markdown placeholder crash | PASS-WITH-NITS | `10be427` |
+| B3, S2 | T2 headless spawn failure + env credential leak | PASS-WITH-NITS | `2d9c6dd` |
+| B4, B6, B7 | T3 new-session view state | PASS | `5d9cc98` |
+| B5 | T4 reconnect transcript wipe | PASS-WITH-NITS | `a5987f8` |
+| B8, B9 | T5 duplicate declarations + hub.sock takeover | PASS-WITH-NITS | `003556d` |
+| S3, S4, S14 | T6 realpath jails + export path | PASS-WITH-NITS | `19b3acb` |
+| S5, S7 | T7 body caps + beacon rate limit | PASS | `0232956` |
+| S6, S11 | T8 security headers + health CORS | PASS-WITH-NITS | `ed4aa58` |
+| S8, S12, S13 | T9 auth lifecycle hardening | PASS-WITH-NITS | `023f8a8` |
+| S9, S10 | T10 leak cleanup + WS backpressure | PASS-WITH-NITS | `88ef361` |
+| P1, P2, P5 | T11 session-store cache | PASS-WITH-NITS | `fb27a4f` |
+| P3, P4, P6, P7 | T12 windowed transfer + stream coalescing | PASS-WITH-NITS | `749c413` |
+| U1, U3 | T13 mobile preview banner | PASS | `869c318` |
+| B10 | test-harness `waitForFunction` fix | pre-loop | baseline `6e0f9ea` |
+
+Notes:
+
+- T12's `fetchOlderHistory` epoch guard was failed twice by a reviewer on
+  byte-identical code; a fresh review after fixing the reviewer harness
+  (deepseek cannot accept images — the prompt no longer reads screenshots)
+  confirmed the guard present and correct. The orchestrator now preserves a
+  failed attempt as `docs/review-loop/logs/failed-T12.patch` and stashes it so
+  the next task can never sweep it into its own commit.
+- `PASS-WITH-NITS` means correct with optional follow-ups; the full ledger is in
+  `docs/review-loop/reviewer-comments<NN>.md`. Main ones: `export_html`
+  symlink/extension jail edges and missing regression tests (T6);
+  history-fetch failure UX (T4); windowed-session cost pill, `?v=` bump and the
+  exact-page-boundary "more on server" control (T12).
+- New fixes run the same way: add a task to `scripts/review-loop/tasks.json`,
+  then `python3 scripts/review-loop/fix_loop.py --only T<n> --commit --branch code-review-fixes`.

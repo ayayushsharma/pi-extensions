@@ -103,7 +103,6 @@ const sidebarEl = document.getElementById('sidebar');
 const sidebarToggle = document.getElementById('sidebar-toggle');
 const sidebarOverlay = document.getElementById('sidebar-overlay');
 
-const refreshSessionsBtn = document.getElementById('refresh-sessions-btn');
 const sessionSearchInput = document.getElementById('session-search-input');
 const typingIndicator = document.getElementById('typing-indicator');
 
@@ -2042,17 +2041,9 @@ window.addEventListener('tau:new-session', () => {
   }
 })();
 
-refreshSessionsBtn.addEventListener('click', () => {
-  if (isMobile()) {
-    location.reload();
-    return;
-  }
-  refreshSessionsBtn.classList.add('spinning');
-  sidebar.loadSessions().then(() => {
-    setTimeout(() => refreshSessionsBtn.classList.remove('spinning'), 600);
-    updateMirrorLiveIndicator();
-  });
-});
+// Sessions refresh on their own: the sidebar reloads on session events and
+// session switches, so the explicit refresh button is gone (its phone branch
+// just reloaded the page, duplicating the header reload).
 
 // Swipe from left edge to open sidebar on mobile
 (function initSwipeGesture() {
@@ -3857,6 +3848,7 @@ const themeGrid = document.getElementById('theme-grid');
 
 
 const toggleShowThinking = document.getElementById('toggle-show-thinking');
+const toggleHideCosts = document.getElementById('toggle-hide-costs');
 
 // Settings tabs: one pane visible at a time so the panel stays short.
 const settingsTabs = document.querySelectorAll('#settings-tabs .settings-tab');
@@ -4112,6 +4104,20 @@ toggleShowThinking.addEventListener('click', () => {
   localStorage.setItem('tau-show-thinking', !isOn);
 });
 
+// Hide costs toggle (local pref): drops the header cost pill and the
+// per-message usage readouts, for screenshots and shared screens. Off by
+// default, so the default view is unchanged.
+const hideCosts = localStorage.getItem('tau-hide-costs') === 'true';
+setToggleState(toggleHideCosts, hideCosts);
+if (hideCosts) document.body.classList.add('hide-costs');
+
+toggleHideCosts.addEventListener('click', () => {
+  const isOn = toggleHideCosts.classList.contains('on');
+  setToggleState(toggleHideCosts, !isOn);
+  document.body.classList.toggle('hide-costs', !isOn);
+  localStorage.setItem('tau-hide-costs', String(!isOn));
+});
+
 // Log out this browser: clear the cookie session, then prompt.
 document.getElementById('btn-logout')?.addEventListener('click', async () => {
   try { await tauRawFetch('/api/logout', { method: 'POST' }); } catch {}
@@ -4231,10 +4237,12 @@ function updateContextViz() {
   const totalUsed = freshInput + cacheRead;
   const free = Math.max(0, total - totalUsed);
 
+  // `color` names a .context-bar-segment/.context-legend-dot variant; the
+  // `ctx-` prefix keeps them out of the global class namespace (see style.css).
   const segments = [
-    { key: 'cache', label: 'Cached', tokens: cacheRead, color: 'cache' },
-    { key: 'messages', label: 'Input', tokens: freshInput, color: 'messages' },
-    { key: 'free', label: 'Available', tokens: free, color: 'free' },
+    { key: 'cache', label: 'Cached', tokens: cacheRead, color: 'ctx-cache' },
+    { key: 'messages', label: 'Input', tokens: freshInput, color: 'ctx-messages' },
+    { key: 'free', label: 'Available', tokens: free, color: 'ctx-free' },
   ];
 
   // Build bar

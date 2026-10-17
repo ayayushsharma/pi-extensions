@@ -195,6 +195,8 @@ P0 — hub alive, core loop (Layers A–C, CI):
 | H14 | pure Node (no hub, no Chrome) | hostile image blocks accepted/rejected by `isValidMessageImage`; `%%CODEBLOCK_n%%`-style placeholders stay literal (B1/B2/S1) |
 | H15 | stub hub + browser, 390×844 and 390×430 (keyboard-shrunk) | open the model picker, then the thinking menu | nothing spills past the viewport (no sideways page scroll); model search field is the menu's last child below the scrolling list; menu height ≤ `45dvh` |
 | H16 | stub hub + browser (static audit + live clicks) | audit the served `/hub/` HTML, then open settings, switch tabs, toggle a switch, pick a model, open the thinking menu | no markup issue (tag balance, duplicate ids, button `type`, accessible names, labelled inputs, dialog/switch/tab/listbox attributes with live id targets); `aria-expanded`/`aria-selected`/`aria-checked` follow the widgets, and the announced model row is the painted `.active` one |
+| H17 | stub hub + browser | flip Settings → Appearance "Hide costs", reload, flip it back | toggle `on` class, `aria-checked` and `localStorage.tau-hide-costs` agree; `body.hide-costs` hides the header cost pill and a planted `.message-usage` span; the pref is re-applied on load |
+| H18 | pure Node (no hub, no Chrome) | parse `app.js` segment colours + `style.css` selectors | every `ctx-*` variant has bar + legend rules and none of them is a bare global class (the old `.messages` variant inherited the transcript scroller's flex/padding) |
 
 Hardening regressions (from `docs/code-review.md` §11; real hub,
 SKIP without `pi`):
@@ -272,6 +274,8 @@ P2 — hardening:
 | Renderer safety (images, markdown placeholders) | `public/message-renderer.js`, `public/markdown.js` | H14 |
 | Composer popovers (model picker/thinking menu) fit narrow + keyboard-shrunk viewports | `public/app.js` (`clampMenuToViewport`), `public/style.css`, `public/hub/hub.css` | H15 |
 | Hub markup well-formedness + ARIA state (buttons, dialogs, tabs, switches, listboxes, toggles) | `public/hub/index.html`, `public/app.js` (picker/tabs/toggles), `public/dialogs.js` | H16 |
+| Display prefs (`Hide costs`, `Show thinking`) + settings toggles | `public/hub/index.html`, `public/app.js` (toggle wiring), `public/style.css` (`body.hide-*`) | H17 |
+| Context popover geometry (bar segments + legend dots) | `public/app.js` (segment colours), `public/style.css` (`.ctx-*` variants) | H18 |
 | Session picker (summaries/mkdir/fork) | `mirror-server.ts`, `app.js` | H13 |
 | Attach relay + dead frames | `mirror-server.ts` (relay block), `lib/hub-socket.ts` | H7–H9, D1 |
 | Live processes scan/kill | `lib/processes.ts`, `headless-bridge.ts` (`closeByPid`/`childPids`), `app.js` server pane | H10 (stub + real) |

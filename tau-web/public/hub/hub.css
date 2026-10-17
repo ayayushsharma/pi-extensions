@@ -313,7 +313,12 @@ a.tab, a.vtab { text-decoration: none; }
 /* `overflow-x: hidden` computes overflow-y to `auto`, which clips the
    upward-opening menus to the (short) composer box — let them escape. */
 .hub-shell .input-area { overflow: visible; }
-.hub-shell .input-area form { max-width: var(--hub-max); margin: 0 auto; }
+.hub-shell .input-area form,
+.hub-shell .input-area .queued-messages {
+  width: 100%;
+  max-width: var(--hub-max);
+  margin: 0 auto;
+}
 .hub-shell #chat-form { display: block; }
 
 .hub-shell .composer-box {

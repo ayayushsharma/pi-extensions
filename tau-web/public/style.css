@@ -1449,11 +1449,16 @@ html {
   border-radius: 0 7px 7px 0;
 }
 
-.context-bar-segment.system { background: var(--thinking-accent); }
-.context-bar-segment.messages { background: var(--accent); }
-.context-bar-segment.tools { background: var(--tool-accent); }
-.context-bar-segment.cache { background: var(--success); opacity: 0.7; }
-.context-bar-segment.free { background: transparent; }
+/* NB: the variant classes are prefixed `ctx-` on purpose. A bare `.messages`
+   collides with the transcript scroller rule near the bottom of this file —
+   `flex: 1` plus the header/input padding stretched the "Input" bar segment
+   and legend dot to the scroller's own size (271px tall), blowing the popover
+   up to 443px. Keep every context-viz variant namespaced. */
+.context-bar-segment.ctx-system { background: var(--thinking-accent); }
+.context-bar-segment.ctx-messages { background: var(--accent); }
+.context-bar-segment.ctx-tools { background: var(--tool-accent); }
+.context-bar-segment.ctx-cache { background: var(--success); opacity: 0.7; }
+.context-bar-segment.ctx-free { background: transparent; }
 
 /* Legend */
 .context-legend {
@@ -1483,11 +1488,11 @@ html {
   flex-shrink: 0;
 }
 
-.context-legend-dot.system { background: var(--thinking-accent); }
-.context-legend-dot.messages { background: var(--accent); }
-.context-legend-dot.tools { background: var(--tool-accent); }
-.context-legend-dot.cache { background: var(--success); opacity: 0.7; }
-.context-legend-dot.free { background: var(--bg-glass-strong); border: 1px solid var(--border); }
+.context-legend-dot.ctx-system { background: var(--thinking-accent); }
+.context-legend-dot.ctx-messages { background: var(--accent); }
+.context-legend-dot.ctx-tools { background: var(--tool-accent); }
+.context-legend-dot.ctx-cache { background: var(--success); opacity: 0.7; }
+.context-legend-dot.ctx-free { background: var(--bg-glass-strong); border: 1px solid var(--border); }
 
 .context-legend-value {
   font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
@@ -1528,7 +1533,9 @@ html {
 }
 
 /* Compaction system messages */
-.compaction-message {
+/* `.system-message` (declared later) centres its text; the completed
+   compaction line can carry the whole summary, so keep it left aligned. */
+.system-message.compaction-message {
   text-align: left;
   padding: 12px;
   font-size: 13px;
@@ -1774,26 +1781,26 @@ html {
   will-change: opacity;
 }
 
+/* Traffic-light dot: green (connected) / amber (busy) / red (disconnected).
+   Deliberately literal colours, not theme vars — --accent/--success/--error
+   are per-theme, and the connection state must read the same everywhere. */
 .status-indicator.connected {
-  background: var(--success);
+  background: #34d399;
   box-shadow: 0 0 8px rgba(52, 211, 153, 0.5);
 }
 
 .status-indicator.disconnected {
-  background: var(--error);
+  background: #f87171;
   box-shadow: 0 0 8px rgba(248, 113, 113, 0.4);
 }
 
-.status-indicator.streaming {
-  background: var(--accent);
-  box-shadow: 0 0 12px var(--accent-glow);
-}
-
-/* Compaction owns the pill while pi summarizes: amber, still pulsing, so a
-   long silent summarize never reads as "stuck". */
+/* Busy (streaming or summarizing): one amber for both — the status text
+   ("Working..." / "Compacting...") carries the finer distinction, and a long
+   silent summarize never reads as "stuck". */
+.status-indicator.streaming,
 .status-indicator.compacting {
-  background: var(--warning, #f0b429);
-  box-shadow: 0 0 12px rgba(240, 180, 41, 0.5);
+  background: #fbbf24;
+  box-shadow: 0 0 12px rgba(251, 191, 36, 0.45);
 }
 
 @keyframes pulse {
@@ -2716,6 +2723,10 @@ code {
 
 /* Hide thinking blocks when toggled off */
 body.hide-thinking .thinking-block { display: none !important; }
+
+/* Hide costs when toggled on (header session pill + per-message usage) */
+body.hide-costs .session-cost,
+body.hide-costs .message-usage { display: none !important; }
 
 /* ═══════════════════════════════════════════════════════
    Tool Cards — glass with coloured left accent

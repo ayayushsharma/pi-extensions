@@ -86,7 +86,6 @@
         <input type="text" id="session-search-input" class="sidebar-search-input" placeholder="Search..." autocomplete="off" aria-label="Search sessions" />
         <div class="sidebar-actions">
           <button type="button" class="icon-btn" id="new-session-btn" title="New session" aria-label="New session"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></button>
-          <button type="button" class="icon-btn" id="refresh-sessions-btn" title="Refresh sessions" aria-label="Refresh sessions"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></svg></button>
           <button type="button" class="icon-btn sidebar-close-btn" id="sidebar-close-btn" title="Back" aria-label="Back"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5"/><path d="m12 19-7-7 7-7"/></svg></button>
         </div>
       </div>
@@ -317,6 +316,10 @@
           <span class="settings-label" id="settings-label-show-thinking">Show thinking</span>
           <button type="button" class="settings-toggle on" id="toggle-show-thinking" role="switch" aria-checked="true" aria-labelledby="settings-label-show-thinking"></button>
         </div>
+        <div class="settings-row">
+          <span class="settings-label" id="settings-label-hide-costs">Hide costs</span>
+          <button type="button" class="settings-toggle" id="toggle-hide-costs" role="switch" aria-checked="false" aria-labelledby="settings-label-hide-costs"></button>
+        </div>
       </div>
       <div class="settings-section hidden" data-pane="voice" id="settings-pane-voice" role="tabpanel" aria-labelledby="settings-tab-voice">
         <div class="settings-section-title">Voice</div>
@@ -405,7 +408,7 @@
   </div>
 
   <!-- Scripts (query bump forces stale SW precache to refetch) -->
-  <script type="module" src="../app.js?v=7"></script>
+  <script type="module" src="../app.js?v=8"></script>
   <script type="module" src="hub.js?v=2"></script>
 </body>
 </html>

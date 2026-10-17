@@ -164,10 +164,14 @@ fallback anywhere — failures surface as UI errors.
   apply via `currentColor` and phones render identically.
 - Thinking level is a header dropdown (off…max); the header shows the bound
   session's model/thinking/context window.
+- The connection dot is a fixed traffic light in every theme — green
+  connected, amber working/summarizing, red disconnected — so its colour is
+  never a theme consequence (see `.status-indicator` in `public/style.css`).
 - Tool cards carry light start-time/duration stamps; Edit diffs render
   GitHub-style (gutter + line numbers) and never trap vertical touch scroll.
-- Settings is tabbed (Appearance/Agent/Voice/Server); auth has no toggle —
-  login is cookie-based and logout lives under Server.
+- Settings is tabbed (Appearance/Voice/Server); Appearance carries the display
+  toggles (Show thinking, Hide costs); auth has no toggle — login is
+  cookie-based and logout lives under Server.
 - On coarse pointers all WS-driven infinite motion freezes to a resting state
   (no Android flicker); compaction stays a first-class Compact… state.
 

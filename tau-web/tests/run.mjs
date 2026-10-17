@@ -30,6 +30,8 @@ const ORDER = [
   "h14-render-safety.test.mjs",
   "h15-popover-fit.test.mjs",
   "h16-markup-aria.test.mjs",
+  "h17-hide-costs.test.mjs",
+  "h18-class-collision.test.mjs",
   "d1-drive-attach.test.mjs",
   "d5-auth.test.mjs",
   "p2-guards.test.mjs",

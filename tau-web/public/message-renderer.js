@@ -10,7 +10,7 @@ import { icon } from './icons.js';
 // at the sink (and filtered on the history path in app.js).
 const VALID_IMAGE_MIMES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
 
-function isValidMessageImage(img) {
+export function isValidMessageImage(img) {
   if (!img || typeof img.data !== 'string' || !img.data) return false;
   if (!VALID_IMAGE_MIMES.includes(img.mimeType || 'image/png')) return false;
   let b64 = img.data;

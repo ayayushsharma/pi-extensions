@@ -82,10 +82,14 @@ let authEnabled = AUTH_CONFIGURED && TAU_SETTINGS.authEnabled !== false;
 // HttpOnly cookie session after verifying JSON credentials. Tokens live in
 // memory only: a server restart invalidates them and the UI re-prompts.
 const authTokens = new Map<string, number>();
-// S13: cookie tokens expire after 30 days (matching the Set-Cookie Max-Age).
 // Stored as token -> createdAt; pruned lazily on each auth check so a leaked
 // token stops working without a restart. The 200-token cap is kept.
-const AUTH_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+// Test hook: TAU_AUTH_TOKEN_TTL_MS shortens the TTL so expiry is testable
+// without waiting 30 days (case X4). Unset/invalid keeps the production 30d.
+const AUTH_TOKEN_TTL_MS = (() => {
+  const raw = Number(process.env.TAU_AUTH_TOKEN_TTL_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : 30 * 24 * 60 * 60 * 1000;
+})();
 const LOGIN_FAIL_WINDOW_MS = 10 * 60 * 1000;
 // S12: Basic-auth backoff reuses the login failure counter per source IP.
 // The first few failures answer immediately (a single typo stays fast);

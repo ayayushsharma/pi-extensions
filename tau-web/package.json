@@ -1,6 +1,7 @@
 {
   "name": "tau-web",
   "version": "0.1.0",
+  "type": "module",
   "description": "Unified Pi web UI: live TUI mirror plus headless sessions (tau copy, full web dialogs, Tau Basic auth)",
   "keywords": [
     "pi",

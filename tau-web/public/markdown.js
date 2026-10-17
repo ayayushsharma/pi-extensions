@@ -358,8 +358,9 @@ function escapeHtml(text) {
     .replace(/"/g, '&quot;');
 }
 
-// Global copy function for code blocks
-window.copyCode = function(btn) {
+// Global copy function for code blocks. Guarded so the renderer can be
+// imported in Node (unit test H14) without a DOM.
+if (typeof window !== 'undefined') window.copyCode = function(btn) {
   const codeBlock = btn.closest('.code-block-wrapper').querySelector('code');
   const text = codeBlock.textContent;
   navigator.clipboard.writeText(text).then(() => {

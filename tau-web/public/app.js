@@ -199,6 +199,17 @@ let serverOwnSessionFile = null; // the web server's own session (non-uplink mir
 // any ctx-limit cap). While set, the static model registry must not overwrite
 // the context window in the header.
 let uplinkContextUsage = null;
+// Headless context-window state (tau-web): each session can carry its own
+// dynamic ctx-window limit (ctx-limit caps, /ctx-set, settings edits, model
+// switches) and it can change midway. The static model catalog knows nothing
+// about it, so the header window for a headless view is re-read from the
+// bound backend on the same ticks that poll for other data. Uplinked TUIs
+// are out of scope: their snapshots own the header via mirror_sync +
+// pollAttachedState.
+let headlessCtxPollInFlight = false;
+let headlessContextWindow = 0; // last live window probed from the bound headless backend
+let headlessCtxSessionKey = ''; // session key the probe above belongs to
+let lastHeadlessCtxPoll = 0; // Date.now() of the last successful probe (watch throttle)
 // True while the browser view is bound to a live TUI (attached, previewing, or
 // frozen after detach). The web server's own pi state must not overwrite the
 // model/thinking/cost/context of the session the user is actually viewing.
@@ -1678,7 +1689,7 @@ async function fetchModelInfo() {
       currentModelId = stateData.data.model.id || '';
       updateModelLabel();
     }
-    if (currentModelId && !uplinkContextUsage) {
+    if (currentModelId && !uplinkContextUsage && !headlessOwnsWindow()) {
       const model = availableModels.find(m => m.id === currentModelId);
       if (model?.contextWindow) setContextWindow(model.contextWindow);
     }
@@ -1776,6 +1787,10 @@ function openModelDropdown() {
         currentModelId = resp?.data?.id || m.id;
         updateModelLabel();
         if (m.contextWindow) setContextWindow(m.contextWindow);
+        // A model switch changes the effective window (ctx-limit caps apply
+        // per model on the backend): re-read the live headless number.
+        headlessContextWindow = 0; headlessCtxSessionKey = '';
+        pollHeadlessContext();
       });
       itemsContainer.appendChild(el);
     });
@@ -2708,6 +2723,10 @@ function bindHeadless(cwd, sessionFile, backendKey = null, opts = {}) {
       if (data?.data?.isAgentRunning && file && opts?.dirName && headlessBinding && (headlessBinding.sessionFile || null) === file) {
         startBackgroundWatch(opts.dirName, cwd, file);
       }
+      // The freshly bound backend reports its effective (possibly
+      // ctx-limit-capped) window; correct the static placeholder alongside
+      // the other post-bind polls.
+      if (file && headlessBinding && (headlessBinding.sessionFile || null) === file) pollHeadlessContext();
     }
   });
 }
@@ -2760,6 +2779,10 @@ async function startBackgroundWatch(dirName, cwd, file) {
       }
       return;
     }
+    // The run may change the effective window midway (model switch,
+    // /ctx-set, settings edit): re-read it on the same watch tick.
+    // Throttled — the child is busy, one extra read per 10s is enough.
+    if (Date.now() - lastHeadlessCtxPoll > 10000) pollHeadlessContext();
     try {
       const h = await fetch(histUrl).then((r) => (r.ok ? r.json() : null));
       if (token !== bgWatchToken) return;
@@ -3254,12 +3277,61 @@ function applyAttachedState(d) {
     updateThinkingBtn();
   }
 }
-async function pollAttachedState() {
-  if (!uplinkActive) return;
+// The probed (possibly capped) window owns the header only while the view
+// still shows the session it was probed for — never leak another session's
+// window into the header.
+function headlessOwnsWindow() {
+  return !uplinkActive && !uplinkPreview && !!headlessBackendKey
+    && headlessContextWindow > 0 && !!headlessCtxSessionKey
+    && headlessCtxSessionKey === sessionKeyOf(sidebar.activeSessionFile || mirrorActiveSessionFile || null);
+}
+// Re-read the bound headless backend's effective ctx-window limit (plus
+// current usage) alongside the other polls. Headless runners only: uplinked
+// TUIs report via mirror_sync + the tui_command branch below.
+async function pollHeadlessContext() {
+  if (uplinkActive || uplinkPreview) return;
+  if (!headlessBackendKey) return;
+  const boundKey = headlessBinding?.sessionFile ? sessionKeyOf(headlessBinding.sessionFile) : '';
+  if (!boundKey || boundKey !== sessionKeyOf(sidebar.activeSessionFile || mirrorActiveSessionFile || null)) return;
+  if (headlessCtxPollInFlight) return;
+  const myEpoch = bindingEpoch;
+  headlessCtxPollInFlight = true;
   try {
-    const data = await sendRpc({ type: 'tui_command', command: { type: 'get_state' } });
-    if (data && !data.timeout && data.success && data.data) applyAttachedState(data.data);
-  } catch {}
+    // get_session_stats carries contextUsage { tokens, contextWindow } —
+    // the backend's live numbers, caps included — in a single round trip.
+    const data = await sendRpc({ type: 'rpc_command', command: { type: 'get_session_stats' } });
+    if (myEpoch !== bindingEpoch) return;
+    const boundNow = headlessBinding?.sessionFile ? sessionKeyOf(headlessBinding.sessionFile) : '';
+    if (!boundNow || boundNow !== sessionKeyOf(sidebar.activeSessionFile || mirrorActiveSessionFile || null)) return;
+    const cu = data && !data.timeout && data.success ? data.data?.contextUsage : null;
+    if (cu) {
+      if (Number.isFinite(cu.contextWindow) && cu.contextWindow > 0) {
+        headlessContextWindow = cu.contextWindow;
+        headlessCtxSessionKey = boundNow;
+        lastHeadlessCtxPoll = Date.now();
+        setContextWindow(cu.contextWindow);
+      }
+      if (Number.isFinite(cu.tokens)) {
+        lastInputTokens = cu.tokens;
+        updateTokenUsage();
+      }
+    }
+  } catch {} finally {
+    headlessCtxPollInFlight = false;
+  }
+}
+async function pollAttachedState() {
+  if (uplinkActive) {
+    try {
+      const data = await sendRpc({ type: 'tui_command', command: { type: 'get_state' } });
+      if (data && !data.timeout && data.success && data.data) applyAttachedState(data.data);
+    } catch {}
+    return;
+  }
+  // Headless-only: the same 60s tick re-reads the bound backend's effective
+  // window, which may have changed midway (/ctx-set, settings, model switch)
+  // after the last render.
+  pollHeadlessContext();
 }
 setInterval(pollAttachedState, 60000);
 
@@ -3618,7 +3690,13 @@ function renderSessionHistory(entries, meta = null) {
   // scan above stands.
   if (meta?.model?.id) histModel = meta.model.id;
   if (meta?.thinkingLevel) histThinking = meta.thinkingLevel;
-  if (histModel && histModel !== currentModelId) { currentModelId = histModel; updateModelLabel(); }
+  if (histModel && histModel !== currentModelId) {
+    currentModelId = histModel; updateModelLabel();
+    // A new model means a new effective window: drop the probed (possibly
+    // capped) value so the static registry re-seeds and the headless poll
+    // corrects it to the live number.
+    headlessContextWindow = 0; headlessCtxSessionKey = '';
+  }
   if (histThinking && histThinking !== currentThinkingLevel) { currentThinkingLevel = histThinking; updateThinkingBtn(); }
   sessionTotalCost = histCost;
   if (histTokens) { lastInputTokens = histTokens; lastUsage = histUsage; }
@@ -3626,7 +3704,11 @@ function renderSessionHistory(entries, meta = null) {
   // re-derive the window from the history's model via the catalog, then
   // repaint — otherwise the pill shows the previous session's percentage.
   const hm = histModel && availableModels.find((m) => m.id === histModel);
-  if (hm?.contextWindow) setContextWindow(hm.contextWindow);
+  if (headlessOwnsWindow()) {
+    // A live (possibly capped) window was already probed for this session —
+    // the static catalog must not overwrite it. Just refresh the usage bar.
+    updateTokenUsage();
+  } else if (hm?.contextWindow) setContextWindow(hm.contextWindow);
   else updateTokenUsage();
 
   // Window the render: full history stays in memory/on disk, the DOM only
@@ -3675,6 +3757,7 @@ function resetContextPeak() {
 function resetTokenTracking() {
   sessionTotalCost = 0;
   lastInputTokens = 0;
+  headlessContextWindow = 0; headlessCtxSessionKey = '';
   resetContextPeak();
 }
 

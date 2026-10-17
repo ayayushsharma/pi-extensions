@@ -65,7 +65,7 @@ function isAllowedHostName(hostname, bindHost) {
   return !!bindHost && bindHost === hostname;
 }
 
-export function startHubStub({ port, staticDir, auth = null, version = "e2e-stub", processes = [], sessions = null, sessionFile = null, serverState = null }) {
+export function startHubStub({ port, staticDir, auth = null, version = "e2e-stub", processes = [], sessions = null, sessionFile = null, serverState = null, headlessContext = null }) {
   const authEnabled = !!(auth && auth.user && auth.pass);
   const tokens = new Set();
   const startedAt = new Date().toISOString();
@@ -387,6 +387,19 @@ export function startHubStub({ port, staticDir, auth = null, version = "e2e-stub
         case "rpc_command": {
           // Simulated headless round-trip: prompt echoes HEADLESS-OK.
           const inner = msg.command || {};
+          // Headless ctx-window probe (H22): the stub backend reports a
+          // capped effective window like a ctx-limit child would.
+          if (inner.type === "get_session_stats") {
+            if (id) ack("get_session_stats", headlessContext ? {
+              tokens: { input: headlessContext.tokens, total: headlessContext.tokens },
+              contextUsage: {
+                tokens: headlessContext.tokens,
+                contextWindow: headlessContext.contextWindow,
+                percent: Math.round((headlessContext.tokens / headlessContext.contextWindow) * 100),
+              },
+            } : {});
+            return;
+          }
           if (inner.type === "prompt" && typeof inner.message === "string" && inner.message.includes("HEADLESS-OK")) {
             send(ws, { type: "rpc_event", event: { type: "message_start", message: { role: "assistant" } } });
             send(ws, {

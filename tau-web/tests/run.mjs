@@ -35,6 +35,7 @@ const ORDER = [
   "h19-picker-start.test.mjs",
   "h20-free-calls.test.mjs",
   "h21-session-model.test.mjs",
+  "h22-headless-ctx.test.mjs",
   "d1-drive-attach.test.mjs",
   "d5-auth.test.mjs",
   "p2-guards.test.mjs",

@@ -196,7 +196,10 @@ export async function launchBrowser({ viewport = { width: 1280, height: 800 } } 
     page.on("pageerror", (e) => pageerrors.push(String(e?.message || e).slice(0, 2000)));
     return {
       kind: "playwright",
-      async newPage() {
+      async newPage(viewport) {
+        // Per-page viewport override so H2/H15 can render the same shell at
+        // desktop and phone sizes (the context viewport is just the default).
+        if (viewport) await page.setViewportSize(viewport);
         return {
           pageerrors,
           async goto(url) { await page.goto(url, { waitUntil: "load" }); await page.waitForTimeout(2500); },

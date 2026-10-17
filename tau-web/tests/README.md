@@ -16,7 +16,7 @@ tests/
   hub-stub.mjs       # CI hub: headless-only HTTP + WS contracts without a pi process
   hub-real.mjs       # Real hub boot (`pi -e ./tau-web --mode rpc`, stdin held open)
   browser.mjs        # CDP driver: system Chrome, pageerror-first, screenshots on fail
-  e2e/               # one file per case (H1–H14, D1/D5, P2, X1–X5)
+  e2e/               # one file per case (H1–H15, D1/D5, P2, X1–X5)
 ```
 
 ## Run
@@ -39,7 +39,8 @@ requirement is missing is reported as `SKIP (<reason>)` and the run
 still exits 0. `TAU_STRICT=1` flips that to exit 1 for CI. No
 downloaded browsers, no new npm deps — the CDP driver reuses the `ws`
 dependency. If `playwright-core` happens to be installed it is used
-instead (same assertions, same selectors).
+instead (same assertions, same selectors; `newPage(viewport)` resizes
+that page, so desktop/mobile passes are real in both drivers).
 
 Env knobs (all optional, all per-run so ports never bump):
 
@@ -101,6 +102,11 @@ Chrome):
 - H14: pure-Node renderer safety — hostile image blocks accepted/
   rejected by `isValidMessageImage` and markdown placeholder
   collisions (`%%CODEBLOCK_n%%` etc.) staying literal (B1/B2/S1).
+- H15: composer popovers — model picker + thinking menu stay inside
+  the viewport at 390×844 and at a keyboard-shrunk 390×430 (no
+  sideways page scroll); the model search field is the menu's last
+  child, below the scrolling list, and the menu height follows
+  `min(360px, 45dvh)`.
 - D1: relay frames answered, dead mirror frames silent, socket alive.
 - D5: auth — 401 + overlay, login → WS, logout revokes.
 - P2: hardening — traversal, rebinding, dead WS contract.

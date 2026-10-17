@@ -193,6 +193,7 @@ P0 — hub alive, core loop (Layers A–C, CI):
 | H12 | real hub | `/api/files/content` jails reads to the viewed session's cwd |
 | H13 | real hub | session-picker summaries + mkdir jail + fork |
 | H14 | pure Node (no hub, no Chrome) | hostile image blocks accepted/rejected by `isValidMessageImage`; `%%CODEBLOCK_n%%`-style placeholders stay literal (B1/B2/S1) |
+| H15 | stub hub + browser, 390×844 and 390×430 (keyboard-shrunk) | open the model picker, then the thinking menu | nothing spills past the viewport (no sideways page scroll); model search field is the menu's last child below the scrolling list; menu height ≤ `45dvh` |
 
 Hardening regressions (from `docs/code-review.md` §11; real hub,
 SKIP without `pi`):
@@ -268,6 +269,7 @@ P2 — hardening:
 | Request/response hardening (body cap, beacon cap, headers, CORS) | `mirror-server.ts` | X2, X3 |
 | Auth lifecycle (login cap, backoff, cookie, TTL, set_auth) | `mirror-server.ts` | D5, X4 |
 | Renderer safety (images, markdown placeholders) | `public/message-renderer.js`, `public/markdown.js` | H14 |
+| Composer popovers (model picker/thinking menu) fit narrow + keyboard-shrunk viewports | `public/app.js` (`clampMenuToViewport`), `public/style.css`, `public/hub/hub.css` | H15 |
 | Session picker (summaries/mkdir/fork) | `mirror-server.ts`, `app.js` | H13 |
 | Attach relay + dead frames | `mirror-server.ts` (relay block), `lib/hub-socket.ts` | H7–H9, D1 |
 | Live processes scan/kill | `lib/processes.ts`, `headless-bridge.ts` (`closeByPid`/`childPids`), `app.js` server pane | H10 (stub + real) |

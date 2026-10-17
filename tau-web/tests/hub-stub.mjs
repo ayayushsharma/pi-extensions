@@ -4,7 +4,8 @@
 //
 // Covered: health, /→302, static, login/logout + 401, /api/rpc frame
 // contract (binding cmds rejected over HTTP like the real hub; unknown
-// commands answered `Unknown command` like the real hub), /api/instances
+// commands answered `Unknown command` like the real hub; `get_available_models`
+// answered with a model list so the composer picker can be driven), /api/instances
 // (one fake live TUI, ADR-014), traversal guards, Host/Origin rebinding
 // check, WS router (new/start/rpc/ping/uplink/unknown; stale mirror frames
 // stay dead).
@@ -41,6 +42,14 @@ const FAKE_LIVE = {
   sessionFile: "/tmp/e2e-live/019d8010-0000-4000-8000-000000000000.jsonl",
   cwd: "/tmp/e2e-live", local: false, startedAt: new Date().toISOString(),
 };
+
+// Model picker data for the app shell: 24 entries so the list overflows the
+// picker's capped height (H15) and the scroll/pin behaviour is exercised.
+const FAKE_MODELS = Array.from({ length: 24 }, (_, i) => ({
+  id: `stub-model-${String(i).padStart(2, "0")}-long-name`,
+  provider: i % 3 === 0 ? "anthropic" : `stub-provider-${i % 4}`,
+  contextWindow: 100000 + i * 1000,
+}));
 
 function hostnameOf(header) {
   if (!header) return "";
@@ -236,6 +245,16 @@ export function startHubStub({ port, staticDir, auth = null, version = "e2e-stub
             // no socket to keep silent on — the answer is the rejection).
             res.writeHead(200, { "Content-Type": "application/json" });
             res.end(JSON.stringify({ type: "response", command: command.type, success: false, error: `Unknown command: ${command.type}`, id: command.id }));
+            return;
+          }
+          if (command && command.type === "get_available_models") {
+            // Enough entries to overflow the picker's capped height, so the
+            // list-scrolls/search-stays-pinned behaviour (H15) is exercised.
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({
+              type: "response", command: "get_available_models", success: true,
+              data: { models: FAKE_MODELS }, id: command.id,
+            }));
             return;
           }
           res.writeHead(200, { "Content-Type": "application/json" });

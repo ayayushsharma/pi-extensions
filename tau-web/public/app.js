@@ -1715,9 +1715,13 @@ function clampMenuToViewport(menu) {
 function openModelDropdown() {
   modelDropdownMenu.innerHTML = '';
 
-  // Items container — the only scroller.
+  // Items container — the only scroller. It is the listbox: the search field
+  // below it is a sibling, so the listbox holds options and nothing else.
   const itemsContainer = document.createElement('div');
   itemsContainer.className = 'model-dropdown-items';
+  itemsContainer.id = 'model-dropdown-list';
+  itemsContainer.setAttribute('role', 'listbox');
+  itemsContainer.setAttribute('aria-label', 'Models');
   modelDropdownMenu.appendChild(itemsContainer);
 
   // Search input pinned at the bottom of the menu: with the on-screen
@@ -1727,6 +1731,11 @@ function openModelDropdown() {
   search.className = 'model-dropdown-search';
   search.placeholder = 'Search models…';
   search.type = 'text';
+  search.setAttribute('aria-label', 'Search models');
+  search.setAttribute('role', 'combobox');
+  search.setAttribute('aria-expanded', 'true');
+  search.setAttribute('aria-autocomplete', 'list');
+  search.setAttribute('aria-controls', 'model-dropdown-list');
   modelDropdownMenu.appendChild(search);
 
   function renderItems(filter) {
@@ -1739,6 +1748,8 @@ function openModelDropdown() {
 
       const el = document.createElement('div');
       el.className = `model-dropdown-item${m.id === currentModelId ? ' active' : ''}`;
+      el.setAttribute('role', 'option');
+      el.setAttribute('aria-selected', m.id === currentModelId ? 'true' : 'false');
       const ctxK = m.contextWindow ? `${(m.contextWindow / 1000).toFixed(0)}k` : '';
       const providerLabel = m.provider && m.provider !== 'anthropic' ? `<span class="model-dropdown-item-provider">${m.provider}</span>` : '';
       el.innerHTML = `<span>${shortName}${providerLabel}</span><span class="model-dropdown-item-ctx">${ctxK}</span>`;
@@ -1770,6 +1781,7 @@ function openModelDropdown() {
 
   modelDropdownMenu.classList.remove('hidden');
   modelDropdown.classList.add('open');
+  modelDropdownBtn.setAttribute('aria-expanded', 'true');
   requestAnimationFrame(() => {
     clampMenuToViewport(modelDropdownMenu);
     search.focus();
@@ -1779,6 +1791,7 @@ function openModelDropdown() {
 function closeModelDropdown() {
   modelDropdownMenu.classList.add('hidden');
   modelDropdown.classList.remove('open');
+  modelDropdownBtn.setAttribute('aria-expanded', 'false');
 }
 
 modelDropdownBtn.addEventListener('click', toggleModelDropdown);
@@ -1796,7 +1809,7 @@ const thinkingMenu = document.getElementById('thinking-menu');
 function renderThinkingMenu() {
   if (!thinkingMenu) return;
   thinkingMenu.innerHTML = THINKING_LEVELS.map((lv) =>
-    `<button type="button" class="thinking-item${lv === currentThinkingLevel ? ' active' : ''}" data-level="${lv}">${lv}</button>`
+    `<button type="button" class="thinking-item${lv === currentThinkingLevel ? ' active' : ''}" role="option" aria-selected="${lv === currentThinkingLevel ? 'true' : 'false'}" data-level="${lv}">${lv}</button>`
   ).join('');
   thinkingMenu.querySelectorAll('.thinking-item').forEach((item) => {
     item.addEventListener('click', async (e) => {
@@ -1804,6 +1817,7 @@ function renderThinkingMenu() {
       const level = item.dataset.level;
       thinkingMenu.classList.add('hidden');
       thinkingDropdown?.classList.remove('open');
+      thinkingBtn.setAttribute('aria-expanded', 'false');
       if (level === currentThinkingLevel) return;
       if (uplinkPreview) {
         statusText.textContent = 'Drive this TUI to change thinking level';
@@ -1823,11 +1837,13 @@ thinkingBtn.addEventListener('click', (e) => {
   const opening = thinkingMenu?.classList.contains('hidden');
   thinkingMenu?.classList.toggle('hidden');
   thinkingDropdown?.classList.toggle('open');
+  thinkingBtn.setAttribute('aria-expanded', opening ? 'true' : 'false');
   if (opening) clampMenuToViewport(thinkingMenu);
 });
 document.addEventListener('click', () => {
   thinkingMenu?.classList.add('hidden');
   thinkingDropdown?.classList.remove('open');
+  thinkingBtn.setAttribute('aria-expanded', 'false');
 });
 
 // ═══════════════════════════════════════
@@ -3845,7 +3861,11 @@ const toggleShowThinking = document.getElementById('toggle-show-thinking');
 // Settings tabs: one pane visible at a time so the panel stays short.
 const settingsTabs = document.querySelectorAll('#settings-tabs .settings-tab');
 function selectSettingsTab(name) {
-  settingsTabs.forEach((t) => t.classList.toggle('active', t.dataset.tab === name));
+  settingsTabs.forEach((t) => {
+    const on = t.dataset.tab === name;
+    t.classList.toggle('active', on);
+    t.setAttribute('aria-selected', on ? 'true' : 'false');
+  });
   document.querySelectorAll('#settings-panel .settings-section').forEach((sec) => {
     sec.classList.toggle('hidden', sec.dataset.pane !== name);
   });
@@ -3878,7 +3898,7 @@ async function openSettings() {
   buildThemeGrid();
   // Voice tab: hidden where the browser has no speechSynthesis.
   const voiceTab = document.querySelector('#settings-tabs .settings-tab[data-tab="voice"]');
-  const voiceSection = document.getElementById('settings-voice-section');
+  const voiceSection = document.getElementById('settings-pane-voice');
   if (!speech.supported) {
     if (voiceTab) voiceTab.style.display = 'none';
     if (voiceSection) voiceSection.style.display = 'none';
@@ -4041,8 +4061,16 @@ function populateVoiceSelect() {
   if (ttsVoiceSelect.value !== current) ttsVoiceSelect.value = '';
 }
 
+// Settings toggles carry their state twice: the `on` class paints it, the
+// aria-checked pair (role="switch") exposes it. Keep both in lockstep.
+function setToggleState(btn, on) {
+  if (!btn) return;
+  btn.className = `settings-toggle${on ? ' on' : ''}`;
+  btn.setAttribute('aria-checked', on ? 'true' : 'false');
+}
+
 function syncVoiceControls() {
-  if (toggleAutoRead) toggleAutoRead.className = `settings-toggle${speech.settings.autoRead ? ' on' : ''}`;
+  setToggleState(toggleAutoRead, !!speech.settings.autoRead);
   if (ttsRate) ttsRate.value = String(speech.settings.rate);
   if (ttsRateValue) ttsRateValue.textContent = `${Number(speech.settings.rate).toFixed(2)}×`;
   if (ttsVoiceSelect) ttsVoiceSelect.value = speech.settings.voiceURI || '';
@@ -4074,12 +4102,12 @@ if (btnTtsTest) {
 
 // Show thinking toggle (local pref)
 const showThinking = localStorage.getItem('tau-show-thinking') !== 'false';
-toggleShowThinking.className = `settings-toggle${showThinking ? ' on' : ''}`;
+setToggleState(toggleShowThinking, showThinking);
 if (!showThinking) document.body.classList.add('hide-thinking');
 
 toggleShowThinking.addEventListener('click', () => {
   const isOn = toggleShowThinking.classList.contains('on');
-  toggleShowThinking.className = `settings-toggle${isOn ? '' : ' on'}`;
+  setToggleState(toggleShowThinking, !isOn);
   document.body.classList.toggle('hide-thinking', isOn);
   localStorage.setItem('tau-show-thinking', !isOn);
 });

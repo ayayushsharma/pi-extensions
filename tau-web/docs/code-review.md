@@ -415,3 +415,50 @@ Notes:
   exact-page-boundary "more on server" control (T12).
 - New fixes run the same way: add a task to `scripts/review-loop/tasks.json`,
   then `python3 scripts/review-loop/fix_loop.py --only T<n> --commit --branch code-review-fixes`.
+
+## 12. Markup & accessibility pass (hub shell)
+
+Follow-up to §6: the hub's HTML was audited against what the DOM actually
+renders, then fixed with **add-only** changes (no element removed, reordered,
+renamed, or re-styled). Evidence that nothing moves is in the notes below.
+
+Findings and fixes:
+
+| # | Finding | Fix |
+|---|---------|-----|
+| M1 | `#toggle-show-thinking` had no `</button>` — the HTML parser implicitly closed it at the next `</div>`, so the toggle and everything after it in that row were siblings, not nested (an HTML-validity bug, invisible only because the CSS happened not to care) | closed the button; the settings row is now the DOM the source describes |
+| M2 | 23 of 31 buttons had no `type` — inside a form they would have defaulted to `submit` | `type="button"` on all 32 |
+| M3 | Three icon-only buttons (`#settings-close`, `#toggle-show-thinking`, `#toggle-auto-read`) had no accessible name | `aria-label` / `aria-labelledby` to their visible label; `role="switch"` + `aria-checked` on both toggles |
+| M4 | Shell had no landmarks: sidebar, main column, chat header and file pane were all plain `<div>`s | `<aside aria-label>` / `<main>` / `<header>` / `<aside aria-label>`; `#tab-strip` and `#vtabs` are `role="tablist"` |
+| M5 | The four overlays (settings, command palette, login, session home) were unnamed divs | `role="dialog"` + `aria-modal="true"` + `aria-labelledby`/`aria-label`; settings tabs are a `tablist` with `role="tab"`/`aria-selected`/`aria-controls` and `role="tabpanel"` panes |
+| M6 | Model picker / thinking menu exposed no state | `#model-dropdown-btn`/`#thinking-btn` carry `aria-haspopup`/`aria-expanded`/`aria-controls`; the menus are `listbox`es with `role="option" aria-selected="true"` on the current model/level; the model search is a `combobox` wired to `#model-dropdown-list` |
+| M7 | `dialogs.js` built modal dialogs (`ui.select`/`confirm`/`input`/`editor`, `confirmLocal`, `promptLocal`) as unnamed divs | one `makeDialogAccessible()` handle adds `role="dialog"`, `aria-modal`, `aria-labelledby` from the title row; notifications get `role="status"` |
+| M8 | Login fields, session search, composer, command search, file-browser buttons had no accessible names | `aria-label` on each; `#proc-error`/`#login-error` are `role="alert"`, `#session-banner` is `role="status"` |
+
+State is carried twice on purpose — the `on`/`active` class paints it, ARIA
+exposes it — and a single `setToggleState()` helper keeps the pair from
+drifting.
+
+Proof of UI-neutrality (both captured on this branch):
+
+- `/tmp/tau-a11y/fingerprint.mjs` (stub hub, 40 computed-style props + rects for
+  every element, desktop 1280×800 and phone 390×844, animations frozen) renders
+  **0 rect diffs and 0 style diffs** before vs. after across `boot` and
+  `settings`; the three PNGs are byte-identical (md5).
+- The one non-identical state pair in the wider 16-state sweep (`sidebar`,
+  `home`, `file-sidebar`) reproduces **before vs. before** with the same pixel
+  counts and bounding boxes — it is antialiasing noise of the animated status
+  dots, not the edit.
+- Only CSS rule in the codebase that keys off ARIA is the pre-existing
+  `.login-reveal[aria-pressed="true"]`; no JS reads `role`/`aria-*`, so the new
+  attributes cannot change layout or behaviour.
+
+Regression guard: **H16** (`tests/e2e/h16-markup-aria.test.mjs`) audits the
+served `/hub/` HTML (tag balance, duplicate ids, button `type`, accessible
+names, labelled inputs, `alt`, dialog/switch/tab/listbox attributes with live
+id targets) and then drives the live widgets (settings tabs, toggles, model
+picker round-trip, thinking menu, session tab in strip + sidebar mirror),
+asserting the ARIA state tracks the visual one. It fails on the pre-fix tree
+(38 markup issues; `aria-selected`/`aria-expanded` absent) — see
+`docs/testing.md`. `#model-dropdown-menu`'s structure is unchanged, so H15's
+scroll/pin contract still holds.

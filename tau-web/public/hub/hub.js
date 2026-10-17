@@ -184,6 +184,7 @@ function init() {
     btn.className = p + (t.key === state.active ? ' active' : '');
     btn.dataset.key = t.key;
     btn.setAttribute('role', 'tab');
+    btn.setAttribute('aria-selected', t.key === state.active ? 'true' : 'false');
     btn.title = t.title;
 
     const dot = document.createElement('span');

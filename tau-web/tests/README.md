@@ -16,7 +16,7 @@ tests/
   hub-stub.mjs       # CI hub: headless-only HTTP + WS contracts without a pi process
   hub-real.mjs       # Real hub boot (`pi -e ./tau-web --mode rpc`, stdin held open)
   browser.mjs        # CDP driver: system Chrome, pageerror-first, screenshots on fail
-  e2e/               # one file per case (H1–H15, D1/D5, P2, X1–X5)
+  e2e/               # one file per case (H1–H16, D1/D5, P2, X1–X5)
 ```
 
 ## Run
@@ -107,6 +107,13 @@ Chrome):
   sideways page scroll); the model search field is the menu's last
   child, below the scrolling list, and the menu height follows
   `min(360px, 45dvh)`.
+- H16: hub markup + ARIA — the served HTML is well-formed (every tag
+  closes, no duplicate ids, explicit `type` on every button, named
+  icon buttons, labelled inputs, `alt` on images, dialog/switch/tab/
+  listbox attributes present and pointing at live ids), and the live
+  widgets keep their ARIA state in step with the visual one
+  (`aria-expanded` on the popovers, `aria-selected` on settings tabs
+  and the current model/thinking row, `aria-checked` on the toggles).
 - D1: relay frames answered, dead mirror frames silent, socket alive.
 - D5: auth — 401 + overlay, login → WS, logout revokes.
 - P2: hardening — traversal, rebinding, dead WS contract.

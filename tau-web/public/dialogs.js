@@ -4,6 +4,9 @@
 
 import { icon } from './icons.js';
 
+// Monotonic id source for dialog titles (aria-labelledby targets).
+let dialogSeq = 0;
+
 export class DialogHandler {
   constructor(container, wsClient) {
     this.container = container;
@@ -186,6 +189,7 @@ export class DialogHandler {
     // Create a temporary notification element
     const notification = document.createElement('div');
     notification.className = 'error-message';
+    notification.setAttribute('role', 'status');
     notification.innerHTML = `${icon(notifyType === 'info' ? 'info' : 'warn', 14)}<span></span>`;
     notification.querySelector('span').textContent = message;
     
@@ -249,6 +253,7 @@ export class DialogHandler {
       cancelBtn.addEventListener('click', () => done(false));
       okBtn.addEventListener('click', () => done(true));
       dialog.addEventListener('keydown', (e) => { if (e.key === 'Escape') done(false); });
+      this.makeDialogAccessible(dialog);
       this.currentDialog = dialog;
       this.container.innerHTML = '';
       this.container.appendChild(dialog);
@@ -314,6 +319,7 @@ export class DialogHandler {
         else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) okBtn.click();
       });
 
+      this.makeDialogAccessible(dialog);
       this.currentDialog = dialog;
       this.container.innerHTML = '';
       this.container.appendChild(dialog);
@@ -321,6 +327,21 @@ export class DialogHandler {
       const first = inputs[fields[0]?.name];
       setTimeout(() => (first || okBtn).focus(), 50);
     });
+  }
+
+  // Every dialog is modal and takes its accessible name from its title row,
+  // so assistive tech announces it on open instead of an unnamed group.
+  // Called wherever a freshly built dialog is handed to the container: the
+  // four server-driven ones via showDialog, plus confirmLocal/promptLocal.
+  makeDialogAccessible(dialogElement) {
+    dialogElement.setAttribute('role', 'dialog');
+    dialogElement.setAttribute('aria-modal', 'true');
+    const titleEl = dialogElement.querySelector('.dialog-title');
+    if (titleEl) {
+      if (!titleEl.id) titleEl.id = `dialog-title-${++dialogSeq}`;
+      dialogElement.setAttribute('aria-labelledby', titleEl.id);
+    }
+    return dialogElement;
   }
 
   // ADR-007: dialogs queue one-at-a-time. A second request supersedes the
@@ -337,6 +358,7 @@ export class DialogHandler {
     this.currentRequestId = requestId || null;
     this.currentRequest = request;
     this.wireAbort(dialogElement, this.currentRequestId);
+    this.makeDialogAccessible(dialogElement);
     this.currentDialog = dialogElement;
     this.container.innerHTML = '';
     this.container.appendChild(dialogElement);

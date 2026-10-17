@@ -80,14 +80,14 @@
 <body>
   <div class="app-layout hub-shell">
     <!-- Left Sidebar (off-canvas on the hub: tab bar + home are primary nav) -->
-    <div class="sidebar collapsed" id="sidebar">
+    <aside class="sidebar collapsed" id="sidebar" aria-label="Sessions and running TUIs">
       <div class="sidebar-header">
         <div class="mode-toggle" id="mode-toggle"></div>
-        <input type="text" id="session-search-input" class="sidebar-search-input" placeholder="Search..." autocomplete="off" />
+        <input type="text" id="session-search-input" class="sidebar-search-input" placeholder="Search..." autocomplete="off" aria-label="Search sessions" />
         <div class="sidebar-actions">
-          <button class="icon-btn" id="new-session-btn" title="New session" aria-label="New session"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></button>
-          <button class="icon-btn" id="refresh-sessions-btn" title="Refresh sessions" aria-label="Refresh sessions"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></svg></button>
-          <button class="icon-btn sidebar-close-btn" id="sidebar-close-btn" title="Back" aria-label="Back"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5"/><path d="m12 19-7-7 7-7"/></svg></button>
+          <button type="button" class="icon-btn" id="new-session-btn" title="New session" aria-label="New session"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></button>
+          <button type="button" class="icon-btn" id="refresh-sessions-btn" title="Refresh sessions" aria-label="Refresh sessions"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></svg></button>
+          <button type="button" class="icon-btn sidebar-close-btn" id="sidebar-close-btn" title="Back" aria-label="Back"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5"/><path d="m12 19-7-7 7-7"/></svg></button>
         </div>
       </div>
       <!-- Currently connected session: name + project directory + state -->
@@ -101,45 +101,45 @@
       </div>
       <div class="vtabs-section" id="vtabs-section">
         <div class="vtabs-heading">Currently running Tabs</div>
-        <div class="vtabs" id="vtabs"></div>
+        <div class="vtabs" id="vtabs" role="tablist" aria-label="Open sessions"></div>
       </div>
       <div class="live-section" id="live-section" style="display:none"></div>
       <div class="session-list" id="session-list">
         <div class="session-loading">Loading sessions...</div>
       </div>
-    </div>
+    </aside>
 
     <!-- Sidebar overlay for mobile -->
     <div class="sidebar-overlay" id="sidebar-overlay"></div>
 
     <!-- Main Chat Area -->
-    <div class="main">
+    <main class="main">
       <!-- Top bar: session tabs + app controls in a single row -->
-      <div class="header">
+      <header class="header">
         <!-- Header icons share a 24-unit viewBox, so a fixed stroke-width
              renders thinner at smaller sizes. Keep the rendered stroke at
              ~1.5px on every header icon: 15px -> 2.4, 16px -> 2.25, 18px -> 2. -->
         <div class="tabbar" id="tabbar">
-          <button class="sidebar-toggle" id="sidebar-toggle" title="Live TUIs &amp; sessions" aria-label="Toggle sidebar"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg></button>
-          <button class="tabbar-home" id="tabbar-home" title="All sessions (Ctrl+Shift+P)" aria-label="All sessions">
+          <button type="button" class="sidebar-toggle" id="sidebar-toggle" title="Live TUIs &amp; sessions" aria-label="Toggle sidebar"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg></button>
+          <button type="button" class="tabbar-home" id="tabbar-home" title="All sessions (Ctrl+Shift+P)" aria-label="All sessions">
             <img src="../icons/tau-192.png" alt="" class="tabbar-logo">
           </button>
-          <div class="tab-strip" id="tab-strip" role="tablist"></div>
-          <button class="tab-new" id="tab-new" title="New session (Ctrl+T)" aria-label="New session">
+          <div class="tab-strip" id="tab-strip" role="tablist" aria-label="Open sessions"></div>
+          <button type="button" class="tab-new" id="tab-new" title="New session (Ctrl+T)" aria-label="New session">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
           </button>
           <div class="tabbar-spacer"></div>
-          <div class="status">
+          <div class="status" role="status">
             <span class="status-indicator" id="status-indicator"></span>
             <span class="status-text" id="status-text">Connecting...</span>
           </div>
-          <button class="icon-btn" id="file-sidebar-toggle" title="Files" aria-label="Toggle file browser">
+          <button type="button" class="icon-btn" id="file-sidebar-toggle" title="Files" aria-label="Toggle file browser">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>
           </button>
-          <button class="settings-btn" id="settings-btn" title="Settings" aria-label="Settings">
+          <button type="button" class="settings-btn" id="settings-btn" title="Settings" aria-label="Settings">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.74l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
           </button>
-          <button class="icon-btn" id="phone-refresh" title="Reload page" aria-label="Reload page">
+          <button type="button" class="icon-btn" id="phone-refresh" title="Reload page" aria-label="Reload page">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
           </button>
         </div>
@@ -150,10 +150,10 @@
             <span class="tb-state" id="tb-state"></span>
           </div>
         </div>
-      </div>
+      </header>
 
       <!-- Preview-then-attach banner (tau-web) -->
-      <div class="session-banner hidden" id="session-banner"></div>
+      <div class="session-banner hidden" id="session-banner" role="status"></div>
 
       <!-- Launcher (project picker) -->
       <div class="launcher hidden" id="launcher"></div>
@@ -173,7 +173,7 @@
       </div>
 
       <!-- Scroll to bottom + new message indicator -->
-      <button class="scroll-bottom-btn hidden" id="scroll-bottom-btn">
+      <button type="button" class="scroll-bottom-btn hidden" id="scroll-bottom-btn" aria-label="Scroll to latest messages">
         <span class="scroll-bottom-badge hidden" id="scroll-bottom-badge">New <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><polyline points="19 12 12 19 5 12"/></svg></span>
         <span class="scroll-bottom-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><polyline points="19 12 12 19 5 12"/></svg></span>
       </button>
@@ -190,6 +190,7 @@
             <div class="input-bubble">
               <textarea
                 id="message-input"
+                aria-label="Message"
                 placeholder="Ask anything, / for commands…"
                 autocomplete="off"
                 rows="2"
@@ -217,15 +218,15 @@
               </div>
               <div class="composer-controls">
                 <div class="model-dropdown" id="model-dropdown">
-                  <button type="button" class="model-dropdown-btn" id="model-dropdown-btn" title="Switch model">
+                  <button type="button" class="model-dropdown-btn" id="model-dropdown-btn" title="Switch model" aria-haspopup="listbox" aria-expanded="false" aria-controls="model-dropdown-menu">
                     <span class="model-dropdown-label" id="model-dropdown-label">model</span>
                     <svg class="model-dropdown-chevron" width="10" height="6" viewBox="0 0 10 6" fill="none"><path d="M1 1L5 5L9 1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
                   </button>
                   <div class="model-dropdown-menu hidden" id="model-dropdown-menu"></div>
                 </div>
                 <div class="thinking-dropdown" id="thinking-dropdown">
-                  <button type="button" class="thinking-tag" id="thinking-btn" title="Thinking level">off</button>
-                  <div class="thinking-menu hidden" id="thinking-menu"></div>
+                  <button type="button" class="thinking-tag" id="thinking-btn" title="Thinking level" aria-haspopup="listbox" aria-expanded="false" aria-controls="thinking-menu">off</button>
+                  <div class="thinking-menu hidden" id="thinking-menu" role="listbox" aria-label="Thinking level"></div>
                 </div>
               </div>
             </div>
@@ -259,35 +260,35 @@
           </div>
         </div>
       </div>
-    </div>
+    </main>
 
     <!-- File Browser (right sidebar) -->
-    <div class="file-sidebar collapsed" id="file-sidebar">
+    <aside class="file-sidebar collapsed" id="file-sidebar" aria-label="Files">
       <div class="file-sidebar-header">
         <span class="file-sidebar-title" id="file-sidebar-title">Files</span>
-        <button class="icon-btn" id="file-sidebar-new" title="New session in this directory">
+        <button type="button" class="icon-btn" id="file-sidebar-new" title="New session in this directory" aria-label="New session in this directory">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
         </button>
-        <button class="icon-btn" id="file-sidebar-up" title="Parent directory">
+        <button type="button" class="icon-btn" id="file-sidebar-up" title="Parent directory" aria-label="Parent directory">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg>
         </button>
-        <button class="icon-btn" id="file-sidebar-finder" title="Open in file manager">
+        <button type="button" class="icon-btn" id="file-sidebar-finder" title="Open in file manager" aria-label="Open in file manager">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"/></svg>
         </button>
-        <button class="icon-btn" id="file-sidebar-close" title="Close" aria-label="Close file browser"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+        <button type="button" class="icon-btn" id="file-sidebar-close" title="Close" aria-label="Close file browser"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
       </div>
       <div class="file-sidebar-path" id="file-sidebar-path" title=""></div>
       <div class="file-list" id="file-list"></div>
-    </div>
+    </aside>
   </div>
 
   <!-- Hub: session home / search (opencode-style landing) -->
   <div class="session-home hidden" id="session-home">
     <div class="session-home-backdrop" id="session-home-backdrop"></div>
-    <div class="session-home-panel" role="dialog" aria-label="Sessions">
+    <div class="session-home-panel" role="dialog" aria-modal="true" aria-label="Sessions">
       <div class="session-home-search">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-        <input id="session-home-input" placeholder="Search sessions and projects…" autocomplete="off" spellcheck="false">
+        <input id="session-home-input" placeholder="Search sessions and projects…" autocomplete="off" spellcheck="false" aria-label="Search sessions and projects">
         <kbd class="session-home-kbd">Esc</kbd>
       </div>
       <div class="session-home-list" id="session-home-list"></div>
@@ -298,30 +299,30 @@
   <div class="settings-overlay hidden" id="settings-overlay"></div>
 
   <!-- Settings Panel -->
-  <div class="settings-panel hidden" id="settings-panel">
+  <div class="settings-panel hidden" id="settings-panel" role="dialog" aria-modal="true" aria-labelledby="settings-title">
     <div class="settings-header">
-      <h3>Settings</h3>
-      <button class="settings-close" id="settings-close"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+      <h3 id="settings-title">Settings</h3>
+      <button type="button" class="settings-close" id="settings-close" aria-label="Close settings"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
     </div>
-    <div class="settings-tabs" id="settings-tabs">
-      <button class="settings-tab active" data-tab="appearance">Appearance</button>
-      <button class="settings-tab" data-tab="voice">Voice</button>
-      <button class="settings-tab" data-tab="server">Server</button>
+    <div class="settings-tabs" id="settings-tabs" role="tablist" aria-label="Settings sections">
+      <button type="button" class="settings-tab active" id="settings-tab-appearance" role="tab" aria-selected="true" aria-controls="settings-pane-appearance" data-tab="appearance">Appearance</button>
+      <button type="button" class="settings-tab" id="settings-tab-voice" role="tab" aria-selected="false" aria-controls="settings-pane-voice" data-tab="voice">Voice</button>
+      <button type="button" class="settings-tab" id="settings-tab-server" role="tab" aria-selected="false" aria-controls="settings-pane-server" data-tab="server">Server</button>
     </div>
     <div class="settings-body">
-      <div class="settings-section" data-pane="appearance">
+      <div class="settings-section" data-pane="appearance" id="settings-pane-appearance" role="tabpanel" aria-labelledby="settings-tab-appearance">
         <div class="settings-section-title">Appearance</div>
         <div class="theme-grid" id="theme-grid"></div>
         <div class="settings-row">
-          <span class="settings-label">Show thinking</span>
-          <button class="settings-toggle on" id="toggle-show-thinking"></button>
+          <span class="settings-label" id="settings-label-show-thinking">Show thinking</span>
+          <button type="button" class="settings-toggle on" id="toggle-show-thinking" role="switch" aria-checked="true" aria-labelledby="settings-label-show-thinking"></button>
         </div>
       </div>
-      <div class="settings-section hidden" data-pane="voice" id="settings-voice-section">
+      <div class="settings-section hidden" data-pane="voice" id="settings-pane-voice" role="tabpanel" aria-labelledby="settings-tab-voice">
         <div class="settings-section-title">Voice</div>
         <div class="settings-row">
-          <span class="settings-label">Read replies aloud</span>
-          <button class="settings-toggle" id="toggle-auto-read"></button>
+          <span class="settings-label" id="settings-label-auto-read">Read replies aloud</span>
+          <button type="button" class="settings-toggle" id="toggle-auto-read" role="switch" aria-checked="false" aria-labelledby="settings-label-auto-read"></button>
         </div>
         <div class="settings-row">
           <span class="settings-label">Voice</span>
@@ -336,10 +337,10 @@
         </div>
         <div class="settings-row">
           <span class="settings-label">Preview</span>
-          <button class="settings-value-btn" id="btn-tts-test">Speak sample</button>
+          <button type="button" class="settings-value-btn" id="btn-tts-test">Speak sample</button>
         </div>
       </div>
-      <div class="settings-section hidden" data-pane="server" id="settings-server-section">
+      <div class="settings-section hidden" data-pane="server" id="settings-pane-server" role="tabpanel" aria-labelledby="settings-tab-server">
         <div class="settings-section-title">Server</div>
         <div class="settings-row">
           <span class="settings-label">Version</span>
@@ -351,25 +352,26 @@
         </div>
         <div class="settings-row">
           <span class="settings-label">This browser</span>
-          <button class="settings-value-btn" id="btn-logout">Log out</button>
+          <button type="button" class="settings-value-btn" id="btn-logout">Log out</button>
         </div>
         <div class="settings-section-title">Live pi processes</div>
         <div class="proc-note">Terminal sessions and hub backends on this box. Killing one frees its resources; session files stay on disk.</div>
-        <div class="proc-error hidden" id="proc-error"></div>
+        <div class="proc-error hidden" id="proc-error" role="alert"></div>
         <div class="proc-list" id="proc-list"></div>
         <div class="settings-row">
           <span class="settings-label" id="proc-count">—</span>
-          <button class="settings-value-btn" id="btn-proc-refresh">Refresh        </div>
+          <button type="button" class="settings-value-btn" id="btn-proc-refresh">Refresh</button>
+        </div>
       </div>
     </div>
   </div>
 
   <!-- Command Palette -->
   <div class="command-palette-overlay hidden" id="command-palette-overlay"></div>
-  <div class="command-palette hidden" id="command-palette">
+  <div class="command-palette hidden" id="command-palette" role="dialog" aria-modal="true" aria-label="Commands">
     <div class="command-palette-header">Commands</div>
     <div class="command-search-wrap">
-      <input type="text" id="command-search" placeholder="Search commands..." autocomplete="off" />
+      <input type="text" id="command-search" placeholder="Search commands..." autocomplete="off" aria-label="Search commands" />
     </div>
     <div class="command-list" id="command-list"></div>
   </div>
@@ -378,14 +380,14 @@
   <div id="dialog-container" class="hidden"></div>
 
   <!-- Login Overlay (inline auth: replaces the native browser login prompt) -->
-  <div class="login-overlay hidden" id="login-overlay">
+  <div class="login-overlay hidden" id="login-overlay" role="dialog" aria-modal="true" aria-labelledby="login-title">
     <form class="login-card" id="login-form" autocomplete="off">
       <div class="login-icon"><img src="../icons/tau-192.png" alt="τ" class="tau-icon-welcome"></div>
-      <div class="login-title">Log in to Tau</div>
+      <div class="login-title" id="login-title">Log in to Tau</div>
       <div class="login-sub" id="login-sub">This server requires authentication.</div>
-      <input type="text" id="login-user" class="login-input" placeholder="Username" autocomplete="username" autocapitalize="off" autocorrect="off" spellcheck="false" />
+      <input type="text" id="login-user" class="login-input" placeholder="Username" autocomplete="username" autocapitalize="off" autocorrect="off" spellcheck="false" aria-label="Username" />
       <div class="login-password-wrap">
-        <input type="password" id="login-pass" class="login-input" placeholder="Password" autocomplete="current-password" />
+        <input type="password" id="login-pass" class="login-input" placeholder="Password" autocomplete="current-password" aria-label="Password" />
         <button type="button" class="login-reveal" id="login-reveal" aria-label="Show password" aria-pressed="false" title="Hold to show password">
           <svg class="login-reveal-eye" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/>
@@ -397,13 +399,13 @@
           </svg>
         </button>
       </div>
-      <div class="login-error hidden" id="login-error">Invalid username or password</div>
+      <div class="login-error hidden" id="login-error" role="alert">Invalid username or password</div>
       <button type="submit" class="login-submit" id="login-submit">Log in</button>
     </form>
   </div>
 
   <!-- Scripts (query bump forces stale SW precache to refetch) -->
-  <script type="module" src="../app.js?v=6"></script>
-  <script type="module" src="hub.js?v=1"></script>
+  <script type="module" src="../app.js?v=7"></script>
+  <script type="module" src="hub.js?v=2"></script>
 </body>
 </html>

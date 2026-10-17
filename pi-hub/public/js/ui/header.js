@@ -76,18 +76,20 @@ export function createHeader(refs, actions) {
   return {
     render(state) {
       const bound = state.bound;
+      const modelLabel = state.meta?.model || bound?.model;
+      const thinkingLabel = state.meta?.thinkingLevel || bound?.thinkingLevel;
       refs.titleEl.textContent = state.meta?.sessionName || bound?.sessionFile || (bound ? "headless session" : "Pi Hub");
       const bits = [];
       if (bound) bits.push(shortCwd(bound.cwd));
-      if (bound?.model) bits.push(bound.model);
-      if (bound?.thinkingLevel) bits.push(`thinking ${bound.thinkingLevel}`);
+      if (modelLabel) bits.push(modelLabel);
+      if (thinkingLabel) bits.push(`thinking ${thinkingLabel}`);
       if (state.meta?.total) bits.push(`${state.meta.total} entries`);
       refs.metaEl.textContent = bits.join(" · ");
-      refs.modelBtn.textContent = bound?.model || "model";
-      refs.thinkingBtn.textContent = bound?.thinkingLevel || "thinking";
+      refs.modelBtn.textContent = modelLabel || "model";
+      refs.thinkingBtn.textContent = thinkingLabel || "thinking";
       current = current || {};
-      if (bound?.model) current.model = { id: bound.model, provider: (bound.model.includes("/") ? bound.model.split("/")[0] : "") };
-      if (bound?.thinkingLevel) current.thinkingLevel = bound.thinkingLevel;
+      if (modelLabel) current.model = { id: modelLabel, provider: modelLabel.includes("/") ? modelLabel.split("/")[0] : "" };
+      if (thinkingLabel) current.thinkingLevel = thinkingLabel;
       refs.costEl.textContent = state.meta && (state.meta.cost || state.meta.tokens) ? `${(state.meta.tokens / 1000).toFixed(1)}k · $${(state.meta.cost || 0).toFixed(3)}` : "";
       show(refs.costEl, !!(state.meta && (state.meta.cost || state.meta.tokens)));
       const dotState = !state.connected ? "off" : state.streaming || state.compacting ? "working" : "on";

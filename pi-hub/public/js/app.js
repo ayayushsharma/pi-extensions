@@ -292,7 +292,17 @@ async function applyBound(msg, session) {
   } else if (session) {
     await loadHistoryFor(session);
     commandRequest({ type: "get_state" }, 15000)
-      .then((r) => set({ bound: { ...state.bound, ...state.bound, model: r.data?.model?.id || state.bound?.model, thinkingLevel: r.data?.thinkingLevel || state.bound?.thinkingLevel } }))
+      .then((r) => {
+        // N3: file meta wins — a resumed child may report its own default model.
+        if (state.meta?.model || state.meta?.thinkingLevel) return;
+        set({
+          bound: {
+            ...state.bound,
+            model: r.data?.model?.id || state.bound?.model,
+            thinkingLevel: r.data?.thinkingLevel || state.bound?.thinkingLevel,
+          },
+        });
+      })
       .catch(() => {});
   } else {
     transcript.renderHistory([], null);
@@ -317,8 +327,8 @@ async function loadHistoryFor(absOrSession) {
   set({ historyDir: ref.dirName, historyFile: ref.file });
   try {
     const win = await fetchHistory(ref.dirName, ref.file, { limit: 50 });
-    set({ entries: win.entries, meta: win.meta });
     transcript.renderHistory(win.entries, win.meta);
+    set({ entries: win.entries, meta: win.meta });
   } catch (e) {
     toast(`history: ${e.message}`);
   }

@@ -1,0 +1,33 @@
+{
+  "name": "pi-hub",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Pi web hub: preview/drive live TUIs, resume history, start new sessions anywhere, view running headless sessions",
+  "keywords": [
+    "pi",
+    "pi-package",
+    "coding-agent",
+    "web-ui",
+    "hub"
+  ],
+  "author": "ayayushsharma",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ayayushsharma/pi-extensions.git",
+    "directory": "pi-hub"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions/index.ts"
+    ]
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "scripts": {
+    "test": "node tests/run.mjs",
+    "test:unit": "node --test tests/unit/",
+    "test:e2e": "node tests/run.mjs --e2e"
+  }
+}

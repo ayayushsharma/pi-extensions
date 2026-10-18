@@ -55,14 +55,20 @@ export async function runIntegration({ log }) {
     const mk2 = await jsonFetch(`${base}/api/files/mkdir`, { method: "POST", body: { path: mkPath } });
     check("F3 mkdir existing 409", mk2.status === 409, `status ${mk2.status}`);
     try { fs.rmdirSync(mkPath); } catch {}
-    check("X4 no delete endpoint", (await jsonFetch(`${base}/api/sessions/delete`, { method: "POST", body: {} })).status === 405);
-
     // ── fork copy (ADR-016) ─────────────────────────────────────────────
     const forkRes = await jsonFetch(`${base}/api/sessions/fork`, { method: "POST", body: { dirName: "--tmp-pihub-fixtures--", file: "2026-01-01T00-00-00Z_fixture.jsonl" } });
     const forkJson = await forkRes.json();
     const src = fs.readFileSync(path.join(sessions, "--tmp-pihub-fixtures--", "2026-01-01T00-00-00Z_fixture.jsonl"));
     const dst = fs.readFileSync(path.join(sessions, "--tmp-pihub-fixtures--", forkJson.file));
     check("H5 fork byte-identical", forkRes.ok && src.equals(dst), forkJson.file);
+
+    // X4: delete exists for the product UI but is realpath-jailed to the
+    // sessions dir (ADR-018) — traversal is refused, the fixture survives.
+    const delOk = await jsonFetch(`${base}/api/sessions/delete`, { method: "POST", body: { dirName: "--tmp-pihub-fixtures--", file: forkJson.file } });
+    check("X4 delete removes a session copy", delOk.status === 200 && !fs.existsSync(path.join(sessions, "--tmp-pihub-fixtures--", forkJson.file)), `status ${delOk.status}`);
+    const delBad = await jsonFetch(`${base}/api/sessions/delete`, { method: "POST", body: { dirName: "../..", file: "anything.jsonl" } });
+    check("X4b delete traversal refused", delBad.status >= 400, `status ${delBad.status}`);
+    check("X4c fixture untouched", fs.existsSync(path.join(sessions, "--tmp-pihub-fixtures--", "2026-01-01T00-00-00Z_fixture.jsonl")));
 
     // ── WS: bind, get_state, rejoin no-op, close ────────────────────────
     const ws = await connectWs(`ws://127.0.0.1:${port}/ws`);

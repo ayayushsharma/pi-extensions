@@ -4,6 +4,7 @@
 import * as fs from "node:fs";
 import type { HubConfig } from "../../env.js";
 import {
+  deleteSession,
   forkSession,
   listSessionDirs,
   readWindow,
@@ -11,11 +12,13 @@ import {
   resolveSessionPath,
   sessionsDir,
 } from "../../store/sessions.js";
+import type { RunnerRegistry } from "../../runners/registry.js";
 import { browseRoots, listDir, makeDir, readContent, readPreview } from "../../store/files.js";
 import { BODY_SMALL, readJson, sendError, sendJson, type Route } from "../http.js";
 
 export interface SessionDeps {
   config: HubConfig;
+  registry?: RunnerRegistry;
 }
 
 function sessionAbs(dirName: string, file: string): string {
@@ -87,11 +90,25 @@ export function sessionRoutes(deps: SessionDeps): Route[] {
       },
     },
     {
+      // Session delete is the one file *removal* the product needs. It is
+      // jailed to the session store (realpath under SESSIONS_DIR) and refuses
+      // files owned by a running backend so no writer ever races the unlink.
       method: "POST",
       path: "/api/sessions/delete",
       auth: true,
-      handler: () => {
-        throw Object.assign(new Error("file mutations are limited to mkdir (ADR-018)"), { status: 405 });
+      handler: async ({ req, res }) => {
+        const body = await readJson(req, BODY_SMALL);
+        if (!body.dirName || !body.file) return sendError(res, 400, "dirName and file required");
+        const abs = sessionAbs(String(body.dirName), String(body.file));
+        const owner = deps.registry?.getByFile(abs);
+        if (owner && !owner.isDead) {
+          throw Object.assign(
+            new Error(owner.kind === "live" ? "Session is owned by a live TUI — close it there first" : "Session has a running backend — close it first"),
+            { status: 409 },
+          );
+        }
+        deleteSession(String(body.dirName), String(body.file));
+        return sendJson(res, 200, { ok: true });
       },
     },
     {

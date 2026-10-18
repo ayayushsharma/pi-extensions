@@ -89,7 +89,7 @@ export class Hub {
         wsHub: this.ws,
         startedAt: this.startedAt,
       }),
-      ...sessionRoutes({ config: this.config }),
+      ...sessionRoutes({ config: this.config, registry: this.registry }),
     ];
     this.server = createHttpServer({
       auth: this.auth,

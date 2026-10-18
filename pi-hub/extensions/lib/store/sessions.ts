@@ -18,6 +18,8 @@ export interface SessionSummary {
   model: string | null;
   thinkingLevel: string | null;
   messageCount: number;
+  entryCount: number;
+  sessionName: string | null;
   cost: number;
   tokens: number;
 }
@@ -50,10 +52,15 @@ export function sessionsDir(): string {
 
 /** Reject anything that is not exactly under the sessions dir. */
 export function resolveSessionPath(dirName: string, file: string): string {
-  if (/[/\\]|\.\./.test(dirName) || /[/\\]|\.\./.test(file)) {
+  if (/[/\\]|\.\./.test(file)) {
     throw new Error("invalid session path");
   }
-  const abs = path.join(SESSIONS_DIR, dirName, file);
+  // A custom PI_CODING_AGENT_SESSION_DIR makes pi write sessions directly in
+  // the root; real stores nest them in per-cwd `--…--` dirs. Accept both.
+  const rootName = path.basename(SESSIONS_DIR);
+  const flat = dirName === rootName || dirName === "." || dirName === "";
+  if (!flat && /[/\\]|\.\./.test(dirName)) throw new Error("invalid session path");
+  const abs = flat ? path.join(SESSIONS_DIR, file) : path.join(SESSIONS_DIR, dirName, file);
   return realUnder(abs, SESSIONS_DIR);
 }
 
@@ -75,6 +82,12 @@ function textOf(content: unknown): string {
   return "";
 }
 
+function sessionFilePath(dirName: string, file: string): string {
+  const rootName = path.basename(SESSIONS_DIR);
+  const flat = dirName === rootName || dirName === "." || dirName === "";
+  return flat ? path.join(SESSIONS_DIR, file) : path.join(SESSIONS_DIR, dirName, file);
+}
+
 function parseSummary(file: string, dirName: string, st: fs.Stats): SessionSummary {
   const summary: SessionSummary = {
     file,
@@ -86,12 +99,14 @@ function parseSummary(file: string, dirName: string, st: fs.Stats): SessionSumma
     model: null,
     thinkingLevel: null,
     messageCount: 0,
+    entryCount: 0,
+    sessionName: null,
     cost: 0,
     tokens: 0,
   };
   let raw = "";
   try {
-    raw = fs.readFileSync(path.join(SESSIONS_DIR, dirName, file), "utf8");
+    raw = fs.readFileSync(sessionFilePath(dirName, file), "utf8");
   } catch {
     return summary;
   }
@@ -103,6 +118,7 @@ function parseSummary(file: string, dirName: string, st: fs.Stats): SessionSumma
     } catch {
       continue;
     }
+    summary.entryCount++;
     if (e.type === "session" && typeof e.cwd === "string") summary.cwd = e.cwd;
     if (e.type === "message") {
       summary.messageCount++;
@@ -119,7 +135,10 @@ function parseSummary(file: string, dirName: string, st: fs.Stats): SessionSumma
     }
     if (e.type === "model_change") summary.model = `${e.provider}/${e.modelId}`;
     if (e.type === "thinking_level_change") summary.thinkingLevel = e.thinkingLevel;
-    if (e.type === "session_info" && e.name) summary.title = e.name;
+    if (e.type === "session_info" && e.name) {
+      summary.title = e.name;
+      summary.sessionName = e.name;
+    }
     if (e.type === "usage" && e.usage) {
       summary.tokens += Number(e.usage.totalTokens || 0);
       summary.cost += Number(e.usage.cost?.total || 0);
@@ -129,7 +148,7 @@ function parseSummary(file: string, dirName: string, st: fs.Stats): SessionSumma
 }
 
 function cachedSummary(dirName: string, file: string): SessionSummary | null {
-  const abs = path.join(SESSIONS_DIR, dirName, file);
+  const abs = sessionFilePath(dirName, file);
   let st: fs.Stats;
   try {
     st = fs.statSync(abs);
@@ -154,13 +173,20 @@ export function invalidateSession(abs: string): void {
 }
 
 export function listSessionDirs(): Array<{ dirName: string; sessions: SessionSummary[] }> {
-  let dirs: string[] = [];
+  let entries: fs.Dirent[] = [];
   try {
-    dirs = fs.readdirSync(SESSIONS_DIR).filter((d) => d.startsWith("--"));
+    entries = fs.readdirSync(SESSIONS_DIR, { withFileTypes: true });
   } catch {
     return [];
   }
+  const dirs = entries.filter((e) => e.isDirectory() && e.name.startsWith("--")).map((e) => e.name);
+  const rootName = path.basename(SESSIONS_DIR);
+  const hasRootFiles = entries.some((e) => e.isFile() && e.name.endsWith(".jsonl"));
   const out: Array<{ dirName: string; sessions: SessionSummary[] }> = [];
+  if (hasRootFiles) {
+    const sessions = listSessions(rootName);
+    if (sessions.length) out.push({ dirName: rootName, sessions });
+  }
   for (const dirName of dirs) {
     const sessions = listSessions(dirName);
     if (sessions.length) out.push({ dirName, sessions });
@@ -175,8 +201,10 @@ export function listSessionDirs(): Array<{ dirName: string; sessions: SessionSum
 
 export function listSessions(dirName: string): SessionSummary[] {
   let files: string[] = [];
+  const rootName = path.basename(SESSIONS_DIR);
+  const flat = dirName === rootName || dirName === "." || dirName === "";
   try {
-    files = fs.readdirSync(path.join(SESSIONS_DIR, dirName)).filter((f) => f.endsWith(".jsonl"));
+    files = fs.readdirSync(flat ? SESSIONS_DIR : path.join(SESSIONS_DIR, dirName)).filter((f) => f.endsWith(".jsonl"));
   } catch {
     return [];
   }
@@ -261,6 +289,109 @@ export function windowInfo(absPath: string): { total: number } {
   } catch {
     return { total: 0 };
   }
+}
+
+/** Resolve a session basename to its project dir (most recent wins). */
+export function findSessionByBasename(file: string): { dirName: string; file: string; abs: string } | null {
+  if (!file || /[/\\]|\.\./.test(file) || !file.endsWith(".jsonl")) return null;
+  let best: { dirName: string; file: string; abs: string; mtime: number } | null = null;
+  let dirs: string[] = [];
+  const rootName = path.basename(SESSIONS_DIR);
+  try {
+    dirs = [rootName, ...fs.readdirSync(SESSIONS_DIR).filter((d) => d.startsWith("--"))];
+  } catch {
+    return null;
+  }
+  for (const dirName of dirs) {
+    const abs = sessionFilePath(dirName, file);
+    try {
+      const st = fs.statSync(abs);
+      if (!best || st.mtimeMs > best.mtime) best = { dirName, file, abs, mtime: st.mtimeMs };
+    } catch {}
+  }
+  return best ? { dirName: best.dirName, file: best.file, abs: best.abs } : null;
+}
+
+export function deleteSession(dirName: string, file: string): void {
+  const abs = resolveSessionPath(dirName, file);
+  fs.unlinkSync(abs);
+  invalidateSession(abs);
+}
+
+export interface SearchHit {
+  dirName: string;
+  file: string;
+  filePath: string;
+  cwd: string | null;
+  title: string;
+  snippet: string;
+  timestamp: number;
+}
+
+/** Full-text scan across the session store, bounded by `limit` hits. */
+export function searchSessions(query: string, limit = 30): SearchHit[] {
+  const q = String(query || "").trim().toLowerCase();
+  if (q.length < 2) return [];
+  const hits: SearchHit[] = [];
+  let dirs: string[] = [];
+  const rootName = path.basename(SESSIONS_DIR);
+  try {
+    dirs = [rootName, ...fs.readdirSync(SESSIONS_DIR).filter((d) => d.startsWith("--"))];
+  } catch {
+    return [];
+  }
+  outer: for (const dirName of dirs) {
+    let files: string[] = [];
+    try {
+      files = fs.readdirSync(sessionFilePath(dirName, "")).filter((f) => f.endsWith(".jsonl"));
+    } catch {
+      continue;
+    }
+    for (const file of files) {
+      const abs = sessionFilePath(dirName, file);
+      let raw = "";
+      try {
+        raw = fs.readFileSync(abs, "utf8");
+      } catch {
+        continue;
+      }
+      let cwd: string | null = null;
+      let title = "";
+      let snippet = "";
+      let hit = false;
+      for (const line of raw.split("\n")) {
+        if (!line) continue;
+        let e: any;
+        try {
+          e = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        if (e.type === "session" && typeof e.cwd === "string") cwd = e.cwd;
+        const text = e.type === "message" ? textOf(e.message?.content) : "";
+        if (!text) continue;
+        if (!title && e.message?.role === "user") title = text.split("\n")[0].slice(0, 120);
+        if (!hit && text.toLowerCase().includes(q)) {
+          const idx = text.toLowerCase().indexOf(q);
+          snippet = text.slice(Math.max(0, idx - 60), idx + 140);
+          hit = true;
+        }
+      }
+      if (!hit) continue;
+      let mtime = 0;
+      try {
+        mtime = fs.statSync(abs).mtimeMs;
+      } catch {}
+      hits.push({ dirName, file, filePath: abs, cwd, title: title || file, snippet, timestamp: mtime });
+      if (hits.length >= limit) break outer;
+    }
+  }
+  return hits;
+}
+
+/** Every entry in the file (no window) — used by the compat history shape. */
+export function readAll(absPath: string): HistoryWindow {
+  return readWindow(absPath, Number.MAX_SAFE_INTEGER, null);
 }
 
 export function forkSession(dirName: string, file: string): { file: string } {

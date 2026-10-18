@@ -327,8 +327,9 @@ tests ≈ 2.4k → **≈ 10k vs tau-web's ≈ 23.6k incl. tests**.
 
 - History `readWindow` still reads the whole JSONL; the P3 tail-read budget
   is not met yet. Session list caching is in place (`mtime+size`, 15 s TTL).
-- Reconnect re-binds and refetches the window; the per-runner 200-event ring
-  exists server-side but the client does not request `replayFrom` yet.
+- Reconnect re-binds and refetches the window; per-runner sequence numbers are
+  now tracked client-side and sent as `sinceSeq`, so the 200-event ring
+  replays the gap on the next frame (H10b).
 - Fork/rename/export/delete all have UI affordances now (context menu); the
   delete path closes a running owner first, then unlinks (ADR-018 amendment).
 - The selenium/geckodriver backend is a CLI smoke only (interaction-heavy

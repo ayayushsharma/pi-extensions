@@ -80,9 +80,13 @@ export async function runIntegration({ log }) {
     check("H7 bind resumes fixture", bound.runner.absFile.endsWith("2026-01-01T00-00-00Z_fixture.jsonl"), JSON.stringify(bound.runner.absFile));
     check("H7b bind reports basename", bound.runner.sessionFile === "2026-01-01T00-00-00Z_fixture.jsonl");
 
+    let stateSeq = 0;
     const state = await new Promise((resolve) => {
       ws.send({ type: "command", id: "g1", command: { type: "get_state", id: "g1" } });
-      ws.wait((m) => m.type === "event" && m.event?.type === "response" && m.event?.command === "get_state" && m.event.id === "g1", 20000, "get_state response").then(resolve);
+      ws.wait((m) => m.type === "event" && m.event?.type === "response" && m.event?.command === "get_state" && m.event.id === "g1", 20000, "get_state response").then((frame) => {
+        stateSeq = frame.seq;
+        resolve(frame);
+      });
     });
     check("H8 get_state round-trip", state.event.success === true && !!state.event.data?.sessionFile, state.event.error || "");
 
@@ -94,6 +98,15 @@ export async function runIntegration({ log }) {
 
     // stale seq guard: bound ack includes the runner's current seq
     check("H10 bound carries lastSeq", typeof bound2.lastSeq === "number");
+
+    // H10b: rebinding with sinceSeq replays the missed ring frames (no dupes).
+    ws.send({ type: "bind", id: "b3", runnerId: bound.runner.id, sinceSeq: stateSeq - 1 });
+    await ws.wait((m) => m.type === "bound" && m.id === "b3", 10000, "sinceSeq re-bind ack");
+    ws.send({ type: "command", id: "g2", command: { type: "get_state", id: "g2" } });
+    const replayed = await ws.wait((m) => m.type === "event" && m.seq === stateSeq, 10000, "replayed ring frame").catch(() => null);
+    const g2 = await ws.wait((m) => m.type === "event" && m.event?.id === "g2", 20000, "g2 response");
+    const g2Count = ws.frames.filter((m) => m.type === "event" && m.event?.id === "g2").length;
+    check("H10b ring replay honours sinceSeq", !!replayed && g2Count === 1, `replayed=${!!replayed} g2=${g2Count}`);
 
     ws.send({ type: "close", id: "cl1", runnerId: bound.runner.id });
     await ws.wait((m) => m.type === "closed", 10000, "closed ack").catch(() => {});

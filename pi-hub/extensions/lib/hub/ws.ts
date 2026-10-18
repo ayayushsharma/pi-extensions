@@ -254,7 +254,11 @@ export class WsHub {
       runner = await this.deps.registry.bindHeadless(client.ws, { cwd, absFile: null });
     }
     client.boundId = runner.id;
-    client.lastSeq = 0;
+    // A rebinding client may resume from its last seen seq: the runner's
+    // 200-event ring replays the gap on the next frame (never behind the
+    // runner's current head).
+    const since = Number(msg.sinceSeq);
+    client.lastSeq = Number.isFinite(since) && since > 0 ? Math.min(since, runner.lastSeq()) : 0;
     this.ack(client, id, { type: "bound", runner: runner.info(), lastSeq: runner.lastSeq() });
   }
 

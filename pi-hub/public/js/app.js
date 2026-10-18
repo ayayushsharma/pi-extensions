@@ -176,6 +176,8 @@ document.documentElement.dataset.theme = initialTheme();
 let socket = null;
 const pendingCommands = new Map();
 
+const lastSeenSeq = new Map(); // runnerId -> last event seq observed
+
 function rawSend(msg) {
   return socket?.send(msg) ?? false;
 }
@@ -531,7 +533,14 @@ function applyBound(msg, tab) {
 async function bindSession(session, project, opts = {}) {
   set({ binding: true });
   try {
-    const msg = await socket.request({ type: "bind", dirName: session.dirName, file: session.file, cwd: session.cwd || project?.cwd });
+    const known = state.tabs.find((t) => t.file === session.file && t.runnerId);
+    const msg = await socket.request({
+      type: "bind",
+      dirName: session.dirName,
+      file: session.file,
+      cwd: session.cwd || project?.cwd,
+      sinceSeq: known ? lastSeenSeq.get(known.runnerId) || 0 : 0,
+    });
     applyBound(msg, {
       key: sessionKey(session.dirName || project?.dirName, session.file),
       dirName: session.dirName || project?.dirName,
@@ -551,7 +560,7 @@ async function bindSession(session, project, opts = {}) {
 async function bindRunner(runnerId, info) {
   set({ binding: true });
   try {
-    const msg = await socket.request({ type: "bind", runnerId });
+    const msg = await socket.request({ type: "bind", runnerId, sinceSeq: lastSeenSeq.get(runnerId) || 0 });
     applyBound(msg, {
       key: info?.kind === "live" ? liveKey(info.pid) : runnerKey(runnerId),
       title: info?.title || info?.sessionFile || info?.kind,
@@ -897,6 +906,7 @@ function handleFrame(msg) {
       }
       break;
     case "event":
+      if (msg.runnerId && typeof msg.seq === "number") lastSeenSeq.set(msg.runnerId, msg.seq);
       handleRunnerEvent(msg.event, msg);
       break;
     default:

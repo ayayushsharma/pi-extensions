@@ -241,12 +241,12 @@ a { color: var(--accent-text); }
 }
 .welcome .logo { color: var(--accent); }
 .scroll-area { flex: 1; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
-.transcript-inner { max-width: 780px; margin: 0 auto; padding: 18px 20px 24px; }
+.transcript-inner { max-width: var(--hub-max); margin: 0 auto; padding: 18px 20px 24px; }
 
 /* banner */
 .banner {
   display: flex; align-items: center; gap: 12px;
-  max-width: 780px; margin: 12px auto 0; width: calc(100% - 40px);
+  max-width: var(--hub-max); margin: 12px auto 0; width: calc(100% - 40px);
   padding: 10px 14px; border-radius: var(--r-md);
   border: 1px solid var(--border-2);
   background: var(--accent-soft);
@@ -393,7 +393,7 @@ a { color: var(--accent-text); }
 
 /* ── composer ────────────────────────────────────────────────────────── */
 .composer-wrap { flex: none; padding: 0 20px calc(10px + env(safe-area-inset-bottom)); }
-.composer-inner { max-width: 780px; margin: 0 auto; width: 100%; }
+.composer-inner { max-width: var(--hub-max); margin: 0 auto; width: 100%; }
 .composer {
   position: relative; border: 1px solid var(--border-2);
   border-radius: var(--r-lg); background: var(--panel-solid);
@@ -454,7 +454,7 @@ a { color: var(--accent-text); }
 .menu .item.sel { background: var(--active); }
 .slash-menu { bottom: calc(100% + 6px); left: 0; right: auto; min-width: 300px; }
 
-.queue { max-width: 780px; margin: 0 auto 6px; width: 100%; display: flex; flex-wrap: wrap; gap: 6px; }
+.queue { max-width: var(--hub-max); margin: 0 auto 6px; width: 100%; display: flex; flex-wrap: wrap; gap: 6px; }
 .queue .q-pill {
   display: inline-flex; align-items: center; gap: 6px;
   padding: 3px 6px 3px 10px; border-radius: var(--r-pill);
@@ -465,7 +465,7 @@ a { color: var(--accent-text); }
 
 .statusline {
   display: flex; align-items: center; gap: 10px;
-  max-width: 780px; margin: 6px auto 0; width: 100%;
+  max-width: var(--hub-max); margin: 6px auto 0; width: 100%;
   font-size: var(--fs-sm); color: var(--text-3); min-height: 18px;
 }
 .statusline .grow { flex: 1; }
@@ -639,6 +639,7 @@ a { color: var(--accent-text); }
   .sidebar.collapsed { display: none; }
 }
 @media (max-width: 860px) {
+  :root { --hub-max: 100%; }
   /* iOS zooms a focused field under 16px; keep fields at 16px on small screens. */
   input, textarea, select { font-size: 16px; }
   .composer textarea { font-size: 16px; }

@@ -28,7 +28,8 @@
   "scripts": {
     "test": "node tests/run.mjs",
     "test:unit": "node --test tests/unit/",
-    "test:e2e": "node tests/run.mjs --e2e"
+    "test:e2e": "node tests/run.mjs --e2e",
+    "test:parity": "node tests/ui-parity.mjs"
   },
   "devDependencies": {
     "playwright-core": "^1.64.1"

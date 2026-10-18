@@ -17,6 +17,7 @@
 
   /* layout */
   --sidebar-w: 272px;
+  --hub-max: 860px;
   --header-h: 46px;
   --font-ui: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", "Segoe UI", Roboto, sans-serif;
   --font-mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;

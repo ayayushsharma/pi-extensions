@@ -28,6 +28,7 @@ spec, silently skipped, or has no assertion.
 | **L0 unit** (`node:test`) | pure logic: protocol guards, session parse, jails, fork naming, registry invariants with a recording fake child, ring replay, coalescer, env scrub | node | everywhere |
 | **L1 fakes** | scripted `pi --mode rpc` double + fake hub.sock mirror: slow start, no ack, late file, crash mid-run, ENOENT, stderr spam, huge output, CRLF, U+2028 | node | everywhere |
 | **L2 Playwright stub** | UI + protocol flows against a stub hub (deterministic WS/HTTP), DOM/ARIA/mobile | Chrome | CI |
+| **L2b Playwright clean-room UI** | the shipped client on a real hub + fixture store: resume, picker/starter, dialogs, live preview→drive→detach, rename/delete, files/settings, auth, phone | Chrome | CI |
 | **L2t Termux smoke** | same spec functions through the Firefox/Selenium driver (§1.2) against stub + real hub | Firefox + geckodriver | the phone |
 | **L3 Playwright real** (`@real`) | full loop with real `pi`: new/resume/prompt/steer/abort/model/dialog/fork/relay | `pi` + Chrome | dev box / strict CI |
 | **L4 adversarial** | raw HTTP/WS probes (auth, rebinding, traversal, caps, CSP, XSS payload, dead frames) | node + Chrome | CI |

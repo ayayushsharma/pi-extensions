@@ -17,6 +17,35 @@ export function createPicker(refs, actions) {
   refs.close.append(icon("x", 15));
   refs.up.append(el("span", { text: "↑ Up" }));
 
+  // New-folder affordance (single level, jailed server-side like all mkdir).
+  const newFolderRow = el("div", { class: "picker-choice hidden" });
+  const newFolderName = el("input", { class: "picker-path", placeholder: "folder name", maxlength: "64", "aria-label": "New folder name" });
+  const newFolderGo = el("button", { class: "btn small primary", type: "button", text: "Create" });
+  newFolderRow.append(newFolderName, newFolderGo);
+  refs.path.parentElement.after(newFolderRow);
+  const newFolderBtn = el("button", { class: "btn small", type: "button", text: "+ New folder" });
+  refs.path.parentElement.append(newFolderBtn);
+  newFolderBtn.addEventListener("click", () => {
+    show(newFolderRow, newFolderRow.classList.contains("hidden"));
+    if (!newFolderRow.classList.contains("hidden")) newFolderName.focus();
+  });
+  newFolderGo.addEventListener("click", async () => {
+    const name = newFolderName.value.trim();
+    if (!name || !dir) return;
+    try {
+      const out = await mkdir(`${dir}/${name}`);
+      show(newFolderRow, false);
+      newFolderName.value = "";
+      await browse(out.path || `${dir}/${name}`);
+    } catch (e) {
+      toast(e.message, { kind: "error" });
+    }
+  });
+  newFolderName.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") newFolderGo.click();
+    if (e.key === "Escape") show(newFolderRow, false);
+  });
+
   async function loadProjects() {
     try {
       projects = (await listSessions()).projects || [];

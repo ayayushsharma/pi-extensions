@@ -18,6 +18,38 @@ Playwright + Firefox test gate.
 | **New session anywhere** (C3) | Browse the server filesystem (or type a path), validate the cwd, spawn a `pi --mode rpc` child; the bind ack resolves only when the child is ready, so a bad cwd or bad binary is an honest error, never a zombie binding. |
 | **View & add to running headless** (C4) | Running children are pushed to every browser with pid/model/working state; opening one binds the **same child** (no respawn), and steering/queueing/abort works from any viewer. Pool cap (`PI_HUB_MAX_HEADLESS`) evicts idle sessions only. |
 
+## Web UI (clean-room client)
+
+`public/` is pi-hub's own client, built on the native WS dialect (no
+tau-web code is copied or imported). It matches tau-web's visual language and
+UX while fixing known rough edges:
+
+- **Tab bar + home**: one tab per open session, dot states (live/working),
+  `Ctrl+T` instant new session, `Ctrl+K` picker, `Ctrl+Shift+P` home.
+- **Sidebar**: current-session card with live state, *currently running tabs*,
+  *running terminals* (Drive/Detach inline), project-grouped sessions with
+  client-side filter plus full-text fallback (`GET /api/search`), favourites,
+  and a context menu (favourite, rename, fork, export HTML, copy path, delete).
+- **Transcript**: DOM-built markdown (no `innerHTML` for model output),
+  collapsible thinking blocks, tool cards with status/diff/copy, usage and cost
+  lines, windowed history with *load earlier*, and a *jump to latest* control
+  when scrolled away.
+- **Composer**: slash palette, steer/queue pills while working, image
+  attachments, model + thinking menus, abort, optional Web Speech input, and a
+  statusline with cwd, tokens, cost and context %.
+- **Server surfaces**: preview/drive banner, file panel jailed to the session
+  cwd (up-button disables at the boundary), settings (themes, display prefs,
+  server info, process list with kill), extension-UI dialogs, toasts, login
+  overlay, and a mobile drawer that closes on session pick.
+
+Picker starter prompts are sent after the fresh bind (tau-web dropped them);
+rename/delete/fork/export all round-trip through the backend (delete refuses a
+session owned by a running backend until it is closed).
+
+Testability hooks: `body[data-ready="1"]` when booted, `window.__errs[]` for
+client errors, and stable `data-*` attributes (`data-session-file`,
+`data-runner-id`, `data-runner-kind`, `data-tab-key`, `data-view`).
+
 ## Run
 
 ```bash

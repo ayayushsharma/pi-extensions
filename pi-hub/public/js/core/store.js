@@ -43,6 +43,7 @@ export const state = {
 
   /* store listings */
   projects: [], // [{ dirName, cwd, sessions: [...] }]
+  sessionsDir: null,
   search: "",
   favourites: readJSON(PREFS_KEY, {}).favourites || [],
 

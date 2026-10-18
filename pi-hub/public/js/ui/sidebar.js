@@ -148,6 +148,7 @@ export function createSidebar(refs, actions) {
       el("button", { type: "button", onclick: () => { closeMenu(); actions.toggleFavourite(session.filePath); } }, icon(fav ? "star-outline" : "star", 14), fav ? "Unfavourite" : "Favourite"),
       el("button", { type: "button", onclick: () => { closeMenu(); startRename(session, project); } }, icon("pencil", 14), "Rename"),
       el("button", { type: "button", onclick: () => { closeMenu(); actions.forkSession(session, project); } }, icon("branch", 14), "Fork as new"),
+      el("button", { type: "button", onclick: () => { closeMenu(); actions.exportSession(session, project); } }, icon("download", 14), "Export HTML"),
       el("button", { type: "button", onclick: () => { closeMenu(); actions.copyPath(session); } }, icon("copy", 14), "Copy path"),
       el("div", { class: "sep" }),
       el("button", { class: "danger", type: "button", onclick: () => { closeMenu(); actions.deleteSession(session, project); } }, icon("trash", 14), "Delete"),

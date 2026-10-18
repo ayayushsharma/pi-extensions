@@ -329,7 +329,8 @@ tests ≈ 2.4k → **≈ 10k vs tau-web's ≈ 23.6k incl. tests**.
   is not met yet. Session list caching is in place (`mtime+size`, 15 s TTL).
 - Reconnect re-binds and refetches the window; the per-runner 200-event ring
   exists server-side but the client does not request `replayFrom` yet.
-- Fork/rename are API-complete with no UI affordance; export is not wired.
+- Fork/rename/export/delete all have UI affordances now (context menu); the
+  delete path closes a running owner first, then unlinks (ADR-018 amendment).
 - The selenium/geckodriver backend is a CLI smoke only (interaction-heavy
   browser cases still require Playwright).
 - `tests/cases.json` registry + meta-test not yet added (results print by

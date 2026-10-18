@@ -88,6 +88,7 @@ const refs = {
   sessionList: $("session-list"),
 
   view: $("view"),
+  jumpLatest: $("jump-latest"),
   welcome: $("welcome"),
   welcomeLogo: $("welcome-logo"),
   welcomeHints: $("welcome-hints"),
@@ -341,6 +342,7 @@ const sidebar = createSidebar(
     deleteSession: (session, project) => deleteSession(session, project),
     renameSession: (session, project, name) => renameSession(session, project, name),
     copyPath: (session) => copyText(session.filePath || session.file),
+    exportSession: (session, project) => exportSession(session, project),
     toggleFavourite: (file) => toggleFavourite(file),
   },
 );
@@ -413,6 +415,7 @@ function render() {
   const sessionView = state.view === "session" && !!state.bound;
   show(refs.welcome, !sessionView);
   show(refs.messages, sessionView);
+  if (!sessionView) show(refs.jumpLatest, false);
   document.body.dataset.view = state.view;
   if (state.booted) document.body.dataset.ready = "1";
 }
@@ -516,6 +519,11 @@ function applyBound(msg, tab) {
   updateHash(nextTab);
   loadHistory(nextTab).catch((e) => toast(`history: ${e.message}`, { kind: "error" }));
   refreshSessions().catch(() => {});
+  if (runner.kind !== "live") {
+    commandRequest({ type: "get_session_stats" }, 15000)
+      .then((r) => applyStats(r.data))
+      .catch(() => {});
+  }
   composer.focus();
 }
 
@@ -687,6 +695,19 @@ async function loadEarlier() {
   renderLoadEarlier();
 }
 
+/** Map get_session_stats onto the statusline fields. */
+function applyStats(data) {
+  if (!data) return;
+  set({
+    meta: {
+      ...(state.meta || {}),
+      cost: typeof data.cost === "number" ? data.cost : state.meta?.cost,
+      tokens: data.tokens?.total ?? state.meta?.tokens,
+    },
+    contextUsage: data.contextUsage?.percent ?? state.contextUsage,
+  });
+}
+
 function renderLoadEarlier() {
   const total = state.meta?.total || 0;
   const loaded = state.entries.length;
@@ -713,7 +734,7 @@ function renderLoadEarlier() {
 async function refreshSessions() {
   try {
     const out = await listSessions();
-    set({ projects: out.projects || [] });
+    set({ projects: out.projects || [], sessionsDir: out.sessionsDir || state.sessionsDir });
     return true;
   } catch (e) {
     // 401 must reach the caller (boot/login/socket-open) so the login overlay
@@ -758,6 +779,28 @@ async function deleteSession(session, project) {
     toast("Session deleted");
   } catch (e) {
     toast(e.message, { kind: "error" });
+  }
+}
+
+async function exportSession(session, project) {
+  const dirName = session.dirName || project?.dirName;
+  try {
+    const key = sessionKey(dirName, session.file);
+    if (state.activeKey !== key || !state.bound) {
+      await bindSession({ dirName, file: session.file, cwd: session.cwd || project?.cwd }, null);
+    }
+    if (state.bound?.kind === "live") {
+      toast("Export is not available while a live TUI owns the session", { kind: "error" });
+      return;
+    }
+    const outputPath = state.sessionsDir ? `${state.sessionsDir}/${session.file.replace(/\.jsonl$/, "")}.export.html` : undefined;
+    const out = await commandRequest({ type: "export_html", ...(outputPath ? { outputPath } : {}) }, 45000);
+    const p = out?.data?.path;
+    if (!p) throw new Error("export did not return a path");
+    window.open(`/api/sessions/export-file?path=${encodeURIComponent(p)}`, "_blank");
+    toast("Exported session HTML");
+  } catch (e) {
+    toast(e.message || "export failed", { kind: "error" });
   }
 }
 
@@ -929,7 +972,7 @@ function handleRunnerEvent(event) {
       commandRequest({ type: "prompt", message: next }, 30000).catch((e) => toast(e.message, { kind: "error" }));
     }
     commandRequest({ type: "get_session_stats" }, 15000)
-      .then((r) => r.data && set({ meta: { ...state.meta, ...r.data } }))
+      .then((r) => applyStats(r.data))
       .catch(() => {});
   }
   if (event.type === "compaction_start") set({ compacting: true });
@@ -1022,6 +1065,19 @@ refs.input?.addEventListener("keydown", (e) => {
     rawSend({ type: "command", id: `abort-${Date.now().toString(36)}`, command: { type: "abort" } });
   }
 });
+/* jump-to-latest: visible whenever the transcript is scrolled away */
+const nearBottom = () => {
+  const v = refs.view;
+  return v.scrollHeight - v.scrollTop - v.clientHeight < 140;
+};
+refs.view.addEventListener("scroll", () => {
+  show(refs.jumpLatest, state.view === "session" && !nearBottom());
+});
+refs.jumpLatest.addEventListener("click", () => {
+  transcript.scrollToBottom();
+  show(refs.jumpLatest, false);
+});
+
 document.addEventListener("keydown", (e) => {
   const meta = e.metaKey || e.ctrlKey;
   if (!meta) return;

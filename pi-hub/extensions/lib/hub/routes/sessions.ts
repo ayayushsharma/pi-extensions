@@ -2,6 +2,8 @@
  * routes/sessions — session store, files (jails), picker endpoints.
  */
 import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import type { HubConfig } from "../../env.js";
 import {
   deleteSession,
@@ -80,6 +82,33 @@ export function sessionRoutes(deps: SessionDeps): Route[] {
           }
           throw e;
         }
+      },
+    },
+    {
+      // Download an HTML export produced by the child's export_html command.
+      // Jailed to the session store or the OS temp dir; HTML only.
+      method: "GET",
+      path: "/api/sessions/export-file",
+      auth: true,
+      handler: ({ res, url }) => {
+        const raw = url.searchParams.get("path") || "";
+        let real = "";
+        try {
+          real = fs.realpathSync(raw);
+        } catch {
+          throw Object.assign(new Error("export not found"), { status: 404 });
+        }
+        if (!real.endsWith(".html")) throw Object.assign(new Error("only .html exports can be downloaded"), { status: 400 });
+        const roots = [path.resolve(sessionsDir()), path.resolve(os.tmpdir())];
+        const ok = roots.some((r) => real === r || real.startsWith(r + path.sep));
+        if (!ok) throw Object.assign(new Error("export path outside allowed roots"), { status: 403 });
+        const data = fs.readFileSync(real);
+        res.writeHead(200, {
+          "content-type": "text/html; charset=utf-8",
+          "content-disposition": `attachment; filename="${path.basename(real)}"`,
+          "cache-control": "no-store",
+        });
+        res.end(data);
       },
     },
     {

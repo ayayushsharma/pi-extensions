@@ -1,86 +1,139 @@
-// settings — themes, display toggles, server info, live process kill (ADR-013).
+/**
+ * settings — appearance (theme), chat display prefs, server info and the
+ * live process list with kill. Preferences persist through the store.
+ */
 import { killProcess, processes, serverInfo } from "../core/api.js";
-import { clear, el, show, toast } from "../core/dom.js";
+import { el, show, toast } from "../core/dom.js";
+import { icon } from "../core/icons.js";
 import { savePrefs, set, state } from "../core/store.js";
 
-const THEMES = ["dusk", "midnight", "clean", "terracotta", "sage", "dawn"];
+const THEMES = [
+  { id: "terracotta", name: "Terracotta", swatches: ["#f4f1ec", "#b06a48", "#6b3570"] },
+  { id: "clean", name: "Clean", swatches: ["#ffffff", "#0580c4", "#007aff"] },
+  { id: "sage", name: "Sage", swatches: ["#f0f2ec", "#6a7d5a", "#4a3860"] },
+  { id: "night", name: "Dusk", swatches: ["#212121", "#a0a0a0", "#666666"] },
+  { id: "dawn", name: "Dawn", swatches: ["#1a1d26", "#7a8ab0", "#6a5a80"] },
+  { id: "midnight", name: "Midnight", swatches: ["#000000", "#5a7a9a", "#4a5567"] },
+];
 
 export function createSettings(refs, actions) {
-  function applyPrefs() {
-    document.documentElement.dataset.theme = state.prefs.theme;
-    document.body.classList.toggle("hide-thinking", !state.prefs.showThinking);
-    document.body.classList.toggle("hide-costs", state.prefs.hideCosts);
-    refs.thinkingToggle.checked = state.prefs.showThinking;
-    refs.costsToggle.checked = state.prefs.hideCosts;
-    for (const btn of refs.themePicker.querySelectorAll("button")) {
-      btn.setAttribute("aria-selected", String(btn.dataset.theme === state.prefs.theme));
+  refs.close.append(icon("x", 15));
+
+  /* tabs */
+  const tabs = [...refs.tabs.querySelectorAll(".tab-btn")];
+  const panes = [...refs.root.querySelectorAll(".settings-pane")];
+  for (const tab of tabs) {
+    tab.addEventListener("click", () => {
+      for (const t of tabs) t.classList.toggle("active", t === tab);
+      for (const p of panes) show(p, p.dataset.pane === tab.dataset.tab);
+    });
+  }
+
+  /* themes */
+  function renderThemes() {
+    refs.themeGrid.replaceChildren();
+    for (const theme of THEMES) {
+      const selected = state.prefs.theme === theme.id;
+      refs.themeGrid.append(
+        el(
+          "button",
+          {
+            type: "button",
+            class: "theme-swatch",
+            role: "option",
+            "aria-selected": String(selected),
+            dataset: { theme: theme.id },
+            onclick: () => {
+              state.prefs.theme = theme.id;
+              savePrefs();
+              applyPrefs();
+            },
+          },
+          el("span", { class: "swatches" }, ...theme.swatches.map((c) => el("span", { class: "sw", style: `background:${c}` }))),
+          el("span", { text: theme.name }),
+        ),
+      );
     }
   }
 
-  refs.themePicker.replaceChildren();
-  for (const theme of THEMES) {
-    refs.themePicker.append(
-      el("button", {
-        type: "button",
-        role: "option",
-        dataset: { theme },
-        text: theme,
-        onclick: () => {
-          state.prefs.theme = theme;
-          savePrefs();
-          applyPrefs();
-        },
-      }),
-    );
+  function applyPrefs() {
+    if (state.prefs.theme) document.documentElement.dataset.theme = state.prefs.theme;
+    refs.thinkingToggle.checked = state.prefs.showThinking;
+    refs.costsToggle.checked = state.prefs.showCosts;
+    refs.toolsToggle.checked = state.prefs.expandTools;
+    renderThemes();
+    actions.applyPrefs?.();
   }
+
   refs.thinkingToggle.addEventListener("change", () => {
     state.prefs.showThinking = refs.thinkingToggle.checked;
     savePrefs();
     applyPrefs();
   });
   refs.costsToggle.addEventListener("change", () => {
-    state.prefs.hideCosts = refs.costsToggle.checked;
+    state.prefs.showCosts = refs.costsToggle.checked;
     savePrefs();
     applyPrefs();
   });
+  refs.toolsToggle.addEventListener("change", () => {
+    state.prefs.expandTools = refs.toolsToggle.checked;
+    savePrefs();
+    applyPrefs();
+  });
+
   refs.close.addEventListener("click", () => show(refs.root, false));
   refs.root.addEventListener("click", (e) => {
     if (e.target === refs.root) show(refs.root, false);
   });
-  refs.refresh.addEventListener("click", () => loadProcesses());
+  refs.procRefresh.addEventListener("click", () => loadProcesses());
   refs.logout.addEventListener("click", () => actions.logout());
 
   async function loadInfo() {
     try {
       const info = await serverInfo();
-      refs.info.textContent = `v${info.version} · pid ${info.pid} · up ${info.uptime}s · ${info.platform} · auth ${info.auth ? "on" : "off"}`;
+      const bits = [`pi-hub v${info.version}`, `pid ${info.pid}`, `up ${Math.round((info.uptime || 0) / 60)}m`, info.platform, `auth ${info.auth ? "on" : "off"}`];
+      refs.info.textContent = bits.join(" · ");
     } catch (e) {
       refs.info.textContent = e.message;
     }
   }
 
   async function loadProcesses() {
-    clear(refs.procList);
+    refs.procList.replaceChildren(el("div", { class: "meta", text: "Loading…" }));
     try {
       const out = await processes();
-      if (out.unsupported) return refs.procList.append(el("div", { class: "meta", text: "process listing not supported on this platform" }));
-      if (!out.processes?.length) return refs.procList.append(el("div", { class: "meta", text: "no pi processes" }));
+      refs.procList.replaceChildren();
+      if (out.unsupported) {
+        refs.procList.append(el("div", { class: "meta", text: "Process listing is not supported on this platform." }));
+        return;
+      }
+      if (!out.processes?.length) {
+        refs.procList.append(el("div", { class: "meta", text: "No pi processes." }));
+        return;
+      }
       for (const p of out.processes) {
         refs.procList.append(
-          el("div", { class: "row-item" },
-            el("span", { class: "title", text: `${p.owner === "hub" ? "hub" : "live"} · pid ${p.pid} · ${Math.round((p.rssKb || 0) / 1024)} MB` }),
-            el("span", { class: "sub" }, el("span", { class: "meta", text: (p.argv || "").slice(0, 120) })),
+          el(
+            "div",
+            { class: "proc-row" },
+            el(
+              "div",
+              { class: "grow" },
+              el("div", { text: `${p.owner === "hub" ? "hub" : "child"} · pid ${p.pid} · ${Math.round((p.rssKb || 0) / 1024)} MB` }),
+              el("div", { class: "argv", text: p.argv || "" }),
+            ),
             el("button", {
+              class: "btn small danger",
               type: "button",
               text: "Kill",
               onclick: async () => {
-                if (!(await actions.confirm("Kill process", `Send TERM to ${p.pid}? Session files stay on disk.`))) return;
+                if (!(await actions.confirm("Kill process", `Send TERM to pid ${p.pid}? Session files stay on disk.`))) return;
                 try {
                   await killProcess(p.pid);
                   toast(`killed ${p.pid}`);
                   loadProcesses();
                 } catch (e) {
-                  toast(e.message);
+                  toast(e.message, { kind: "error" });
                 }
               },
             }),
@@ -88,7 +141,7 @@ export function createSettings(refs, actions) {
         );
       }
     } catch (e) {
-      refs.procList.append(el("div", { class: "meta", text: e.message }));
+      refs.procList.replaceChildren(el("div", { class: "meta", text: e.message }));
     }
   }
 
@@ -96,9 +149,10 @@ export function createSettings(refs, actions) {
     async open() {
       show(refs.root, true);
       applyPrefs();
-      await loadInfo();
-      await loadProcesses();
+      loadInfo();
+      loadProcesses();
     },
     applyPrefs,
+    isOpen: () => !refs.root.classList.contains("hidden"),
   };
 }

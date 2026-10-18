@@ -6,7 +6,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { HOME, type HubConfig } from "../env.js";
-import { sessionCwd } from "./sessions.js";
+import { listSessionDirs, sessionCwd } from "./sessions.js";
 
 export interface DirEntry {
   name: string;
@@ -15,8 +15,25 @@ export interface DirEntry {
   mtime: number;
 }
 
+let sessionRootsCache: { at: number; roots: string[] } | null = null;
+
+/** Session cwds are user project directories; browsing them is expected. */
+function sessionCwdRoots(): string[] {
+  const now = Date.now();
+  if (sessionRootsCache && now - sessionRootsCache.at < 5000) return sessionRootsCache.roots;
+  const roots: string[] = [];
+  try {
+    for (const dir of listSessionDirs()) {
+      const cwd = dir.sessions.find((s) => s.cwd)?.cwd;
+      if (cwd && path.isAbsolute(cwd)) roots.push(path.resolve(cwd));
+    }
+  } catch {}
+  sessionRootsCache = { at: now, roots };
+  return roots;
+}
+
 export function browseRoots(cfg: HubConfig): string[] {
-  const roots = [HOME, ...cfg.fsRoots];
+  const roots = [HOME, ...cfg.fsRoots, ...sessionCwdRoots()];
   return [...new Set(roots.map((r) => path.resolve(r)))];
 }
 
@@ -27,7 +44,7 @@ function within(target: string, root: string): boolean {
 /** Resolve + realpath. Throws when the path escapes every allowed root. */
 export function jailPath(rawPath: string, roots: string[]): string {
   if (!rawPath || typeof rawPath !== "string" || rawPath.includes("\0")) {
-    throw new Error("invalid path");
+    throw Object.assign(new Error("invalid path"), { status: 400 });
   }
   const expanded = rawPath.startsWith("~") ? path.join(HOME, rawPath.slice(1)) : rawPath;
   const abs = path.resolve(HOME, expanded);
@@ -35,7 +52,7 @@ export function jailPath(rawPath: string, roots: string[]): string {
   try {
     real = fs.realpathSync(abs);
   } catch {
-    throw new Error("not found");
+    throw Object.assign(new Error("not found"), { status: 404 });
   }
   for (const root of roots) {
     let realRoot: string;
@@ -46,7 +63,7 @@ export function jailPath(rawPath: string, roots: string[]): string {
     }
     if (within(real, realRoot)) return real;
   }
-  throw new Error("path outside allowed roots");
+  throw Object.assign(new Error("path outside allowed roots"), { status: 403 });
 }
 
 export function listDir(rawPath: string, cfg: HubConfig): { path: string; entries: DirEntry[] } {

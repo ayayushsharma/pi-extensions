@@ -1,113 +1,204 @@
 <!doctype html>
-<html lang="en" data-theme="dusk">
+<html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <meta name="theme-color" content="#0b0e14" />
+  <meta name="color-scheme" content="light dark" />
   <title>Pi Hub</title>
-  <link rel="stylesheet" href="/css/tokens.css?v=1" />
-  <link rel="stylesheet" href="/css/app.css?v=1" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect x='1.5' y='1.5' width='21' height='21' rx='6' fill='%23b06a48'/%3E%3Cpath d='M8 9h8M9.5 9v6M14.5 9v6' stroke='white' stroke-width='2.1' fill='none' stroke-linecap='round'/%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="/css/tokens.css?v=2" />
+  <link rel="stylesheet" href="/css/app.css?v=2" />
 </head>
 <body>
   <div id="login" class="overlay hidden" role="dialog" aria-modal="true" aria-labelledby="login-title">
     <form id="login-form" class="card login-card">
       <h1 id="login-title">Pi Hub</h1>
-      <label>User <input id="login-user" name="user" autocomplete="username" /></label>
+      <p class="meta" id="login-sub">This server requires authentication.</p>
+      <label>User <input id="login-user" name="user" autocomplete="username" autocapitalize="off" spellcheck="false" /></label>
       <label>Password <input id="login-pass" name="pass" type="password" autocomplete="current-password" /></label>
       <p id="login-error" class="error" role="alert"></p>
-      <button type="submit">Sign in</button>
+      <button type="submit" class="btn primary">Sign in</button>
     </form>
   </div>
 
   <div id="app" class="app">
-    <header id="topbar" class="topbar">
-      <button id="sidebar-toggle" class="icon-btn" type="button" aria-label="Toggle sessions" aria-expanded="false">☰</button>
-      <div class="bar-title">
-        <span id="session-title">Pi Hub</span>
-        <span id="session-meta" class="meta"></span>
-      </div>
-      <div class="bar-right">
-        <button id="model-btn" class="pill" type="button" aria-haspopup="listbox" aria-expanded="false">model</button>
-        <div id="model-menu" class="menu hidden" role="listbox" aria-label="Models"></div>
-        <button id="thinking-btn" class="pill" type="button" aria-haspopup="listbox" aria-expanded="false">thinking</button>
-        <div id="thinking-menu" class="menu hidden" role="listbox" aria-label="Thinking level"></div>
-        <span id="cost-pill" class="pill cost hidden"></span>
-        <span id="status-dot" class="status-dot" data-state="off" title="disconnected" aria-label="connection status"></span>
-        <button id="settings-btn" class="icon-btn" type="button" aria-label="Settings">⚙</button>
-      </div>
+    <header class="tabbar" id="tabbar">
+      <button id="sidebar-toggle" class="icon-btn" type="button" aria-label="Toggle sidebar" aria-expanded="false"></button>
+      <button id="home-btn" class="icon-btn" type="button" aria-label="All sessions" title="All sessions"></button>
+      <div class="tab-strip" id="tab-strip" role="tablist" aria-label="Open sessions"></div>
+      <button id="tab-new" class="icon-btn tab-new" type="button" aria-label="New session" title="New session (Ctrl+T)"></button>
+      <div class="spacer"></div>
+      <button id="conn" class="conn" type="button" data-state="off" title="Connection status">
+        <span class="status-dot" id="status-dot"></span>
+        <span id="status-text">Connecting…</span>
+      </button>
+      <button id="files-btn" class="icon-btn" type="button" aria-label="Toggle files" title="Files"></button>
+      <button id="settings-btn" class="icon-btn" type="button" aria-label="Settings" title="Settings"></button>
+      <button id="reload-btn" class="icon-btn" type="button" aria-label="Reload" title="Reload"></button>
     </header>
 
-    <div class="body">
-      <aside id="sidebar" class="sidebar" aria-label="Sessions">
-        <div class="sidebar-head">
-          <input id="session-search" placeholder="Search sessions" aria-label="Search sessions" />
-          <button id="new-session-btn" type="button">New</button>
+    <div class="titlebar hidden" id="titlebar">
+      <span class="tb-title" id="tb-title"></span>
+      <span class="chip" id="tb-chip"></span>
+      <span class="grow"></span>
+      <button id="tb-close" class="icon-btn" type="button" aria-label="Close session tab" title="Close tab"></button>
+    </div>
+
+    <div class="shell">
+      <aside class="sidebar" id="sidebar" aria-label="Sessions and running terminals">
+        <div class="sb-head">
+          <input class="sb-search" id="session-search" type="search" placeholder="Search…" aria-label="Search sessions" autocomplete="off" />
+          <button id="new-session-btn" class="icon-btn" type="button" aria-label="New session" title="New session"></button>
+          <button id="sidebar-collapse" class="icon-btn" type="button" aria-label="Collapse sidebar" title="Collapse"></button>
         </div>
-        <div id="runner-list" class="list"></div>
-        <div id="session-list" class="list"></div>
+
+        <div class="current-session" id="current-session">
+          <div class="cs-top">
+            <span class="cs-dot" id="cs-dot"></span>
+            <span class="cs-state" id="cs-state">No session</span>
+            <button id="cs-close" class="icon-btn cs-close" type="button" aria-label="Close this session" title="Kill this session"></button>
+          </div>
+          <div class="cs-name" id="cs-name">New session</div>
+          <div class="cs-dir" id="cs-dir"></div>
+        </div>
+
+        <div class="scroll" id="sidebar-scroll">
+          <div id="vtabs-section"></div>
+          <div id="live-section"></div>
+          <div id="session-list"></div>
+        </div>
       </aside>
-      <div id="overlay" class="overlay-backdrop hidden"></div>
+      <div class="sidebar-overlay" id="sidebar-overlay"></div>
 
       <main class="main">
         <div id="banner" class="banner hidden" role="status"></div>
-        <div id="messages" class="messages"></div>
-        <form id="composer" class="composer">
-          <div id="queue" class="queue"></div>
-          <div class="composer-row">
-            <textarea id="input" rows="1" placeholder="Message…" aria-label="Message"></textarea>
-            <button id="send-btn" type="submit">Send</button>
-            <button id="abort-btn" class="danger hidden" type="button">Stop</button>
+        <div class="scroll-area" id="view">
+          <div class="welcome hidden" id="welcome">
+            <span id="welcome-logo"></span>
+            <h2>Welcome to Pi Hub</h2>
+            <p>Type a message below to start chatting with Pi, or pick a session from the sidebar.</p>
+            <div class="hints" id="welcome-hints"></div>
+            <div class="welcome-actions" id="welcome-actions"></div>
+            <div class="welcome-recents" id="welcome-recents"></div>
           </div>
-          <div id="slash" class="menu hidden" role="listbox" aria-label="Commands"></div>
-        </form>
+          <div class="transcript-inner" id="messages"></div>
+        </div>
+
+        <div class="composer-wrap">
+          <div class="composer-inner">
+            <div class="queue hidden" id="queue"></div>
+            <form id="composer" class="composer" autocomplete="off">
+              <textarea id="input" rows="1" aria-label="Message" placeholder="Ask anything, / for commands…"></textarea>
+              <div class="actions">
+                <button id="mic-btn" class="icon-btn" type="button" aria-label="Voice input" title="Voice input"></button>
+                <button id="abort-btn" class="icon-btn abort-btn hidden" type="button" aria-label="Stop" title="Stop (Esc)"></button>
+                <button id="send-btn" class="send-btn" type="submit" aria-label="Send message" title="Send (Enter)"></button>
+              </div>
+              <div class="composer-footer">
+                <div class="left">
+                  <button id="command-btn" class="icon-btn" type="button" aria-label="Commands" title="Commands"></button>
+                  <button id="attach-btn" class="icon-btn" type="button" aria-label="Attach image" title="Attach image"></button>
+                  <input type="file" id="image-input" accept="image/*" multiple hidden />
+                </div>
+                <div class="right">
+                  <div id="model-wrap" style="position:relative">
+                    <button id="model-btn" class="pill-btn" type="button" aria-haspopup="listbox" aria-expanded="false">
+                      <span class="label" id="model-label">model</span>
+                    </button>
+                    <div id="model-menu" class="menu hidden" role="listbox" aria-label="Models"></div>
+                  </div>
+                  <div id="thinking-wrap" style="position:relative">
+                    <button id="thinking-btn" class="pill-btn" type="button" aria-haspopup="listbox" aria-expanded="false">
+                      <span class="label" id="thinking-label">off</span>
+                    </button>
+                    <div id="thinking-menu" class="menu hidden" role="listbox" aria-label="Thinking level"></div>
+                  </div>
+                </div>
+              </div>
+              <div id="slash" class="menu slash-menu hidden" role="listbox" aria-label="Commands"></div>
+            </form>
+            <div class="statusline">
+              <span class="cwd-label" id="cwd-label"></span>
+              <span class="grow"></span>
+              <span class="chip-mini hidden" id="cost-chip"></span>
+              <span class="chip-mini hidden" id="context-chip"></span>
+            </div>
+          </div>
+        </div>
       </main>
 
-      <aside id="file-panel" class="file-panel hidden" aria-label="Files">
+      <aside class="file-panel hidden" id="file-panel" aria-label="Files">
         <div class="panel-head">
-          <button id="file-up" type="button" class="icon-btn" aria-label="Parent directory">↑</button>
-          <span id="file-path" class="meta"></span>
-          <button id="file-close" type="button" class="icon-btn" aria-label="Close files">✕</button>
+          <button id="file-up" class="icon-btn" type="button" aria-label="Parent directory"></button>
+          <span class="panel-title grow" id="file-panel-title">Files</span>
+          <button id="file-finder" class="icon-btn" type="button" aria-label="Open in file manager" title="Open in file manager"></button>
+          <button id="file-close" class="icon-btn" type="button" aria-label="Close files"></button>
         </div>
-        <div id="file-list" class="list"></div>
+        <div class="file-path" id="file-path"></div>
+        <div class="file-list" id="file-list"></div>
       </aside>
     </div>
   </div>
 
   <div id="picker" class="overlay hidden" role="dialog" aria-modal="true" aria-labelledby="picker-title">
     <div class="card picker-card">
-      <div class="panel-head">
-        <h2 id="picker-title">Sessions</h2>
-        <input id="picker-path" class="path-input" placeholder="/path/to/project" aria-label="Directory" />
-        <button id="picker-start" type="button">New here</button>
-        <button id="picker-close" type="button" class="icon-btn" aria-label="Close">✕</button>
+      <div class="card-head">
+        <span class="card-title" id="picker-title">Start / Resume</span>
+        <span class="grow"></span>
+        <button id="picker-close" class="icon-btn" type="button" aria-label="Close"></button>
       </div>
-      <div id="picker-projects" class="list projects"></div>
-      <div id="picker-dirs" class="list"></div>
+      <div class="card-body">
+        <div id="picker-favs"></div>
+        <div class="section-label">Directory</div>
+        <div style="display:flex;gap:6px;padding:0 14px 6px">
+          <input class="picker-path" id="picker-path" placeholder="/path/to/project" aria-label="Directory" />
+          <button id="picker-up" class="btn small" type="button">Up</button>
+        </div>
+        <div id="picker-dirs"></div>
+        <div class="section-label" id="picker-sessions-label">Sessions here</div>
+        <div id="picker-sessions"></div>
+        <div id="picker-choice"></div>
+        <div class="section-label">New session here</div>
+        <textarea class="picker-prompt" id="picker-starter" placeholder="Starter prompt (optional)" aria-label="Starter prompt"></textarea>
+      </div>
+      <div class="card-foot">
+        <span class="grow"></span>
+        <button id="picker-start" class="btn primary" type="button">Start new session</button>
+      </div>
     </div>
   </div>
 
   <div id="settings" class="overlay hidden" role="dialog" aria-modal="true" aria-labelledby="settings-title">
     <div class="card settings-card">
-      <div class="panel-head">
-        <h2 id="settings-title">Settings</h2>
-        <button id="settings-close" type="button" class="icon-btn" aria-label="Close">✕</button>
+      <div class="card-head">
+        <span class="card-title" id="settings-title">Settings</span>
+        <span class="grow"></span>
+        <button id="settings-close" class="icon-btn" type="button" aria-label="Close"></button>
       </div>
-      <div class="settings-body">
-        <section>
-          <h3>Appearance</h3>
-          <div id="theme-picker" class="theme-picker" role="listbox" aria-label="Theme"></div>
-          <label class="row"><input id="toggle-thinking" type="checkbox" /> Show thinking</label>
-          <label class="row"><input id="toggle-costs" type="checkbox" /> Hide costs</label>
+      <div class="settings-tabs" role="tablist">
+        <button class="tab-btn active" data-tab="appearance" type="button">Appearance</button>
+        <button class="tab-btn" data-tab="chat" type="button">Chat</button>
+        <button class="tab-btn" data-tab="server" type="button">Server</button>
+      </div>
+      <div class="card-body">
+        <section class="settings-pane" data-pane="appearance">
+          <h3>Theme</h3>
+          <div class="theme-grid" id="theme-grid" role="listbox" aria-label="Theme"></div>
         </section>
-        <section>
-          <h3>Server</h3>
-          <div id="server-info" class="meta"></div>
-          <button id="logout-btn" type="button">Log out</button>
+        <section class="settings-pane hidden" data-pane="chat">
+          <h3>Display</h3>
+          <label class="row"><input id="toggle-thinking" type="checkbox" /> <span class="grow">Show thinking blocks</span></label>
+          <label class="row"><input id="toggle-costs" type="checkbox" /> <span class="grow">Show usage and cost</span></label>
+          <label class="row"><input id="toggle-tools" type="checkbox" /> <span class="grow">Expand tool calls by default</span></label>
         </section>
-        <section>
-          <h3>Live pi processes</h3>
-          <button id="proc-refresh" type="button">Refresh</button>
-          <div id="proc-list" class="list"></div>
+        <section class="settings-pane hidden" data-pane="server">
+          <h3>Connection</h3>
+          <div class="meta" id="server-info"></div>
+          <h3>Processes</h3>
+          <button id="proc-refresh" class="btn small" type="button">Refresh</button>
+          <div id="proc-list"></div>
+          <h3>Session</h3>
+          <button id="logout-btn" class="btn danger small" type="button">Log out</button>
         </section>
       </div>
     </div>
@@ -115,10 +206,12 @@
 
   <div id="viewer" class="overlay hidden" role="dialog" aria-modal="true" aria-labelledby="viewer-title">
     <div class="card viewer-card">
-      <div class="panel-head">
-        <h2 id="viewer-title">File</h2>
-        <button id="viewer-add" type="button">Add to prompt</button>
-        <button id="viewer-close" type="button" class="icon-btn" aria-label="Close">✕</button>
+      <div class="card-head">
+        <span class="card-title" id="viewer-title">File</span>
+        <span class="grow"></span>
+        <a id="viewer-download" class="btn small hidden" download>Download</a>
+        <button id="viewer-add" class="btn small" type="button">Add to prompt</button>
+        <button id="viewer-close" class="icon-btn" type="button" aria-label="Close"></button>
       </div>
       <pre id="viewer-body" class="viewer-body"></pre>
     </div>
@@ -127,6 +220,6 @@
   <div id="dialog-container"></div>
   <div id="toast" class="toast hidden" role="status"></div>
 
-  <script type="module" src="/js/app.js?v=1"></script>
+  <script type="module" src="/js/app.js?v=2"></script>
 </body>
 </html>

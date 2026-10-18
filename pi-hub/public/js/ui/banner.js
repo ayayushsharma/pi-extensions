@@ -1,42 +1,79 @@
-// banner — the preview → drive → detached FSM surface for live TUIs (ADR-009).
-import { el, fmtTime, show } from "../core/dom.js";
+/**
+ * banner — the preview/drive strip above the transcript. One placement for
+ * every "this view is not a normal headless session" state.
+ */
+import { el, show, timeAgo } from "../core/dom.js";
+import { icon } from "../core/icons.js";
 
-export function updateBanner(banner, state, actions) {
+export function renderBanner(node, state, actions) {
   const bound = state.bound;
-  banner.replaceChildren();
-  if (!bound) return show(banner, false);
-  if (bound.kind !== "live") {
-    if (bound.state === "dead") {
-      banner.dataset.kind = "error";
-      banner.append(
-        el("span", { class: "grow", text: `Session ended (${bound.sessionFile || bound.id})` }),
-        el("button", { type: "button", text: "Resume from disk", onclick: () => actions.onResumeDead(bound) }),
-      );
-      return show(banner, true);
-    }
-    return show(banner, false);
+  show(node, false);
+
+  if (state.banner) {
+    const b = state.banner;
+    node.dataset.kind = b.kind || "info";
+    node.replaceChildren(
+      icon(b.icon || "info", 18),
+      el("div", { class: "banner-copy" }, el("div", { class: "banner-title", text: b.title }), b.sub ? el("div", { class: "banner-sub", text: b.sub }) : null),
+      ...(b.actions || []).map((a) => el("button", { class: `btn small${a.primary ? " primary" : ""}`, type: "button", onclick: a.onClick, text: a.label })),
+    );
+    return show(node, true);
   }
+
+  if (!bound) return;
+
+  if (bound.state === "dead") {
+    node.dataset.kind = "error";
+    node.replaceChildren(
+      icon("alert", 18),
+      el("div", { class: "banner-copy" },
+        el("div", { class: "banner-title", text: "Session ended" }),
+        el("div", { class: "banner-sub", text: `${bound.sessionFile || bound.id} — the backend is no longer running.` }),
+      ),
+      el("button", { class: "btn small primary", type: "button", text: "Resume from disk", onclick: () => actions.onResume(bound) }),
+    );
+    return show(node, true);
+  }
+
+  if (bound.kind !== "live") return;
+
   const driving = state.driving === bound.id;
   const busy = state.driverBusy && state.driverBusy.runnerId === bound.id;
-  banner.dataset.kind = busy ? "error" : driving ? "ok" : "preview";
-  const info = `pid ${bound.pid} · last active ${fmtTime(bound.lastActiveAt)}`;
+  node.dataset.kind = busy ? "error" : driving ? "ok" : "preview";
+
   if (driving) {
-    banner.append(
-      el("span", { class: "grow", text: `Driving live session on:${bound.pid} — it is also attached in the terminal, so typing happens in both.` }),
-      el("button", { type: "button", text: "Detach", onclick: actions.onDetach }),
+    node.replaceChildren(
+      icon("eye", 18),
+      el("div", { class: "banner-copy" },
+        el("div", { class: "banner-title", text: `Driving the live TUI on port ${bound.pid}` }),
+        el("div", { class: "banner-sub", text: "The terminal is still attached, so prompts sent there and here may race." }),
+      ),
+      el("button", { class: "btn small", type: "button", text: "Detach", onclick: () => actions.onDetach() }),
     );
-  } else if (busy) {
-    banner.append(
-      el("span", { class: "grow", text: `Another browser is driving this session (client ${state.driverBusy.heldBy}).` }),
-      el("button", { type: "button", text: "Take over", onclick: () => actions.onAttach(bound, true) }),
-      el("button", { type: "button", text: "Cancel", onclick: actions.onCancelPreview }),
-    );
-  } else {
-    banner.append(
-      el("span", { class: "grow", text: `Previewing live session (${info}). Input is read-only until you drive.` }),
-      el("button", { type: "button", text: "Attach & Drive", onclick: () => actions.onAttach(bound, false) }),
-      el("button", { type: "button", text: "Cancel", onclick: actions.onCancelPreview }),
-    );
+    return show(node, true);
   }
-  show(banner, true);
+
+  if (busy) {
+    node.replaceChildren(
+      icon("alert", 18),
+      el("div", { class: "banner-copy" },
+        el("div", { class: "banner-title", text: "Another browser is driving this session" }),
+        el("div", { class: "banner-sub", text: `Held by client ${state.driverBusy.heldBy}. Taking over releases it there.` }),
+      ),
+      el("button", { class: "btn small primary", type: "button", text: "Take over", onclick: () => actions.onAttach(bound, true) }),
+      el("button", { class: "btn small", type: "button", text: "Cancel", onclick: () => actions.onDismiss() }),
+    );
+    return show(node, true);
+  }
+
+  node.replaceChildren(
+    icon("eye", 18),
+    el("div", { class: "banner-copy" },
+      el("div", { class: "banner-title", text: bound.title || `Live TUI on port ${bound.pid}` }),
+      el("div", { class: "banner-sub", text: `Read-only preview — Drive to take over. Last active ${timeAgo(bound.lastActiveAt)}.` }),
+    ),
+    el("button", { class: "btn small primary", type: "button", text: "Drive", onclick: () => actions.onAttach(bound, false) }),
+    el("button", { class: "btn small", type: "button", text: "Dismiss", onclick: () => actions.onDismiss() }),
+  );
+  show(node, true);
 }

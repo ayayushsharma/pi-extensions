@@ -10,6 +10,7 @@ import {
   readWindow,
   renameSession,
   resolveSessionPath,
+  searchSessions,
   sessionsDir,
 } from "../../store/sessions.js";
 import type { RunnerRegistry } from "../../runners/registry.js";
@@ -60,11 +61,35 @@ export function sessionRoutes(deps: SessionDeps): Route[] {
       path: "/api/sessions/:dirName/:file",
       auth: true,
       handler: ({ res, url, params }) => {
-        const abs = sessionAbs(params.dirName, params.file);
         const limit = Math.min(500, Math.max(1, Number(url.searchParams.get("limit")) || 50));
         const before = url.searchParams.get("before");
-        const win = readWindow(abs, limit, before);
-        return sendJson(res, 200, { file: params.file, dirName: params.dirName, ...win });
+        try {
+          const abs = sessionAbs(params.dirName, params.file);
+          const win = readWindow(abs, limit, before);
+          return sendJson(res, 200, { file: params.file, dirName: params.dirName, ...win });
+        } catch (e: any) {
+          // Fresh sessions are created lazily: first paint gets an empty window.
+          const msg = String(e?.message || e);
+          if (msg.includes("not found") || msg.includes("ENOENT")) {
+            return sendJson(res, 200, {
+              file: params.file,
+              dirName: params.dirName,
+              entries: [],
+              meta: { cwd: null, model: null, thinkingLevel: null, sessionName: null, total: 0, firstId: null, cost: 0, tokens: 0 },
+            });
+          }
+          throw e;
+        }
+      },
+    },
+    {
+      // Full-text session search for the sidebar (bounded hit list).
+      method: "GET",
+      path: "/api/search",
+      auth: true,
+      handler: ({ res, url }) => {
+        const q = url.searchParams.get("q") || "";
+        return sendJson(res, 200, { query: q, hits: searchSessions(q, 30) });
       },
     },
     {

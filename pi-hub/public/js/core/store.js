@@ -1,36 +1,79 @@
-// store — one state object, one subscribe path. Views never mutate it directly.
-const PREF_KEY = "pi-hub-prefs";
-const BIND_KEY = "pi-hub-binding";
+/**
+ * store — one state object and one subscribe path. Views read state and
+ * render; they never mutate it directly. Persistence lives here too, so the
+ * rest of the client stays stateless.
+ */
+const PREFS_KEY = "pi-hub-prefs";
+const TABS_KEY = "pi-hub-tabs";
 
-function loadPrefs() {
+function readJSON(key, fallback) {
   try {
-    return JSON.parse(localStorage.getItem(PREF_KEY) || "{}");
+    const raw = localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : fallback;
   } catch {
-    return {};
+    return fallback;
   }
 }
 
+function writeJSON(key, value) {
+  try {
+    if (value === null || value === undefined) localStorage.removeItem(key);
+    else localStorage.setItem(key, JSON.stringify(value));
+  } catch {}
+}
+
+const savedTabs = readJSON(TABS_KEY, { tabs: [], activeKey: null });
+
 export const state = {
+  /* connection */
+  booted: false,
   connected: false,
+  connState: "connecting", // connecting | on | off | working
   mode: null,
   version: null,
   authRequired: false,
-  runners: new Map(), // id -> RunnerInfo
+
+  /* runners */
+  runners: new Map(), // runnerId -> info
   boundId: null,
-  bound: null, // RunnerInfo of the bound runner
-  binding: false, // a bind request is in flight (switching sessions)
+  bound: null, // RunnerInfo of the active tab's runner
+  binding: false,
   driving: null, // runnerId while driving a live runner
-  driverBusy: null, // { runnerId, heldBy } while attach was refused
-  banner: null, // { kind, text, actions: [...] }
-  entries: [], // loaded transcript entries (window)
+  driverBusy: null, // { runnerId, heldBy } while an attach was refused
+
+  /* store listings */
+  projects: [], // [{ dirName, cwd, sessions: [...] }]
+  search: "",
+  favourites: readJSON(PREFS_KEY, {}).favourites || [],
+
+  /* tabs / view */
+  tabs: savedTabs.tabs || [], // [{ key, dirName, file, runnerId, title, kind }]
+  activeKey: savedTabs.activeKey || null,
+  view: "welcome", // welcome | session
+
+  /* transcript */
+  entries: [],
   meta: null, // { model, thinkingLevel, sessionName, total, cost, tokens, cwd }
-  historyDir: null, // dirName of the bound session (for paging/fork)
-  historyFile: null, // file name of the bound session
+  historyDir: null,
+  historyFile: null,
   streaming: false,
   compacting: false,
+
+  /* ui chrome */
+  ui: { sidebarOpen: false, sidebarCollapsed: false },
+  contextUsage: null,
+
+  /* composer */
   commands: [],
   queue: [],
-  prefs: Object.assign({ theme: "dusk", showThinking: true, hideCosts: false }, loadPrefs()),
+  pendingFiles: [],
+  images: [],
+  voice: false,
+
+  prefs: Object.assign(
+    { theme: null, showThinking: true, showCosts: true, expandTools: false },
+    readJSON(PREFS_KEY, {}),
+  ),
 };
 
 const subs = new Set();
@@ -46,30 +89,66 @@ export function set(patch) {
     try {
       fn(state);
     } catch (e) {
-      (window.__errs = window.__errs || []).push(String(e && e.message ? e.message : e));
+      (window.__errs = window.__errs || []).push(String((e && e.message) || e));
     }
   }
 }
 
 export function savePrefs() {
-  try {
-    localStorage.setItem(PREF_KEY, JSON.stringify(state.prefs));
-  } catch {}
+  writeJSON(PREFS_KEY, { ...state.prefs, favourites: state.favourites });
 }
 
-export function saveBinding(binding) {
-  try {
-    if (binding) localStorage.setItem(BIND_KEY, JSON.stringify(binding));
-    else localStorage.removeItem(BIND_KEY);
-  } catch {}
+export function saveTabs() {
+  writeJSON(TABS_KEY, { tabs: state.tabs, activeKey: state.activeKey });
 }
 
-export function loadBinding() {
-  try {
-    return JSON.parse(localStorage.getItem(BIND_KEY) || "null");
-  } catch {
-    return null;
-  }
+/* ── tab helpers ─────────────────────────────────────────────────────── */
+
+export function sessionKey(dirName, file) {
+  return `s:${dirName || ""}/${file || ""}`;
+}
+
+export function runnerKey(runnerId) {
+  return `r:${runnerId}`;
+}
+
+export function liveKey(pid) {
+  return `live:${pid}`;
+}
+
+export function activeTab() {
+  return state.tabs.find((t) => t.key === state.activeKey) || null;
+}
+
+export function findTabByFile(file) {
+  return state.tabs.find((t) => t.file === file) || null;
+}
+
+export function findTabByRunner(runnerId) {
+  return state.tabs.find((t) => t.runnerId === runnerId) || null;
+}
+
+export function upsertTab(tab) {
+  const tabs = [...state.tabs];
+  const idx = tabs.findIndex((t) => t.key === tab.key);
+  if (idx >= 0) tabs[idx] = { ...tabs[idx], ...tab };
+  else tabs.push(tab);
+  set({ tabs, activeKey: tab.key });
+  saveTabs();
+}
+
+export function updateTab(key, patch) {
+  const tabs = state.tabs.map((t) => (t.key === key ? { ...t, ...patch } : t));
+  set({ tabs });
+  saveTabs();
+}
+
+export function removeTab(key) {
+  const tabs = state.tabs.filter((t) => t.key !== key);
+  const activeKey = state.activeKey === key ? (tabs[tabs.length - 1]?.key ?? null) : state.activeKey;
+  set({ tabs, activeKey });
+  saveTabs();
+  return activeKey;
 }
 
 export function runnerList() {
@@ -77,4 +156,24 @@ export function runnerList() {
     if (a.kind !== b.kind) return a.kind === "live" ? -1 : 1;
     return (b.lastActiveAt || 0) - (a.lastActiveAt || 0);
   });
+}
+
+export function allSessions() {
+  const out = [];
+  for (const project of state.projects) {
+    for (const s of project.sessions || []) out.push({ ...s, dirName: s.dirName || project.dirName, cwd: s.cwd || project.cwd });
+  }
+  return out;
+}
+
+export function isFavourite(file) {
+  return state.favourites.includes(file);
+}
+
+export function toggleFavourite(file) {
+  const favourites = state.favourites.includes(file)
+    ? state.favourites.filter((f) => f !== file)
+    : [...state.favourites, file];
+  set({ favourites });
+  savePrefs();
 }

@@ -1,95 +1,98 @@
-// transcript — renders history entries and live runner events into one list.
-import { el, usageLabel } from "../core/dom.js";
+/**
+ * transcript — renders history entries and live runner events into one list.
+ * DOM-built only; auto-scrolls only when the user is already at the bottom so
+ * reading history is never yanked away. Deltas are batched per animation frame.
+ */
+import { el, usageText } from "../core/dom.js";
+import { icon } from "../core/icons.js";
 import { renderMarkdown } from "./markdown.js";
 import { createToolCard, finishToolCard } from "./toolcard.js";
 
 function textOf(content) {
   if (typeof content === "string") return content;
-  if (Array.isArray(content)) {
-    return content
-      .filter((b) => b?.type === "text")
-      .map((b) => b.text)
-      .join("\n");
-  }
+  if (Array.isArray(content)) return content.filter((b) => b?.type === "text").map((b) => b.text || "").join("\n");
   return "";
 }
 
 function imageNodes(content) {
-  if (!Array.isArray(content)) return [];
-  return content
-    .filter((b) => b?.type === "image" && typeof b.data === "string")
-    .map((b) =>
-      el("img", {
-        src: `data:${b.mimeType || "image/png"};base64,${b.data}`,
-        alt: "image",
-        loading: "lazy",
-      }),
-    );
+  if (!Array.isArray(content)) return null;
+  const images = content.filter((b) => b?.type === "image" && typeof b.data === "string");
+  if (!images.length) return null;
+  const grid = el("div", { class: "image-grid" });
+  for (const b of images) grid.append(el("img", { src: `data:${b.mimeType || "image/png"};base64,${b.data}`, alt: "image", loading: "lazy" }));
+  return grid;
 }
 
-function messageRoleLabel(role) {
-  return role === "user" ? "you" : role === "assistant" ? "assistant" : role;
-}
-
-export function createTranscript(container, hooks = {}) {
+export function createTranscript(container, opts = {}) {
+  const settings = { showThinking: true, showCosts: true, expandTools: false, ...opts };
   const toolCards = new Map();
-  let pending = null; // streaming assistant { node, textWrap, thinkingWrap }
   const nodeForEntry = new Map();
+  let pending = null; // streaming assistant
+  let flushQueued = false;
 
-  function atBottom() {
-    return container.scrollHeight - container.scrollTop - container.clientHeight < 120;
-  }
+  const atBottom = () => container.scrollHeight - container.scrollTop - container.clientHeight < 140;
 
   function scrollToBottom() {
     container.scrollTop = container.scrollHeight;
   }
 
-  function autoscroll(wasAtBottom) {
-    if (wasAtBottom) scrollToBottom();
-  }
-
+  /* ── nodes ───────────────────────────────────────────────────────── */
   function userNode(message) {
     const bubble = el("div", { class: "bubble" });
     const text = textOf(message.content);
     if (text) bubble.append(renderMarkdown(text));
-    for (const img of imageNodes(message.content)) bubble.append(img);
-    return el("div", { class: "msg user" }, el("div", { class: "role", text: "you" }), bubble);
+    const imgs = imageNodes(message.content);
+    if (imgs) bubble.append(imgs);
+    return el("div", { class: "msg user" }, el("div", { class: "role", text: "You" }), bubble);
   }
 
-  function assistantNode(message) {
-    const wrap = el("div", { class: "msg assistant" }, el("div", { class: "role", text: "assistant" }));
+  function assistantMessageNode(message) {
+    const wrap = el("div", { class: "msg assistant" }, el("div", { class: "role", text: "Pi" }));
     renderAssistantBlocks(wrap, message);
-    if (message?.usage) wrap.append(el("div", { class: "usage", text: usageLabel(message.usage) }));
+    if (message?.usage && settings.showCosts) {
+      const t = usageText({ usage: message.usage });
+      if (t) wrap.append(el("div", { class: "usage", text: t }));
+    }
     return wrap;
+  }
+
+  function thinkingNode(text, { streaming = false } = {}) {
+    const body = el("div", { class: "think-body", text });
+    const details = el(
+      "details",
+      { class: "thinking", open: streaming ? "" : undefined },
+      el("summary", {}, icon("eye", 12), el("span", { text: "Thinking…" })),
+      body,
+    );
+    if (!settings.showThinking) details.classList.add("hidden");
+    return details;
   }
 
   function renderAssistantBlocks(wrap, message) {
     for (const block of message?.content || []) {
       if (block?.type === "text" && block.text) wrap.append(el("div", { class: "bubble" }, renderMarkdown(block.text)));
-      else if (block?.type === "thinking" && block.thinking) wrap.append(el("div", { class: "thinking", text: block.thinking }));
-      else if (block?.type === "toolCall") {
-        const card = createToolCard(block.id, block.name, block.arguments || {});
+      else if ((block?.type === "thinking" || block?.type === "reasoning") && (block.thinking || block.text)) {
+        wrap.append(thinkingNode(block.thinking || block.text));
+      } else if (block?.type === "toolCall") {
+        const card = createToolCard(block.id, block.name, block.arguments || {}, { expanded: settings.expandTools });
         toolCards.set(block.id, card);
         wrap.append(card);
       }
     }
-    if (message?.stopReason && message.stopReason !== "stop" && message.stopReason !== "toolUse") {
+    if (message?.stopReason && !["stop", "toolUse", "length"].includes(message.stopReason)) {
       wrap.append(el("div", { class: "meta", text: `stopped: ${message.stopReason}` }));
     }
+    const imgs = imageNodes(message?.content);
+    if (imgs) wrap.append(imgs);
   }
 
   function toolResultNode(message) {
     const card = toolCards.get(message.toolCallId);
-    if (card) finishToolCard(card, message.content, message.isError);
-    return null;
+    if (card) finishToolCard(card, message.content, message.isError, { expand: settings.expandTools });
   }
 
-  function compactionNode(entry) {
-    return el(
-      "div",
-      { class: "msg system" },
-      el("div", { class: "bubble" }, el("strong", { text: "Compacted" }), entry.summary ? el("div", { text: String(entry.summary).slice(0, 2000) }) : null),
-    );
+  function systemNode(text, kind = "") {
+    return el("div", { class: `msg system ${kind}` }, el("div", { class: "bubble", text }));
   }
 
   function entryNode(entry) {
@@ -97,29 +100,27 @@ export function createTranscript(container, hooks = {}) {
     if (entry.type === "message") {
       const msg = entry.message;
       if (msg?.role === "user") return userNode(msg);
-      if (msg?.role === "assistant") return assistantNode(msg);
+      if (msg?.role === "assistant") return assistantMessageNode(msg);
       if (msg?.role === "toolResult") return toolResultNode(msg);
-      if (msg?.role === "custom" || msg?.role === "system") {
-        const text = textOf(msg.content);
-        return text ? el("div", { class: "msg system" }, el("div", { class: "bubble", text })) : null;
-      }
-      return null;
+      const text = textOf(msg?.content);
+      return text ? systemNode(text) : null;
     }
-    if (entry.type === "compaction") return compactionNode(entry);
-    if (entry.type === "branch_summary") {
-      return el("div", { class: "msg system" }, el("div", { class: "bubble", text: `Branch summary: ${entry.summary || ""}` }));
+    if (entry.type === "compaction") {
+      return systemNode(`Compacted${entry.summary ? `: ${String(entry.summary).slice(0, 2000)}` : ""}`);
     }
+    if (entry.type === "branch_summary") return systemNode(`Branch summary: ${entry.summary || ""}`);
     if (entry.type === "custom_message") {
       const text = textOf(entry.content);
-      return text ? el("div", { class: "msg system" }, el("div", { class: "bubble", text })) : null;
+      return text ? systemNode(text) : null;
     }
     return null;
   }
 
+  /* ── history ─────────────────────────────────────────────────────── */
   function renderHistory(entries, meta) {
     toolCards.clear();
-    pending = null;
     nodeForEntry.clear();
+    pending = null;
     container.replaceChildren();
     for (const entry of entries || []) {
       const node = entryNode(entry);
@@ -129,13 +130,16 @@ export function createTranscript(container, hooks = {}) {
       }
     }
     if (!container.childElementCount) {
-      container.append(el("div", { class: "msg system" }, el("div", { class: "bubble", text: meta?.sessionName || "Empty session — say something." })));
+      container.append(
+        el("div", { class: "msg system" }, el("div", { class: "bubble", text: meta?.sessionName ? `${meta.sessionName} — no messages yet.` : "New session — send a message to start." })),
+      );
     }
     scrollToBottom();
   }
 
   function prependHistory(entries) {
     const wasAtBottom = atBottom();
+    const before = container.scrollHeight;
     const frag = document.createDocumentFragment();
     for (const entry of entries || []) {
       const node = entryNode(entry);
@@ -146,6 +150,22 @@ export function createTranscript(container, hooks = {}) {
     }
     container.prepend(frag);
     if (wasAtBottom) scrollToBottom();
+    else container.scrollTop += container.scrollHeight - before;
+  }
+
+  /* ── live events ─────────────────────────────────────────────────── */
+  function flushPending() {
+    flushQueued = false;
+    if (!pending) return;
+    if (pending.textWrap) pending.textWrap.replaceChildren(renderMarkdown(pending.text));
+    if (pending.thinkBody && pending.thinking) pending.thinkBody.textContent = pending.thinking;
+    if (pending.thinkDetails) pending.thinkDetails.classList.toggle("hidden", !settings.showThinking);
+  }
+
+  function scheduleFlush() {
+    if (flushQueued) return;
+    flushQueued = true;
+    requestAnimationFrame(flushPending);
   }
 
   function handleEvent(event) {
@@ -157,26 +177,28 @@ export function createTranscript(container, hooks = {}) {
         if (msg?.role === "user") {
           container.append(userNode(msg));
         } else if (msg?.role === "assistant") {
-          const node = el("div", { class: "msg assistant" }, el("div", { class: "role", text: "assistant" }));
+          const node = el("div", { class: "msg assistant streaming" }, el("div", { class: "role", text: "Pi" }));
           const textWrap = el("div", { class: "bubble" });
-          const thinkingWrap = el("div", { class: "thinking hidden" });
-          node.append(thinkingWrap, textWrap);
+          node.append(textWrap);
           container.append(node);
-          pending = { node, textWrap, thinkingWrap, text: "", thinking: "" };
+          pending = { node, textWrap, thinking: "", text: "", thinkDetails: null, thinkBody: null };
         }
         break;
       }
       case "message_update": {
         const inner = event.assistantMessageEvent;
         if (!pending || !inner) break;
-        if (inner.type === "text_delta" && inner.delta) {
-          pending.text += inner.delta;
-          pending.textWrap.replaceChildren(renderMarkdown(pending.text));
-        } else if (inner.type === "thinking_delta" && inner.delta) {
+        if (inner.type === "text_delta" && inner.delta) pending.text += inner.delta;
+        else if ((inner.type === "thinking_delta" || inner.type === "reasoning_delta") && inner.delta) {
           pending.thinking += inner.delta;
-          pending.thinkingWrap.classList.remove("hidden");
-          pending.thinkingWrap.textContent = pending.thinking;
+          if (!pending.thinkDetails) {
+            const details = thinkingNode("", { streaming: true });
+            pending.thinkDetails = details;
+            pending.thinkBody = details.querySelector(".think-body");
+            pending.node.insertBefore(details, pending.textWrap);
+          }
         }
+        scheduleFlush();
         break;
       }
       case "message_end": {
@@ -184,58 +206,74 @@ export function createTranscript(container, hooks = {}) {
         if (msg?.role === "assistant") {
           if (pending) {
             const wrap = pending.node;
-            const usage = msg.usage;
-            wrap.replaceChildren(el("div", { class: "role", text: "assistant" }));
+            wrap.classList.remove("streaming");
+            wrap.replaceChildren(el("div", { class: "role", text: "Pi" }));
             renderAssistantBlocks(wrap, msg);
-            if (usage) wrap.append(el("div", { class: "usage", text: usageLabel(usage) }));
+            if (msg.usage && settings.showCosts) {
+              const t = usageText({ usage: msg.usage });
+              if (t) wrap.append(el("div", { class: "usage", text: t }));
+            }
+            if (pending.thinkDetails) pending.thinkDetails.open = false;
             pending = null;
           } else {
-            container.append(assistantNode(msg));
+            container.append(assistantMessageNode(msg));
           }
-        } else if (msg?.role === "user") {
-          // already appended on message_start
         } else if (msg?.role === "toolResult") {
           toolResultNode(msg);
-        } else if (msg?.role === "custom") {
-          const text = textOf(msg.content);
-          if (text) container.append(el("div", { class: "msg system" }, el("div", { class: "bubble", text })));
+        } else if (msg?.role === "user") {
+          // rendered on message_start
+        } else {
+          const text = textOf(msg?.content);
+          if (text) container.append(systemNode(text));
         }
         break;
       }
       case "tool_execution_start": {
-        const card = createToolCard(event.toolCallId, event.toolName, event.args);
+        const card = createToolCard(event.toolCallId, event.toolName, event.args || {}, { expanded: settings.expandTools });
         toolCards.set(event.toolCallId, card);
-        container.append(card);
+        const host = pending?.node || container;
+        host.append(card);
         break;
       }
       case "tool_execution_end": {
         const card = toolCards.get(event.toolCallId);
-        finishToolCard(card, event.result, event.isError);
+        finishToolCard(card, event.result, event.isError, { expand: settings.expandTools });
         break;
       }
       case "compaction_start":
-        container.append(el("div", { class: "msg system" }, el("div", { class: "bubble", text: `Compacting… (${event.reason || "manual"})` })));
+        container.append(systemNode(`Compacting context (${event.reason || "manual"})…`));
         break;
       case "compaction_end":
-        if (event.errorMessage) {
-          container.append(el("div", { class: "msg system" }, el("div", { class: "bubble", text: `Compaction failed: ${event.errorMessage}` })));
-        } else {
-          container.append(el("div", { class: "msg system" }, el("div", { class: "bubble", text: event.summary ? `Compacted: ${String(event.summary).slice(0, 2000)}` : "Compacted" })));
-        }
+        container.append(
+          event.errorMessage
+            ? systemNode(`Compaction failed: ${event.errorMessage}`, "error")
+            : systemNode(event.summary ? `Compacted: ${String(event.summary).slice(0, 2000)}` : "Compacted"),
+        );
         break;
       case "runner_exit":
-        container.append(el("div", { class: "msg system" }, el("div", { class: "bubble", text: `Session ended (${event.reason || `code ${event.code}`})` })));
+        container.append(systemNode(`Session ended${event.reason ? `: ${event.reason}` : event.code != null ? ` (code ${event.code})` : ""}`));
         break;
       default:
         break;
     }
-    autoscroll(wasAtBottom);
+    if (wasAtBottom) scrollToBottom();
   }
 
   container.addEventListener("click", (e) => {
-    const a = e.target.closest?.("[data-file]");
-    if (a) hooks.onOpenFile?.(a.dataset.file);
+    const fileEl = e.target.closest?.("[data-file]");
+    if (fileEl) opts.onOpenFile?.(fileEl.dataset.file);
   });
 
-  return { renderHistory, prependHistory, handleEvent, scrollToBottom, clear: () => container.replaceChildren(), toolCards };
+  return {
+    renderHistory,
+    prependHistory,
+    handleEvent,
+    scrollToBottom,
+    clear: () => container.replaceChildren(),
+    setOptions(patch) {
+      Object.assign(settings, patch);
+      for (const node of container.querySelectorAll(".thinking")) node.classList.toggle("hidden", !settings.showThinking);
+      for (const node of container.querySelectorAll(".usage")) node.classList.toggle("hidden", !settings.showCosts);
+    },
+  };
 }

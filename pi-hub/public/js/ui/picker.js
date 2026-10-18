@@ -1,73 +1,153 @@
-// picker — browse the server filesystem, start a new session anywhere, fork.
-import { api, fork, listDir, listProjects } from "../core/api.js";
-import { $, clear, el, show, shortCwd, toast } from "../core/dom.js";
+/**
+ * picker — Start / Resume overlay: browse directories, list the sessions
+ * that live in each one, favourite them, fork or resume, and start a new
+ * session anywhere. The "starter prompt" is passed through to the app, which
+ * sends it after the fresh bind (fixed from tau-web, where it was dropped).
+ */
+import { listDir, listSessions, mkdir } from "../core/api.js";
+import { el, show, shortCwd, timeAgo, basename, toast } from "../core/dom.js";
+import { icon } from "../core/icons.js";
+import { isFavourite } from "../core/store.js";
 
-export function createPicker({ root, projectsEl, dirsEl, pathInput, startBtn, closeBtn, onStart, onFork }) {
-  let current = "";
+export function createPicker(refs, actions) {
+  let dir = "";
   let projects = [];
+  let choice = null; // { session } while the resume/fork choice is showing
+
+  refs.close.append(icon("x", 15));
+  refs.up.append(el("span", { text: "↑ Up" }));
 
   async function loadProjects() {
-    projectsEl.replaceChildren();
     try {
-      projects = (await listProjects()).projects || [];
+      projects = (await listSessions()).projects || [];
     } catch {
       projects = [];
     }
-    projectsEl.append(el("div", { class: "section-label", text: "Recent projects" }));
-    for (const p of projects.slice(0, 20)) {
-      projectsEl.append(
-        el("button", {
-          type: "button",
-          class: "row-item",
-          onclick: () => browse(p.cwd || "~"),
+  }
+
+  function projectFor(path) {
+    return projects.find((p) => p.cwd === path);
+  }
+
+  function sessionRow(session, project) {
+    const fav = isFavourite(session.filePath);
+    return el(
+      "button",
+      {
+        type: "button",
+        class: "sb-row",
+        dataset: { sessionFile: session.file },
+        onclick: () => {
+          choice = { session, project };
+          renderChoice();
         },
-          el("span", { class: "title", text: shortCwd(p.cwd || p.dirName) }),
-          el("span", { class: "sub" }, el("span", { class: "meta", text: `${p.sessionCount || 0} sessions` })),
-        ),
-      );
-    }
-    if (!projects.length) projectsEl.append(el("div", { class: "meta", text: "No projects yet" }));
+      },
+      el("span", { class: "row-title" }, fav ? icon("star", 12) : null, el("span", { class: "grow", style: "overflow:hidden;text-overflow:ellipsis", text: session.title || session.file })),
+      el("span", { class: "row-sub" }, el("span", { text: session.messageCount ? `${session.messageCount} msgs` : "" }), el("span", { text: timeAgo(session.mtime) })),
+    );
+  }
+
+  function renderChoice() {
+    refs.choice.replaceChildren();
+    if (!choice) return show(refs.choice, false);
+    refs.choice.append(
+      el("div", { class: "section-label", text: choice.session.title || choice.session.file }),
+      el(
+        "div",
+        { class: "picker-choice" },
+        el("button", { class: "btn primary small", type: "button", text: "Resume", onclick: () => { const c = choice; close(); actions.onResume(c.session, c.project); } }),
+        el("button", { class: "btn small", type: "button", text: "Fork as new", onclick: () => { const c = choice; close(); actions.onFork(c.session, c.project); } }),
+        el("button", { class: "btn small", type: "button", text: "Favourite", onclick: (e) => { actions.toggleFavourite(choice.session.filePath); e.currentTarget.textContent = isFavourite(choice.session.filePath) ? "Unfavourite" : "Favourite"; } }),
+        el("button", { class: "btn small", type: "button", text: "Cancel", onclick: () => { choice = null; renderChoice(); } }),
+      ),
+    );
+    show(refs.choice, true);
   }
 
   async function browse(path) {
     try {
-      const out = await listDir(path);
-      current = out.path;
-      pathInput.value = out.path;
-      dirsEl.replaceChildren();
-      dirsEl.append(
-        el("button", { type: "button", class: "row-item", text: "Start a new session here", onclick: () => start(current) }),
-      );
-      for (const entry of out.entries.filter((e) => e.type === "dir")) {
-        dirsEl.append(
-          el("button", { type: "button", class: "row-item", text: entry.name, onclick: () => browse(`${out.path}/${entry.name}`) }),
+      const out = await listDir(path || dir || "~");
+      dir = out.path;
+      refs.path.value = dir;
+      refs.dirs.replaceChildren();
+      const dirs = out.entries.filter((e) => e.type === "dir");
+      if (!dirs.length) refs.dirs.append(el("div", { class: "sb-empty", text: "No subdirectories" }));
+      for (const entry of dirs) {
+        refs.dirs.append(
+          el("button", { type: "button", class: "sb-row", onclick: () => browse(`${out.path}/${entry.name}`) },
+            el("span", { class: "row-title" }, icon("folder", 13), el("span", { class: "grow", text: entry.name })),
+          ),
         );
       }
-      for (const entry of out.entries.filter((e) => e.type === "file").slice(0, 50)) {
-        dirsEl.append(el("div", { class: "row-item", style: "cursor:default" }, el("span", { class: "title", text: entry.name })));
+      refs.start.textContent = dir ? `Start new session in ${shortCwd(dir)}` : "Start new session here";
+      const project = projectFor(dir);
+      refs.sessionsLabel.textContent = project ? `Sessions in ${basename(dir) || dir}` : "Sessions here";
+      refs.sessions.replaceChildren();
+      if (project?.sessions?.length) {
+        for (const s of [...project.sessions].sort((a, b) => (b.mtime || 0) - (a.mtime || 0))) refs.sessions.append(sessionRow(s, project));
+      } else {
+        refs.sessions.append(el("div", { class: "sb-empty", text: "No sessions in this directory" }));
       }
     } catch (e) {
-      toast(e.message);
+      // Still allow starting in a directory the file API cannot list (jail):
+      // the user asked for it explicitly.
+      dir = path || dir;
+      refs.path.value = dir || "";
+      refs.start.textContent = dir ? `Start new session in ${shortCwd(dir)}` : "Start new session here";
+      refs.dirs.replaceChildren(el("div", { class: "sb-empty", text: `Cannot list this directory: ${e.message}` }));
+      refs.sessions.replaceChildren();
+      refs.sessionsLabel.textContent = "Sessions here";
     }
   }
 
-  function start(path) {
-    if (!path) return;
-    onStart(path);
+  async function renderFavourites() {
+    refs.favs.replaceChildren();
+    const favs = [];
+    for (const p of projects) for (const s of p.sessions || []) if (isFavourite(s.filePath)) favs.push({ s, p });
+    if (!favs.length) return show(refs.favs, false);
+    refs.favs.append(el("div", { class: "section-label" }, "★ Favourites"));
+    for (const { s, p } of favs) {
+      const row = sessionRow(s, p);
+      row.prepend(el("span", { class: "icon-btn", title: "Remove favourite", html: icon("star", 13).innerHTML, onclick: (e) => { e.stopPropagation(); actions.toggleFavourite(s.filePath); renderFavourites(); } }));
+      refs.favs.append(row);
+    }
+    show(refs.favs, true);
   }
 
-  closeBtn.addEventListener("click", () => show(root, false));
-  startBtn.addEventListener("click", () => start(pathInput.value.trim()));
-  root.addEventListener("click", (e) => {
-    if (e.target === root) show(root, false);
+  function close() {
+    show(refs.root, false);
+    choice = null;
+    renderChoice();
+  }
+
+  refs.close.addEventListener("click", close);
+  refs.root.addEventListener("click", (e) => {
+    if (e.target === refs.root) close();
+  });
+  refs.up.addEventListener("click", () => browse(dir.split(/[\\/]/).slice(0, -1).join("/") || "/"));
+  refs.path.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") browse(refs.path.value.trim());
+  });
+  refs.start.addEventListener("click", () => {
+    const starter = refs.starter.value.trim();
+    close();
+    actions.onStart(dir, starter);
+  });
+  document.addEventListener("keydown", (e) => {
+    if (refs.root.classList.contains("hidden")) return;
+    if (e.key === "Escape") (choice ? ((choice = null), renderChoice()) : close());
   });
 
   return {
-    async open() {
-      show(root, true);
+    async open(path) {
+      show(refs.root, true);
       await loadProjects();
-      browse(current || "~");
+      await renderFavourites();
+      await browse(path || dir || "~");
+      refs.starter.value = "";
+      setTimeout(() => refs.path.focus(), 50);
     },
     browse,
+    close,
   };
 }

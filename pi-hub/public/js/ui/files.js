@@ -1,57 +1,129 @@
-// files — browser panel + read-only viewer (ADR-017), "Add to prompt" only.
-import { fileContent, listDir, previewUrl } from "../core/api.js";
-import { el, show, toast } from "../core/dom.js";
+/**
+ * files — the server file panel and read-only viewer. The only way content
+ * leaves the panel is "Add to prompt" (an @path reference) — never an edit.
+ */
+import { fileContent, listDir, listProjects, previewUrl, downloadUrl } from "../core/api.js";
+import { el, show, copyText, toast, basename } from "../core/dom.js";
+import { icon } from "../core/icons.js";
+
+const TEXT_EXT = /\.(txt|md|markdown|json|jsonl|js|mjs|cjs|ts|tsx|jsx|css|html|htm|xml|yml|yaml|toml|ini|cfg|conf|sh|bash|zsh|py|rb|go|rs|java|c|h|cpp|hpp|swift|kt|sql|log|csv)$/i;
+const IMAGE_EXT = /\.(png|jpe?g|gif|webp|bmp|svg|avif)$/i;
 
 export function createFiles(refs, actions) {
-  let cwd = null;
-  let session = null;
   let currentPath = "";
+  let root = "";
+  let session = null;
+  let roots = [];
+
+  refs.close.append(icon("x", 15));
+  refs.up.append(icon("chevron-left", 15));
+  refs.finder.append(icon("copy", 14));
+  refs.finder.title = "Copy path";
 
   async function open(path) {
     if (!path) return;
     try {
       const out = await listDir(path);
       currentPath = out.path;
+      if (!root) root = out.path;
+      if (!roots.length) {
+        listProjects().then((p) => {
+          roots = (p.roots || []).map((r) => r.replace(/\/$/, ""));
+          updateUpButton();
+        }).catch(() => {});
+      }
+      updateUpButton();
       refs.path.textContent = out.path;
+      refs.panelTitle.textContent = basename(out.path) || out.path;
       refs.list.replaceChildren();
-      for (const entry of out.entries) {
+      const dirs = out.entries.filter((e) => e.type === "dir").sort((a, b) => a.name.localeCompare(b.name));
+      const files = out.entries.filter((e) => e.type !== "dir").sort((a, b) => a.name.localeCompare(b.name));
+      if (!dirs.length && !files.length) refs.list.append(el("div", { class: "sb-empty", text: "Empty directory" }));
+      for (const entry of dirs) {
         if (entry.name === "node_modules" || entry.name === ".git") continue;
         refs.list.append(
-          el("button", {
-            type: "button",
-            class: "row-item",
-            onclick: () => (entry.type === "dir" ? open(`${out.path}/${entry.name}`) : view(`${out.path}/${entry.name}`)),
-          },
-            el("span", { class: "title", text: `${entry.type === "dir" ? "▸" : "·"} ${entry.name}` }),
+          el("button", { type: "button", class: "file-row dir", onclick: () => open(`${out.path}/${entry.name}`) },
+            icon("folder", 14),
+            el("span", { class: "fname", text: entry.name }),
           ),
         );
       }
+      for (const entry of files.slice(0, 500)) {
+        const isImage = IMAGE_EXT.test(entry.name);
+        const row = el("button", {
+          type: "button",
+          class: "file-row",
+          onclick: () => view(`${out.path}/${entry.name}`),
+        },
+          icon(isImage ? "image" : TEXT_EXT.test(entry.name) ? "file-code" : "file", 14),
+          el("span", { class: "fname", text: entry.name }),
+          el("button", {
+            type: "button",
+            class: "icon-btn file-add",
+            title: "Add to prompt",
+            "aria-label": `Add ${entry.name} to prompt`,
+            html: icon("plus", 12).innerHTML,
+            onclick: (e) => { e.stopPropagation(); actions.addToPrompt(`${out.path}/${entry.name}`); },
+          }),
+        );
+        refs.list.append(row);
+      }
       show(refs.panel, true);
     } catch (e) {
-      toast(e.message);
+      toast(e.message, { kind: "error" });
     }
   }
 
   async function view(path) {
     try {
-      const out = await fileContent(path, session);
-      if (out.binary) {
-        refs.body.textContent = `(binary file, ${out.size} bytes)`;
+      if (IMAGE_EXT.test(path)) {
+        refs.body.replaceChildren(el("img", { src: previewUrl(path, session), alt: basename(path) }));
+        refs.body.dataset.path = path;
+        refs.title.textContent = basename(path);
+        refs.download.href = downloadUrl(path);
+        show(refs.download, true);
       } else {
-        refs.body.textContent = out.text + (out.truncated ? "\n… truncated" : "");
+        const out = await fileContent(path, session);
+        if (out.binary) {
+          refs.body.textContent = `Binary file (${Math.round((out.size || 0) / 1024)} KB)`;
+          show(refs.download, true);
+          refs.download.href = downloadUrl(path);
+        } else {
+          refs.body.textContent = out.text + (out.truncated ? "\n\n… truncated by the server" : "");
+          show(refs.download, false);
+        }
+        refs.body.dataset.path = out.path;
+        refs.title.textContent = basename(out.path);
       }
-      refs.body.dataset.path = out.path;
-      refs.title.textContent = out.path.split("/").pop();
       show(refs.viewer, true);
     } catch (e) {
-      toast(e.message);
+      toast(e.message, { kind: "error" });
     }
   }
 
-  refs.close.addEventListener("click", () => show(refs.viewer, false));
-  refs.panelClose.addEventListener("click", () => show(refs.panel, false));
-  refs.up.addEventListener("click", () => open(currentPath.split("/").slice(0, -1).join("/") || "/"));
-  refs.add.addEventListener("click", () => {
+  function parentOf(p) {
+    const parts = String(p).split(/[\\/]/).filter(Boolean);
+    parts.pop();
+    return parts.length ? `/${parts.join("/")}` : "/";
+  }
+  function atRootBoundary() {
+    if (!currentPath) return true;
+    return roots.some((r) => r === currentPath && !roots.some((other) => other !== r && other.startsWith(currentPath + "/")));
+  }
+  function updateUpButton() {
+    const disabled = atRootBoundary();
+    refs.up.disabled = disabled;
+    refs.up.title = disabled ? "Already at a top-level allowed directory" : "Parent directory";
+  }
+
+  refs.close.addEventListener("click", () => show(refs.panel, false));
+  refs.up.addEventListener("click", () => open(parentOf(currentPath)));
+  refs.finder.addEventListener("click", () => copyText(currentPath));
+  refs.viewerClose.addEventListener("click", () => show(refs.viewer, false));
+  refs.viewer.addEventListener("click", (e) => {
+    if (e.target === refs.viewer) show(refs.viewer, false);
+  });
+  refs.viewerAdd.addEventListener("click", () => {
     const path = refs.body.dataset.path;
     if (path) actions.addToPrompt(path);
     show(refs.viewer, false);
@@ -59,13 +131,19 @@ export function createFiles(refs, actions) {
 
   return {
     async show(sessionCwd, sessionRef) {
-      cwd = sessionCwd || null;
       session = sessionRef || null;
-      if (!cwd) return toast("No session cwd");
-      await open(cwd);
+      if (!sessionCwd) {
+        toast("No session directory to browse yet", { kind: "error" });
+        return;
+      }
+      root = "";
+      await open(sessionCwd);
     },
     open,
     view,
-    previewUrl: (path) => previewUrl(path, session),
+    toggle(sessionCwd, sessionRef) {
+      return refs.panel.classList.contains("hidden") ? this.show(sessionCwd, sessionRef) : show(refs.panel, false);
+    },
+    isOpen: () => !refs.panel.classList.contains("hidden"),
   };
 }

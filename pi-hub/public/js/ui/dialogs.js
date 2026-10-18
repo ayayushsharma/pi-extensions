@@ -1,24 +1,34 @@
-// dialogs — full web dialogs for extension_ui_request (ADR-007), plus small
-// local confirm/prompt helpers used by the UI itself.
-import { $, clear, el, show, toast } from "../core/dom.js";
+/**
+ * dialogs — extension_ui_request broker on the client (ADR-007): select,
+ * confirm, input, editor, notify. Model/extension-supplied text is inserted
+ * with textContent only. Also exposes local confirm/prompt helpers for the
+ * UI's own destructive actions.
+ */
+import { clear, el, toast } from "../core/dom.js";
+import { icon } from "../core/icons.js";
 
 export function createDialogs(container, sendResponse) {
   const seen = new Set();
 
-  function close() {
-    clear(container);
-  }
+  const close = () => clear(container);
 
   function answer(id, response) {
     close();
     sendResponse({ type: "extension_ui_response", id, ...response });
   }
 
-  function frame(title, body, actions) {
+  function frame({ title, message, body, actions, danger }) {
     return el(
       "div",
-      { class: "overlay", role: "dialog", "aria-modal": "true", "aria-label": title },
-      el("div", { class: "card dialog-card" }, el("h2", { text: title }), body, el("div", { class: "dialog-actions" }, actions)),
+      { class: "overlay", role: "dialog", "aria-modal": "true", "aria-label": title || "Dialog" },
+      el(
+        "div",
+        { class: "card dialog-card" },
+        el("h2", { text: title || "Select an option" }),
+        message ? el("div", { class: "dialog-message", text: message }) : null,
+        body || null,
+        el("div", { class: "dialog-actions" }, ...actions),
+      ),
     );
   }
 
@@ -26,80 +36,111 @@ export function createDialogs(container, sendResponse) {
     if (!request?.id || seen.has(request.id)) return;
     seen.add(request.id);
     const { method, id } = request;
+
     if (method === "select") {
-      const list = el("div", { class: "list" });
+      const list = el("div", { class: "dialog-options" });
       for (const option of request.options || []) {
-        list.append(el("button", { type: "button", class: "row-item", text: String(option), onclick: () => answer(id, { value: String(option) }) }));
+        list.append(el("button", { class: "opt", type: "button", text: String(option), onclick: () => answer(id, { value: String(option) }) }));
       }
-      container.append(frame(request.title || "Select", list, [el("button", { type: "button", text: "Cancel", onclick: () => answer(id, { cancelled: true }) })]));
+      container.append(frame({ title: request.title || "Select", message: request.message, body: list, actions: [el("button", { class: "btn small", type: "button", text: "Cancel", onclick: () => answer(id, { cancelled: true }) })] }));
       return;
     }
+
     if (method === "confirm") {
       container.append(
-        frame(request.title || "Confirm", el("p", { text: request.message || "" }), [
-          el("button", { type: "button", onclick: () => answer(id, { cancelled: true }), text: "Cancel" }),
-          el("button", { type: "button", onclick: () => answer(id, { confirmed: true }), text: "Confirm" }),
-        ]),
+        frame({
+          title: request.title || "Confirm",
+          message: request.message,
+          actions: [
+            el("button", { class: "btn small", type: "button", text: "Cancel", onclick: () => answer(id, { cancelled: true }) }),
+            el("button", { class: "btn small primary", type: "button", text: "Confirm", onclick: () => answer(id, { confirmed: true }) }),
+          ],
+        }),
       );
       return;
     }
+
     if (method === "input" || method === "editor") {
-      const input = method === "editor" ? el("textarea", { text: request.prefill || "", "aria-label": request.title || "Input" }) : el("input", { value: request.prefill || "", placeholder: request.placeholder || "", "aria-label": request.title || "Input" });
+      const isEditor = method === "editor";
+      const input = isEditor
+        ? el("textarea", { rows: "6", "aria-label": request.title || "Input", value: request.prefill || "" })
+        : el("input", { type: "text", placeholder: request.placeholder || "", "aria-label": request.title || "Input", value: request.prefill || "" });
       const submit = () => answer(id, { value: input.value });
       input.addEventListener("keydown", (e) => {
-        if (e.key === "Enter" && method === "input") submit();
+        if (e.key === "Enter" && !isEditor) submit();
         if (e.key === "Escape") answer(id, { cancelled: true });
       });
       container.append(
-        frame(request.title || "Input", el("div", {}, input), [
-          el("button", { type: "button", onclick: () => answer(id, { cancelled: true }), text: "Cancel" }),
-          el("button", { type: "button", onclick: submit, text: "OK" }),
-        ]),
+        frame({
+          title: request.title || "Input",
+          message: request.message,
+          body: input,
+          actions: [
+            el("button", { class: "btn small", type: "button", text: "Cancel", onclick: () => answer(id, { cancelled: true }) }),
+            el("button", { class: "btn small primary", type: "button", text: "OK", onclick: submit }),
+          ],
+        }),
       );
       queueMicrotask(() => input.focus());
       return;
     }
+
+    // Unknown method: cancel once so the extension never hangs.
     answer(id, { cancelled: true });
   }
 
   function handleEvent(event) {
     if (event?.type !== "extension_ui_request") return false;
     if (event.method === "notify") {
-      toast(event.message || "", event.notifyType === "error" ? 5000 : 3000);
+      toast(event.message || "", { kind: event.notifyType === "error" ? "error" : "info" });
       return true;
     }
     if (["select", "confirm", "input", "editor"].includes(event.method)) {
       showRequest(event);
       return true;
     }
-    return true; // setStatus/setWidget etc. — ignore
+    return true; // setStatus/setWidget — not rendered
   }
 
   return {
     handleEvent,
     confirm(title, message) {
       return new Promise((resolve) => {
-        const id = `local-${Date.now()}`;
         container.append(
-          frame(title, el("p", { text: message || "" }), [
-            el("button", { type: "button", text: "Cancel", onclick: () => { close(); resolve(false); } }),
-            el("button", { type: "button", text: "Confirm", onclick: () => { close(); resolve(true); } }),
-          ]),
+          frame({
+            title,
+            message,
+            actions: [
+              el("button", { class: "btn small", type: "button", text: "Cancel", onclick: () => { close(); resolve(false); } }),
+              el("button", { class: "btn small danger", type: "button", text: "Confirm", onclick: () => { close(); resolve(true); } }),
+            ],
+          }),
         );
-        void id;
       });
     },
     prompt(title, prefill = "") {
       return new Promise((resolve) => {
-        const input = el("input", { value: prefill, "aria-label": title });
+        const input = el("input", { type: "text", value: prefill, "aria-label": title });
+        input.addEventListener("keydown", (e) => {
+          if (e.key === "Enter") { const v = input.value; close(); resolve(v); }
+          if (e.key === "Escape") { close(); resolve(null); }
+        });
         container.append(
-          frame(title, input, [
-            el("button", { type: "button", text: "Cancel", onclick: () => { close(); resolve(null); } }),
-            el("button", { type: "button", text: "OK", onclick: () => { const v = input.value; close(); resolve(v); } }),
-          ]),
+          frame({
+            title,
+            body: input,
+            actions: [
+              el("button", { class: "btn small", type: "button", text: "Cancel", onclick: () => { close(); resolve(null); } }),
+              el("button", { class: "btn small primary", type: "button", text: "OK", onclick: () => { const v = input.value; close(); resolve(v); } }),
+            ],
+          }),
         );
         queueMicrotask(() => input.focus());
       });
+    },
+    close,
+    get pending() {
+      return container.childElementCount;
     },
   };
 }

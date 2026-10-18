@@ -230,8 +230,10 @@ export class HeadlessRunner extends Runner {
       throw new Error("session is running — wait for it to finish before switching");
     }
     await this.rpc.request({ type: "switch_session", sessionPath: abs }, 30000);
-    this.absFile = abs;
-    this.sessionFile = basename(abs);
+    // Identity change must go out as an event: the child starts on its own
+    // throwaway file and only then switches, so without this the registry
+    // index and every client keep showing the throwaway name.
+    this.setFile(abs);
     this.state = "idle";
     this.isStreaming = false;
   }

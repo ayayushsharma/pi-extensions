@@ -5,7 +5,7 @@
  */
 import { el, show, timeAgo, shortCwd, basename } from "../core/dom.js";
 import { icon } from "../core/icons.js";
-import { isFavourite, sessionKey } from "../core/store.js";
+import { isFavourite, favKey, sessionKey } from "../core/store.js";
 
 export function createSidebar(refs, actions) {
   let collapsed = new Set(); // collapsed project dirNames
@@ -60,12 +60,36 @@ export function createSidebar(refs, actions) {
       }
     }
     refs.state.textContent = label;
-    refs.name.textContent = state.meta?.sessionName || bound?.sessionFile || tab?.title || "New session";
+    // Title first, file name never (a session's identity is its name; the
+    // `.jsonl` name only appears for a session with no prompt yet, which the
+    // UI calls "New session").
+    refs.name.textContent = state.meta?.sessionName || tab?.title || "New session";
     refs.dir.textContent = shortCwd(bound?.cwd || state.meta?.cwd || "");
     refs.csClose.classList.toggle("hidden", !bound || bound.kind === "live");
   }
 
   /* ── rows ─────────────────────────────────────────────────────────── */
+  // Rows show the session title (same string as the tab titles), resolved from
+  // the on-disk store. Live runners carry an absolute path, so match on the
+  // basename too. Fallbacks stay human: never a `.jsonl` name.
+  function sessionTitleFor(state, info) {
+    if (info.title) return info.title;
+    const base = basename(info.sessionFile || info.absFile || "");
+    let byFile = null;
+    for (const project of state.projects || []) {
+      for (const s of project.sessions || []) {
+        if (info.absFile && s.filePath === info.absFile && s.title) return s.title;
+        if (!base || s.file !== base) continue;
+        const stem = String(s.file).replace(/\.jsonl$/, "");
+        if (s.title && s.title !== stem) return s.title;
+        if (!byFile) byFile = s;
+      }
+    }
+    if (info.kind === "live") return "Live TUI";
+    if (byFile?.title) return byFile.title;
+    return base ? basename(base).replace(/\.jsonl$/, "") : "New session";
+  }
+
   function runnerRow(state, info, { inTab }) {
     const live = info.kind === "live";
     const working = info.state === "working";
@@ -73,7 +97,7 @@ export function createSidebar(refs, actions) {
       "button",
       {
         type: "button",
-        class: `sb-row${state.boundId === info.id && state.view === "session" ? " active" : ""}`,
+        class: `sb-row${state.boundId === info.id && state.view === "session" ? " active" : ""}${live ? " live-row" : ""}`,
         dataset: { runnerId: info.id, runnerKind: info.kind },
         onclick: () => (live ? actions.previewRunner(info) : actions.openRunner(info)),
       },
@@ -81,13 +105,14 @@ export function createSidebar(refs, actions) {
         "span",
         { class: "row-title" },
         live ? icon("terminal", 13) : icon("chip", 13),
-        el("span", { class: "grow", style: "overflow:hidden;text-overflow:ellipsis", text: info.title || info.sessionFile || `${info.kind} session` }),
+        el("span", { class: "grow", style: "overflow:hidden;text-overflow:ellipsis", text: sessionTitleFor(state, info) }),
+        live ? el("span", { class: "chip live", text: "live" }) : null,
       ),
       el(
         "span",
         { class: "row-sub" },
         el("span", { class: `dot${working ? " working" : live ? " on" : ""}` }),
-        el("span", { text: live ? `pid ${info.pid}` : `${shortCwd(info.cwd)}${info.sessionFile ? ` · ${info.sessionFile.slice(-12)}` : ""}` }),
+        el("span", { text: live ? `pid ${info.pid}` : `${shortCwd(info.cwd)}${info.pid ? ` · pid ${info.pid}` : ""}` }),
       ),
       el(
         "span",
@@ -100,17 +125,17 @@ export function createSidebar(refs, actions) {
 
   function sessionRow(state, session, project) {
     const active = state.view === "session" && state.historyFile === session.file;
-    const fav = isFavourite(session.filePath);
-    const liveOwned = session.filePath
-      ? [...state.runners?.values?.() || []].some((r) => r.kind === "live" && r.absFile === session.filePath)
-      : false;
+    const key = favKey(session, project);
+    const fav = isFavourite(key);
+    const dirName = session.dirName || project?.dirName || "";
+    const liveOwned = [...state.runners?.values?.() || []].some((r) => r.kind === "live" && !!r.absFile && !!session.file && r.absFile.endsWith(`/${dirName}/${session.file}`));
     const row = el(
       "button",
       {
         type: "button",
         class: `sb-row${active ? " active" : ""}`,
-        dataset: { sessionFile: session.file, sessionDir: session.dirName || project.dirName },
-        title: session.filePath || session.file,
+        dataset: { sessionFile: session.file, sessionDir: dirName },
+        title: `${dirName}/${session.file}`,
         onclick: () => actions.openSession(session, project),
         oncontextmenu: (e) => openMenu(e, session, project),
       },
@@ -124,6 +149,13 @@ export function createSidebar(refs, actions) {
       el(
         "span",
         { class: "row-actions" },
+        el("span", {
+          class: "icon-btn fav-btn", title: fav ? "Unfavourite" : "Favourite",
+          "aria-label": fav ? "Unfavourite" : "Favourite", "aria-pressed": String(fav),
+          dataset: { fav: fav ? "1" : "0" },
+          html: icon(fav ? "star" : "star-outline", 14).innerHTML,
+          onclick: (e) => { e.stopPropagation(); actions.toggleFavourite(key); },
+        }),
         el("span", { class: "icon-btn", title: "Actions", html: icon("dots", 14).innerHTML, onclick: (e) => { e.stopPropagation(); openMenu(e, session, project); } }),
       ),
     );
@@ -144,11 +176,11 @@ export function createSidebar(refs, actions) {
     e.preventDefault?.();
     e.stopPropagation?.();
     closeMenu();
-    const fav = isFavourite(session.filePath);
+    const fav = isFavourite(favKey(session, project));
     menuNode = el(
       "div",
       { class: "ctx-menu", onclick: (ev) => ev.stopPropagation() },
-      el("button", { type: "button", onclick: () => { closeMenu(); actions.toggleFavourite(session.filePath); } }, icon(fav ? "star-outline" : "star", 14), fav ? "Unfavourite" : "Favourite"),
+      el("button", { type: "button", onclick: () => { closeMenu(); actions.toggleFavourite(favKey(session, project)); } }, icon(fav ? "star-outline" : "star", 14), fav ? "Unfavourite" : "Favourite"),
       el("button", { type: "button", onclick: () => { closeMenu(); startRename(session, project); } }, icon("pencil", 14), "Rename"),
       el("button", { type: "button", onclick: () => { closeMenu(); actions.forkSession(session, project); } }, icon("branch", 14), "Fork as new"),
       el("button", { type: "button", onclick: () => { closeMenu(); actions.exportSession(session, project); } }, icon("download", 14), "Export HTML"),
@@ -213,7 +245,10 @@ export function createSidebar(refs, actions) {
       refs.vtabs.replaceChildren();
       const openTabs = state.tabs.filter((t) => t.runnerId || t.file);
       if (openTabs.length) {
-        refs.vtabs.append(el("div", { class: "section-label" }, "Currently running tabs"));
+        refs.vtabs.append(
+          el("div", { class: "section-label tabs-label" }, icon("tabs", 11), "Currently running tabs",
+            el("span", { class: "grow" }), el("span", { class: "count", text: String(openTabs.length) })),
+        );
         for (const tab of openTabs) {
           const runner = tab.runnerId ? state.runners.get(tab.runnerId) : null;
           const active = tab.key === state.activeKey && state.view === "session";
@@ -222,7 +257,7 @@ export function createSidebar(refs, actions) {
               "button",
               {
                 type: "button",
-                class: `sb-row${active ? " active" : ""}`,
+                class: `sb-row${active ? " active" : ""}${runner?.kind === "live" ? " live-row" : ""}`,
                 dataset: { tabKey: tab.key },
                 onclick: () => actions.activateTab(tab.key),
               },
@@ -230,7 +265,7 @@ export function createSidebar(refs, actions) {
                 "span",
                 { class: "row-title" },
                 runner?.kind === "live" ? icon("terminal", 13) : el("span", { class: `dot${runner?.state === "working" ? " working" : " on"}` }),
-                el("span", { class: "grow", style: "overflow:hidden;text-overflow:ellipsis", text: tab.title || tab.file || "session" }),
+                el("span", { class: "grow", style: "overflow:hidden;text-overflow:ellipsis", text: tab.title || "new session" }),
               ),
               el(
                 "span",
@@ -245,22 +280,41 @@ export function createSidebar(refs, actions) {
             ),
           );
         }
-      } else {
-        show(refs.vtabs, false);
       }
       show(refs.vtabs, openTabs.length > 0);
 
-      /* running terminals not already open in a tab */
+      /* live terminals: their own block, first, always visible — including
+         ones already open in a tab (a live TUI is a thing on the box, not
+         just a tab) */
       refs.live.replaceChildren();
       const tabRunnerIds = new Set(state.tabs.map((t) => t.runnerId).filter(Boolean));
-      const live = [...state.runners.values()].filter((r) => r.kind === "live" && !tabRunnerIds.has(r.id));
+      const live = [...state.runners.values()].filter((r) => r.kind === "live");
       const headless = [...state.runners.values()].filter((r) => r.kind === "headless" && !tabRunnerIds.has(r.id) && r.state !== "dead");
       if (live.length) {
-        refs.live.append(el("div", { class: "section-label" }, "Running terminals", el("span", { class: "grow" }), el("span", { class: "count", text: String(live.length) })));
+        refs.live.append(el("div", { class: "section-label live-label" }, icon("terminal", 11), "Live terminals", el("span", { class: "grow" }), el("span", { class: "count", text: String(live.length) })));
         for (const info of live) refs.live.append(runnerRow(state, info, { inTab: false }));
       }
       if (headless.length) {
-        refs.live.append(el("div", { class: "section-label" }, "Headless backends"));
+        refs.live.append(
+          el(
+            "div",
+            { class: "section-label" },
+            "Headless backends",
+            el("span", { class: "grow" }),
+            el("span", { class: "count", text: String(headless.length) }),
+            headless.length > 1
+              ? el("button", {
+                  class: "label-action",
+                  type: "button",
+                  title: "Close every headless backend",
+                  onclick: (e) => {
+                    e.stopPropagation();
+                    actions.killAllHeadless();
+                  },
+                             }, "Kill all")
+              : null,
+          ),
+        );
         for (const info of headless) refs.live.append(runnerRow(state, info, { inTab: false }));
       }
 
@@ -270,7 +324,7 @@ export function createSidebar(refs, actions) {
       const favs = [];
       for (const project of state.projects) {
         for (const s of project.sessions || []) {
-          if (state.favourites.includes(s.filePath)) favs.push({ session: s, project });
+          if (state.favourites.includes(favKey(s, project))) favs.push({ session: s, project });
         }
       }
 
@@ -298,9 +352,13 @@ export function createSidebar(refs, actions) {
 
       let shown = 0;
       let anyProject = false;
+      // Favourited sessions render once, in the Favourites block — not again
+      // inside their project group (R-6). Searching still shows everything.
+      const favPaths = new Set(favs.map((f) => favKey(f.session, f.project)));
       for (const project of state.projects) {
         const sessions = (project.sessions || [])
           .filter((s) => matches(s, q))
+          .filter((s) => q || !favPaths.has(favKey(s, project)))
           .sort((a, b) => (b.mtime || 0) - (a.mtime || 0));
         if (!sessions.length) continue;
         anyProject = true;

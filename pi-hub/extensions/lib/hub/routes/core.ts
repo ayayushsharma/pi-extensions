@@ -4,6 +4,8 @@
 import * as os from "node:os";
 import { hubLog } from "../../log.js";
 import { scanPiProcesses, killLivePiProcess, ProcessKillError } from "../../processes.js";
+import { titleForSessionFile } from "../../store/sessions.js";
+import type { RunnerInfo } from "../../runners/runner.js";
 import type { HubConfig } from "../../env.js";
 import type { Auth } from "../auth.js";
 import type { RunnerRegistry } from "../../runners/registry.js";
@@ -18,6 +20,16 @@ export interface CoreDeps {
   registry: RunnerRegistry;
   wsHub: WsHub;
   startedAt: number;
+  /** the hub's own working directory — the fallback for R-10 resumes */
+  defaultCwd?: string;
+}
+
+/** The title a process row should show: the live runner's own name, else the
+ *  session file's title from the store. Unknown/untitled => null ("new process"). */
+function processTitle(info?: RunnerInfo): string | null {
+  if (!info) return null;
+  if (info.title) return info.title;
+  return info.absFile ? titleForSessionFile(info.absFile) : null;
 }
 
 export function coreRoutes(deps: CoreDeps): Route[] {
@@ -127,8 +139,17 @@ export function coreRoutes(deps: CoreDeps): Route[] {
       auth: true,
       handler: ({ res }) => {
         const childPids = new Set<number>();
-        for (const r of registry.list()) if (r.kind === "headless" && r.pid) childPids.add(r.pid);
-        return sendJson(res, 200, scanPiProcesses(childPids));
+        const byPid = new Map<number, RunnerInfo>();
+        for (const r of registry.list()) {
+          const info = r.info();
+          if (r.kind === "headless" && info.pid) childPids.add(info.pid);
+          if (info.pid) byPid.set(info.pid, info);
+        }
+        const scan = scanPiProcesses(childPids);
+        // Title the rows by the session each process is working on, so the
+        // panel reads "Refactor the parser" instead of a bare `pi` argv.
+        for (const p of scan.processes) p.title = processTitle(byPid.get(p.pid));
+        return sendJson(res, 200, scan);
       },
     },
     {
@@ -166,6 +187,7 @@ export function coreRoutes(deps: CoreDeps): Route[] {
           platform: `${os.platform()} ${os.arch()}`,
           auth: auth.enabled,
           maxHeadless: config.maxHeadless,
+          cwd: deps.defaultCwd || process.cwd(),
         }),
     },
   ];

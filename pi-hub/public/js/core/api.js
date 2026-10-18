@@ -78,4 +78,5 @@ export const headlessStatus = (file) => api(`/api/headless/status?file=${encodeU
 export const processes = () => api("/api/processes");
 export const killProcess = (pid) => api("/api/processes/kill", { method: "POST", body: { pid } });
 export const serverInfo = () => api("/api/server");
+export const relocateSession = (body) => api("/api/sessions/relocate", { method: "POST", body });
 export const clientError = (message) => api("/api/client-error", { method: "POST", body: { message } }).catch(() => {});

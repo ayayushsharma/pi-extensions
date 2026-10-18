@@ -88,6 +88,7 @@ export class Hub {
         registry: this.registry,
         wsHub: this.ws,
         startedAt: this.startedAt,
+        defaultCwd: this.ctx?.cwd || process.cwd(),
       }),
       ...sessionRoutes({ config: this.config, registry: this.registry }),
     ];

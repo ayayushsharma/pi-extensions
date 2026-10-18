@@ -14,6 +14,31 @@ function tabDot(state, tab) {
 export function createTabs({ strip, newBtn }, actions) {
   newBtn.append(icon("plus", 15));
 
+  /* Many tabs must scroll horizontally instead of being clipped away. The
+     scrollbar itself is hidden (a 3px bar inside a 46px bar shifts the tab
+     row), so provide the desktop affordance explicitly: vertical wheel/trackpad
+     over the strip scrolls it sideways. Touch drag and Tab focus are native. */
+  strip.addEventListener(
+    "wheel",
+    (e) => {
+      const d = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+      if (!d) return;
+      const before = strip.scrollLeft;
+      strip.scrollLeft = before + d;
+      if (strip.scrollLeft !== before) e.preventDefault();
+    },
+    { passive: false },
+  );
+
+  function revealActive() {
+    const active = strip.querySelector(".tab.active");
+    if (!active) return;
+    const left = active.offsetLeft;
+    const right = left + active.offsetWidth;
+    if (left < strip.scrollLeft) strip.scrollLeft = left;
+    else if (right > strip.scrollLeft + strip.clientWidth) strip.scrollLeft = right - strip.clientWidth;
+  }
+
   return {
     render(state) {
       strip.replaceChildren();
@@ -31,7 +56,7 @@ export function createTabs({ strip, newBtn }, actions) {
             onclick: () => actions.activateTab(tab.key),
           },
           tab.kind === "live" ? icon("terminal", 13) : tabDot(state, tab),
-          el("span", { class: "tab-title", text: tab.title || tab.file || "session" }),
+          el("span", { class: "tab-title", text: tab.title || "new session" }),
           el("span", {
             class: "tab-close",
             role: "button",
@@ -45,6 +70,7 @@ export function createTabs({ strip, newBtn }, actions) {
         );
         strip.append(node);
       }
+      revealActive();
     },
   };
 }

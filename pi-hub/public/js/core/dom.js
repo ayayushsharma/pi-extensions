@@ -75,6 +75,21 @@ export function basename(p) {
   return String(p).split(/[\\/]/).filter(Boolean).pop() || "";
 }
 
+/** Shorten a tool path for display: cwd-relative when inside the session
+ *  cwd, `~`-collapsed otherwise. The full path stays in the card's title. */
+export function shortenPath(p, cwd) {
+  const s = String(p || "");
+  if (!s) return "";
+  const root = String(cwd || "").replace(/\/$/, "");
+  if (root && (s === root || s.startsWith(`${root}/`))) {
+    return s.slice(root.length + 1) || s;
+  }
+  return s
+    .replace(/^\/data\/data\/com\.termux\/files\/home/, "~")
+    .replace(/^\/Users\/[^/]+/, "~")
+    .replace(/^\/home\/[^/]+/, "~");
+}
+
 export function usageText(meta) {
   const bits = [];
   const tokens = meta?.tokens || meta?.usage?.totalTokens;

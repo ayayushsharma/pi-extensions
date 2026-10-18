@@ -33,6 +33,7 @@ import {
   logout,
   onUnauthorized,
   renameSession as apiRename,
+  relocateSession as apiRelocate,
   searchSessions,
   serverInfo,
 } from "./core/api.js";
@@ -94,6 +95,7 @@ const refs = {
   welcomeHints: $("welcome-hints"),
   welcomeActions: $("welcome-actions"),
   welcomeRecents: $("welcome-recents"),
+  welcomeLive: $("welcome-live"),
   banner: $("banner"),
   messages: $("messages"),
 
@@ -146,6 +148,7 @@ const refs = {
   toggleThinking: $("toggle-thinking"),
   toggleCosts: $("toggle-costs"),
   toggleTools: $("toggle-tools"),
+  toggleWrap: $("toggle-wrap"),
   serverInfo: $("server-info"),
   procRefresh: $("proc-refresh"),
   procList: $("proc-list"),
@@ -253,6 +256,7 @@ const settings = createSettings(
     thinkingToggle: refs.toggleThinking,
     costsToggle: refs.toggleCosts,
     toolsToggle: refs.toggleTools,
+    wrapToggle: refs.toggleWrap,
     info: refs.serverInfo,
     refresh: refs.procRefresh,
     procRefresh: refs.procRefresh,
@@ -275,6 +279,23 @@ const settings = createSettings(
     },
   },
 );
+
+/** Drop pi's queued steering/follow-up messages and return their text. */
+async function clearQueue() {
+  const r = await commandRequest({ type: "clear_queue" }, 15000).catch(() => null);
+  const texts = [...(r?.data?.steering || []), ...(r?.data?.followUp || [])].filter((t) => typeof t === "string");
+  set({ queue: [] });
+  return texts;
+}
+
+/** Put recovered text back into the composer, keeping anything already typed. */
+function restoreToEditor(texts) {
+  if (!texts.length) return;
+  const current = refs.input.value.trim();
+  refs.input.value = [current, ...texts].filter(Boolean).join("\n");
+  refs.input.dispatchEvent(new Event("input"));
+  refs.input.focus();
+}
 
 const composer = createComposer(
   {
@@ -299,17 +320,35 @@ const composer = createComposer(
     isWorking: () => state.streaming || state.bound?.state === "working",
     prompt: (message, images) => commandRequest({ type: "prompt", message, ...(images.length ? { images } : {}) }, 30000),
     steer: (message, images) => commandRequest({ type: "steer", message, ...(images.length ? { images } : {}) }, 30000),
-    abort: () => rawSend({ type: "command", id: `abort-${Date.now().toString(36)}`, command: { type: "abort" } }),
+    followUp: (message, images) => commandRequest({ type: "follow_up", message, ...(images.length ? { images } : {}) }, 30000),
+    // Abort behaves like pi's Esc: queued text goes back to the editor instead
+    // of being delivered after the run.
+    abort: async () => {
+      restoreToEditor(await clearQueue());
+      rawSend({ type: "command", id: `abort-${Date.now().toString(36)}`, command: { type: "abort" } });
+    },
     listCommands: () =>
       commandRequest({ type: "get_commands" }, 20000)
         .then((r) => r.data?.commands || [])
         .catch(() => []),
     listModels: () => commandRequest({ type: "get_available_models" }, 20000).then((r) => r.data?.models || []),
+    listThinkingLevels: () =>
+      commandRequest({ type: "get_available_thinking_levels" }, 15000)
+        .then((r) => (Array.isArray(r.data?.levels) ? r.data.levels.filter((l) => typeof l === "string") : []))
+        .catch(() => []),
     getState: () => commandRequest({ type: "get_state" }, 15000).then((r) => r.data),
-    setModel: (m) => commandRequest({ type: "set_model", provider: m.provider, modelId: m.id }, 20000),
-    setThinking: (level) => commandRequest({ type: "set_thinking_level", level }, 20000),
-    addQueue: (message) => set({ queue: [...state.queue, message] }),
-    removeQueue: (i) => set({ queue: state.queue.filter((_, idx) => idx !== i) }),
+    setModel: async (m) => {
+      await commandRequest({ type: "set_model", provider: m.provider, modelId: m.id }, 20000);
+      // RPC mode answers set_model with a response only — no model_select
+      // event is forwarded by the child — so re-read state to refresh the
+      // pills (and the server's runner info) immediately.
+      await refreshSessionState();
+    },
+    setThinking: async (level) => {
+      await commandRequest({ type: "set_thinking_level", level }, 20000);
+      await refreshSessionState();
+    },
+    restoreQueue: async () => restoreToEditor(await clearQueue()),
     takePendingFiles: () => state.pendingFiles.splice(0),
     openPicker: () => picker.open(state.bound?.cwd || state.meta?.cwd),
     toast: (message, opts) => toast(message, opts),
@@ -334,7 +373,8 @@ const sidebar = createSidebar(
     openSession: (session, project) => openSession(session, project),
     openRunner: (runner) => bindRunner(runner.id, runner),
     previewRunner: (runner) => bindRunner(runner.id, runner),
-    closeRunner: (runner) => killRunner(runner, { confirm: false }),
+    closeRunner: (runner) => killRunner(runner, { confirm: true }),
+    killAllHeadless: () => killAllHeadless(),
     activateTab: (key) => activateTab(key),
     closeTab: (key) => closeTab(key),
     setSearch: (q) => set({ search: q }),
@@ -343,7 +383,7 @@ const sidebar = createSidebar(
     forkSession: (session, project) => forkSession(session, project),
     deleteSession: (session, project) => deleteSession(session, project),
     renameSession: (session, project, name) => renameSession(session, project, name),
-    copyPath: (session) => copyText(session.filePath || session.file),
+    copyPath: (session) => copyText(session.filePath || (session.dirName ? `${session.dirName}/${session.file}` : session.file)),
     exportSession: (session, project) => exportSession(session, project),
     toggleFavourite: (file) => toggleFavourite(file),
   },
@@ -371,8 +411,49 @@ refs.welcomeActions.append(
   el("button", { class: "btn", type: "button", onclick: () => picker.open(state.bound?.cwd || state.meta?.cwd) }, icon("folder", 14), "Browse sessions…"),
 );
 
+/** Live TUI block on the home screen: a running terminal is state on the
+ *  box, so it gets a prominent card with one-click Drive — no need to open
+ *  the drawer or hunt through the sidebar. */
+function renderWelcomeLive() {
+  const live = [...state.runners.values()].filter((r) => r.kind === "live");
+  refs.welcomeLive.replaceChildren();
+  show(refs.welcomeLive, live.length > 0);
+  if (!live.length) return;
+  refs.welcomeLive.append(
+    el("div", { class: "section-label live-label" }, icon("terminal", 11), "Live terminals", el("span", { class: "grow" }), el("span", { class: "count", text: String(live.length) })),
+  );
+  for (const info of live) {
+    const base = basename(info.sessionFile || info.absFile || "");
+    const parts = String(info.absFile || "").split(/[\\/]/);
+    const dirName = parts.length > 1 ? parts[parts.length - 2] : null;
+    const title = titleForFile(dirName, base) || info.title || "Live TUI";
+    refs.welcomeLive.append(
+      el(
+        "div",
+        { class: "welcome-live-row live-row", dataset: { runnerId: info.id, runnerKind: "live" } },
+        el(
+          "button",
+          { type: "button", class: "welcome-live-main", onclick: () => bindRunner(info.id, info) },
+          el("span", { class: "row-title" }, icon("terminal", 13), el("span", { class: "grow", text: title }), el("span", { class: "chip live", text: "live" })),
+          el("span", { class: "row-sub" }, el("span", { class: `dot${info.state === "working" ? " working" : " on"}` }), el("span", { text: `pid ${info.pid}` }), el("span", { text: shortCwd(info.cwd) })),
+        ),
+        el("button", {
+          type: "button",
+          class: "btn small primary",
+          text: "Drive",
+          onclick: async () => {
+            await bindRunner(info.id, info);
+            await attach(info, false);
+          },
+        }),
+      ),
+    );
+  }
+}
+
 function renderWelcome() {
   if (state.view !== "welcome") return;
+  renderWelcomeLive();
   refs.welcomeRecents.replaceChildren();
   const recents = allSessions()
     .sort((a, b) => (b.mtime || 0) - (a.mtime || 0))
@@ -390,12 +471,10 @@ function renderWelcome() {
     );
   }
 }
-refs.homeBtn.append(logo(20));
-refs.filesBtn.append(icon("folder", 16));
+refs.homeBtn.append(logo(20));refs.filesBtn.append(icon("folder", 16));
 refs.settingsBtn.append(icon("gear", 17));
 refs.reloadBtn.append(icon("refresh", 15));
 refs.sidebarToggle.append(icon("menu", 18));
-refs.sidebarCollapse.append(icon("chevron-left", 15));
 refs.fileFinder.append(icon("external", 14));
 
 /* ── render ──────────────────────────────────────────────────────────── */
@@ -404,6 +483,7 @@ function render() {
   document.body.classList.toggle("sidebar-open", !!state.ui?.sidebarOpen);
   refs.sidebar.classList.toggle("collapsed", !!state.ui?.sidebarCollapsed && !state.ui?.sidebarOpen);
   document.querySelector(".shell")?.classList.toggle("sidebar-collapsed", !!state.ui?.sidebarCollapsed);
+  syncSidebarToggle();
   show(refs.sidebarOverlay, !!state.ui?.sidebarOpen);
 
   tabs.render(state);
@@ -414,11 +494,21 @@ function render() {
   renderStatusline();
   renderTitlebar();
 
-  if (state.binding && state.view === "session") transcript.renderHistory([], { loading: true });
+  if (state.binding && state.view === "session") {
+    transcript.renderHistory([], { loading: true });
+    clearLoadEarlier(); // previous session's counts must not linger
+  }
   const sessionView = state.view === "session" && !!state.bound;
   show(refs.welcome, !sessionView);
   show(refs.messages, sessionView);
-  if (!sessionView) show(refs.jumpLatest, false);
+  // The messages pane is hidden on the homepage — drop its stale nodes too
+  // so a closed transcript frees its DOM instead of lingering hidden, and
+  // take the "load earlier" control with it (it is a sibling of #messages).
+  if (!sessionView) {
+    transcript.renderHistory([], null);
+    clearLoadEarlier();
+    show(refs.jumpLatest, false);
+  }
   document.body.dataset.view = state.view;
   if (state.booted) document.body.dataset.ready = "1";
 }
@@ -455,6 +545,11 @@ function renderStatusline() {
     refs.contextChip.textContent = pct < 1 ? "<1% ctx" : `${Math.round(pct)}% ctx`;
     refs.contextChip.classList.toggle("warn", pct >= 70 && pct < 90);
     refs.contextChip.classList.toggle("danger", pct >= 90);
+    // Over budget the pill offers a way out: confirm, then compact.
+    const canCompact = state.view === "session" && !!state.bound && state.bound.state !== "dead"
+      && pct >= 90 && !state.streaming && !state.compacting && !state.binding;
+    refs.contextChip.disabled = !canCompact;
+    refs.contextChip.title = canCompact ? "Context over budget — compact now" : refs.contextChip.textContent;
   }
 
   // connection pill
@@ -493,27 +588,62 @@ function sendCommand(command, timeoutMs = 20000) {
 }
 const commandRequest = sendCommand;
 
+/** Pull the child's current model/thinking into the client view. Needed after
+ *  set_model / set_thinking_level: RPC mode forwards a bare response (no
+ *  model_select event), so without this the pills keep the stale value. */
+async function refreshSessionState() {
+  try {
+    const st = await commandRequest({ type: "get_state" }, 15000).then((r) => r.data);
+    if (!st) return;
+    const m = st.model;
+    const id = typeof m === "string" ? m : m?.id || m?.name || "";
+    const provider = typeof m === "object" && m ? m.provider || "" : "";
+    set({
+      bound: state.bound
+        ? { ...state.bound, model: id || state.bound.model, thinkingLevel: st.thinkingLevel || state.bound.thinkingLevel }
+        : state.bound,
+      meta: {
+        ...(state.meta || {}),
+        ...(id ? { model: provider ? `${provider}/${id}` : id } : {}),
+        ...(st.thinkingLevel ? { thinkingLevel: st.thinkingLevel } : {}),
+      },
+    });
+  } catch {}
+}
+
 /* ── bind lifecycle ──────────────────────────────────────────────────── */
 function applyBound(msg, tab) {
-  const runner = msg.runner || {};
-  set({
+  const runner = msg.runner || {};  set({
     boundId: runner.id,
     bound: runner,
     binding: false,
     driverBusy: null,
     driving: null,
+    cwdFallback: runner.cwdFallback || null,
     queue: [],
     contextUsage: null,
     entries: [],
     meta: null,
   });
   const key = tab?.key || (runner.sessionFile ? sessionKey(tab?.dirName, runner.sessionFile) : runnerKey(runner.id));
+  // Titles only: a session's identity is its name (the store's prompt-derived
+  // title). Never surface the `.jsonl` file name — a brand-new session is
+  // "new session" until its first prompt names it, a live TUI without a
+  // stored title is "Live TUI".
+  let title = tab?.title;
+  if (!title || title === "new session") {
+    const base = basename(runner.sessionFile || runner.absFile || "");
+    title =
+      runner.kind === "live"
+        ? titleForFile(null, base) || "Live TUI"
+        : titleForFile(tab?.dirName ?? null, runner.sessionFile) || "new session";
+  }
   const nextTab = {
     key,
     dirName: tab?.dirName || null,
     file: runner.sessionFile || tab?.file || null,
     runnerId: runner.id,
-    title: tab?.title || runner.sessionFile || (runner.kind === "live" ? `TUI :${runner.pid}` : "new session"),
+    title,
     kind: runner.kind,
   };
   upsertTab(nextTab);
@@ -545,7 +675,7 @@ async function bindSession(session, project, opts = {}) {
       key: sessionKey(session.dirName || project?.dirName, session.file),
       dirName: session.dirName || project?.dirName,
       file: session.file,
-      title: session.title || session.file,
+      title: session.title || "new session",
     });
     if (opts.starter) {
       await commandRequest({ type: "prompt", message: opts.starter }, 30000).catch((e) => toast(e.message, { kind: "error" }));
@@ -557,14 +687,36 @@ async function bindSession(session, project, opts = {}) {
   }
 }
 
-async function bindRunner(runnerId, info) {
+/** Tab identity for a runner opened without one: a runner that owns a session
+ *  file maps onto that file's tab key, so the backend list, the session list
+ *  and the tab strip all converge on a single tab (R-12). Runners without a
+ *  file (live TUIs, brand-new children) keep their runner/live key. */
+function runnerTabHint(info, runner) {
+  const r = runner || info || {};
+  if (r.kind === "live") return { key: liveKey(r.pid ?? info?.pid) };
+  const base = basename(r.sessionFile || r.absFile || "");
+  if (!base) return { key: runnerKey(r.id || info?.id) };
+  for (const project of state.projects || []) {
+    for (const s of project.sessions || []) {
+      if (s.file !== base) continue;
+      const dirName = s.dirName || project.dirName;
+      return { key: sessionKey(dirName, base), dirName, file: base };
+    }
+  }
+  const parts = String(r.absFile || "").split(/[\\/]/);
+  const dirName = parts.length > 1 ? parts[parts.length - 2] : null;
+  return { key: sessionKey(dirName, base), dirName, file: base };
+}
+
+async function bindRunner(runnerId, info, tab) {
   set({ binding: true });
   try {
     const msg = await socket.request({ type: "bind", runnerId, sinceSeq: lastSeenSeq.get(runnerId) || 0 });
-    applyBound(msg, {
-      key: info?.kind === "live" ? liveKey(info.pid) : runnerKey(runnerId),
-      title: info?.title || info?.sessionFile || info?.kind,
-    });
+    // Re-activating a tab must keep its identity (key/title/dirName): minting
+    // a runner-keyed tab here duplicated the tab and lost the session title.
+    // Opening a runner that already owns a file converges on that file's tab
+    // key (R-12: one tab per session, whichever list you came from).
+    applyBound(msg, tab || runnerTabHint(info, msg.runner));
   } catch (e) {
     set({ binding: false });
     toast(e.message, { kind: "error" });
@@ -589,10 +741,34 @@ function openSession(session, project) {
   // A live TUI owns its file: never put a second writer on it (ADR-003).
   const live = [...state.runners.values()].find((r) => r.kind === "live" && r.absFile && session.filePath && r.absFile === session.filePath);
   if (live) return bindRunner(live.id, live);
+  // R-10: pi refuses to switch to a session whose stored cwd is gone. Ask the
+  // same question its TUI asks, then continue in a folder that exists.
+  if (session.cwdExists === false) return continueMissingCwd(session, project);
   const key = sessionKey(session.dirName || project?.dirName, session.file);
   const existing = state.tabs.find((t) => t.key === key);
   if (existing) return activateTab(key);
   return bindSession(session, project);
+}
+
+/** Native pi's "Session cwd not found" prompt, web edition: continue the
+ *  session as a copy whose stored cwd is a folder that exists. The original
+ *  file is never edited, so nothing is lost if the folder comes back. */
+async function continueMissingCwd(session, project) {
+  const target = state.serverCwd || "";
+  if (!target) return toast("Hub working directory unknown — cannot relocate this session", { kind: "error" });
+  const ok = await dialogs.offer(
+    "Session cwd not found",
+    `cwd from session file does not exist: ${session.cwd || "unknown"}.\nContinue in ${target}? The session is copied there so pi can run its tools — the original file stays untouched.`,
+    { confirmLabel: "Continue" },
+  );
+  if (!ok) return;
+  try {
+    const out = await apiRelocate({ dirName: session.dirName || project?.dirName, file: session.file, cwd: target });
+    await bindSession({ dirName: out.dirName, file: out.file, cwd: out.cwd, title: session.title }, null);
+    toast(`Continued in ${target}`);
+  } catch (e) {
+    toast(e.message, { kind: "error" });
+  }
 }
 
 function activateTab(key) {
@@ -600,33 +776,75 @@ function activateTab(key) {
   if (!tab) return;
   set({ activeKey: key });
   saveTabs();
-  if (tab.runnerId) return bindRunner(tab.runnerId, state.runners.get(tab.runnerId));
+  if (tab.runnerId) return bindRunner(tab.runnerId, state.runners.get(tab.runnerId), tab);
   if (tab.file) return bindSession({ dirName: tab.dirName, file: tab.file, title: tab.title, cwd: tab.cwd }, null);
   return undefined;
 }
 
 function closeTab(key) {
-  const tab = state.tabs.find((t) => t.key === key);
+  const wasActive = state.activeKey === key;
   const nextKey = removeTab(key);
-  if (state.activeKey === key) {
-    set({ bound: null, boundId: null, bound: null, driving: null, entries: [], meta: null, view: "welcome" });
+  if (wasActive) {
+    set({ bound: null, boundId: null, driving: null, entries: [], meta: null, view: "welcome" });
     rawSend({ type: "unbind" });
+    // Never leave a hash pointing at the closed tab: if the next tab cannot
+    // bind (dead runner, missing file) a reload would otherwise resurrect the
+    // session we just closed. activateTab re-stamps the hash when it succeeds.
+    updateHash(null);
     if (nextKey) activateTab(nextKey);
-    else updateHash(null);
   }
-  void tab;
+}
+
+/** Headless backends the sidebar lists (i.e. not owned by an open tab). */
+function headlessBackends() {
+  const tabbable = new Set(state.tabs.map((t) => t.runnerId).filter(Boolean));
+  return [...state.runners.values()].filter((r) => r.kind === "headless" && r.state !== "dead" && !tabbable.has(r.id));
+}
+
+/** One confirmation, then close every headless backend. */
+async function killAllHeadless() {
+  const backends = headlessBackends();
+  if (!backends.length) return;
+  const ok = await dialogs.confirm(
+    "Kill all backends",
+    `Close ${backends.length} headless ${backends.length === 1 ? "backend" : "backends"}? The transcripts stay on disk.`,
+  );
+  if (!ok) return;
+  for (const runner of backends) {
+    try {
+      await killRunner(runner, { confirm: false });
+    } catch (e) {
+      toast(e.message, { kind: "error" });
+    }
+  }
 }
 
 async function killRunner(runner, { confirm: confirmFirst = true } = {}) {
+  const bound = state.boundId === runner.id;
   if (confirmFirst) {
-    const ok = await dialogs.confirm("Close backend", `Close the backend for ${runner.title || runner.sessionFile || runner.id}? The transcript stays on disk; the process ends.`);
+    const label = runner.title || runner.sessionFile || runner.id;
+    const ok = await dialogs.confirm(
+      bound ? "Close session" : "Close backend",
+      bound
+        ? "Close this session? The backend stops and its tab closes. The transcript stays on disk — reopen it from the sidebar any time."
+        : `Close the backend for ${label}? The transcript stays on disk; the process ends.`,
+    );
     if (!ok) return;
   }
   try {
     const msg = await socket.request({ type: "close", runnerId: runner.id });
     if (msg.type === "closed") {
-      set({ bound: state.boundId === runner.id ? { ...state.bound, state: "dead" } : state.bound });
-      toast("Backend closed — resume from the banner to continue");
+      if (bound) {
+        // Closing the current session is durable: drop its tab (and the
+        // binding) so a reload cannot silently resurrect it. Reopening is an
+        // explicit action from the sidebar, where the file still is.
+        const tab = state.tabs.find((t) => t.runnerId === runner.id);
+        if (tab) closeTab(tab.key);
+        else set({ bound: { ...state.bound, state: "dead" }, boundId: null });
+        toast("Session closed — reopen it from the sidebar");
+      } else {
+        toast("Backend closed");
+      }
       refreshSessions().catch(() => {});
     }
   } catch (e) {
@@ -661,6 +879,7 @@ async function detach() {
 const bannerActions = {
   onAttach: (runner, take) => attach(runner, take),
   onDetach: () => detach(),
+  onDismissFallback: () => set({ cwdFallback: null }),
   onDismiss: () => {
     set({ bound: null, boundId: null, driving: null, driverBusy: null, view: "welcome" });
     rawSend({ type: "unbind" });
@@ -721,6 +940,13 @@ function applyStats(data) {
   });
 }
 
+/** Drops the "load earlier" control. It lives beside #messages, so draining
+ *  the transcript alone left it stranded (visible on the homepage after the
+ *  last session was closed). */
+function clearLoadEarlier() {
+  refs.messages.parentElement?.querySelector(".load-earlier-wrap")?.remove();
+}
+
 function renderLoadEarlier() {
   const total = state.meta?.total || 0;
   const loaded = state.entries.length;
@@ -744,10 +970,42 @@ function renderLoadEarlier() {
 }
 
 /* ── store refresh ───────────────────────────────────────────────────── */
+/** The store's title for a session file, when it has a real one. Sessions
+ *  with no prompt yet carry their filename stem as a placeholder title —
+ *  treated here as "no title" so the UI never shows a `.jsonl` name. */
+function titleForFile(dirName, file) {
+  if (!file) return null;
+  const stem = String(file).replace(/\.jsonl$/, "");
+  let loose = null;
+  for (const project of state.projects || []) {
+    for (const s of project.sessions || []) {
+      if (s.file !== file) continue;
+      if (!s.title || s.title === stem) continue;
+      if (dirName && project.dirName === dirName) return s.title;
+      loose = loose || s.title;
+    }
+  }
+  return loose;
+}
+
+/** Adopt store titles into tabs/cards that are still showing a placeholder
+ *  (`new session` or the file stem) — the first prompt names the session. */
+function adoptSessionTitles() {
+  for (const tab of state.tabs) {
+    if (!tab.file || tab.kind === "live") continue;
+    const stem = String(tab.file).replace(/\.jsonl$/, "");
+    const placeholder = !tab.title || tab.title === "new session" || tab.title === tab.file || tab.title === stem;
+    if (!placeholder) continue;
+    const title = titleForFile(tab.dirName, tab.file);
+    if (title && title !== tab.title) updateTab(tab.key, { title });
+  }
+}
+
 async function refreshSessions() {
   try {
     const out = await listSessions();
     set({ projects: out.projects || [], sessionsDir: out.sessionsDir || state.sessionsDir });
+    adoptSessionTitles();
     return true;
   } catch (e) {
     // 401 must reach the caller (boot/login/socket-open) so the login overlay
@@ -920,7 +1178,10 @@ function adoptRunnerFile(runner) {
   if (!runner?.sessionFile || !tab || tab.kind === "live" || tab.file) return;
   const parts = String(runner.absFile || "").split(/[\\/]/);
   const dirName = parts.length > 1 ? parts[parts.length - 2] : tab.dirName;
-  updateTab(tab.key, { file: runner.sessionFile, dirName, title: runner.sessionFile });
+  // Own the discovered file, but keep the human title: a fresh session stays
+  // "new session" until its first prompt names it (never the .jsonl name).
+  const title = titleForFile(dirName, runner.sessionFile) || tab.title || "new session";
+  updateTab(tab.key, { file: runner.sessionFile, dirName, title });
   set({ historyDir: dirName, historyFile: runner.sessionFile });
   loadHistory({ ...tab, file: runner.sessionFile, dirName }).catch(() => {});
   refreshSessions().catch(() => {});
@@ -954,6 +1215,25 @@ function handleRunnerEvent(event) {
     }
     return;
   }
+  // Model / thinking changes reach every viewer: pi emits these on set_model,
+  // cycle_model and the thinking menu, so the composer pills (and the sidebar
+  // card) follow the session instead of showing the value it was bound with.
+  if (event.type === "model_select" && event.model) {
+    const id = event.model.id || event.model.name || "";
+    const provider = event.model.provider || "";
+    set({
+      bound: state.bound ? { ...state.bound, model: id } : state.bound,
+      meta: { ...(state.meta || {}), model: provider ? `${provider}/${id}` : id },
+    });
+    return;
+  }
+  if (event.type === "thinking_level_select" && event.level) {
+    set({
+      bound: state.bound ? { ...state.bound, thinkingLevel: event.level } : state.bound,
+      meta: { ...(state.meta || {}), thinkingLevel: event.level },
+    });
+    return;
+  }
   if (event.type === "runner_status") {
     set({ bound: { ...state.bound, state: event.state || state.bound?.state } });
     if (event.contextUsage != null) set({ contextUsage: event.contextUsage });
@@ -967,7 +1247,8 @@ function handleRunnerEvent(event) {
       if (tab2 && tab2.kind !== "live" && !tab2.file) {
         const parts = (state.bound?.absFile || "").split(/[\\/]/);
         const dirName = parts.length > 1 ? parts[parts.length - 2] : tab2.dirName;
-        updateTab(tab2.key, { file: sf, dirName, title: sf });
+        const title = titleForFile(dirName, sf) || tab2.title || "new session";
+        updateTab(tab2.key, { file: sf, dirName, title });
         set({ historyDir: dirName, historyFile: sf });
         loadHistory({ ...tab2, file: sf, dirName }).catch(() => {});
       }
@@ -980,14 +1261,19 @@ function handleRunnerEvent(event) {
   if (event.type === "agent_start") set({ streaming: true, connState: "working" });
   if (event.type === "agent_end") {
     set({ streaming: false, connState: "on" });
-    if (state.queue.length) {
-      const [next, ...rest] = state.queue;
-      set({ queue: rest });
-      commandRequest({ type: "prompt", message: next }, 30000).catch((e) => toast(e.message, { kind: "error" }));
-    }
     commandRequest({ type: "get_session_stats" }, 15000)
       .then((r) => applyStats(r.data))
       .catch(() => {});
+  }
+  if (event.type === "queue_update") {
+    const steering = Array.isArray(event.steering) ? event.steering : [];
+    const followUp = Array.isArray(event.followUp) ? event.followUp : [];
+    set({
+      queue: [
+        ...steering.filter((t) => typeof t === "string").map((text) => ({ text, kind: "steer" })),
+        ...followUp.filter((t) => typeof t === "string").map((text) => ({ text, kind: "followUp" })),
+      ],
+    });
   }
   if (event.type === "compaction_start") set({ compacting: true });
   if (event.type === "compaction_end") set({ compacting: false });
@@ -1019,7 +1305,7 @@ function connect() {
         set({ bound: null, boundId: null, binding: false });
       }
       const info = await serverInfo().catch(() => null);
-      if (info?.version) set({ version: info.version });
+      if (info?.version) set({ version: info.version, serverCwd: info.cwd || null });
       document.body.dataset.ready = "1";
     },
     onClose: () => set({ connected: false, connState: "off" }),
@@ -1048,11 +1334,27 @@ refs.loginForm.addEventListener("submit", async (e) => {
 });
 
 /* ── chrome wiring ───────────────────────────────────────────────────── */
+/* Sidebar visibility is a two-mode thing: on phones it is an overlay drawer
+   (`sidebarOpen`), on desktop a column that collapses away (`sidebarCollapsed`).
+   Both the tabbar button and the sidebar's own chevron must honour the mode the
+   window is actually in — the chevron used to only clear `sidebarOpen`, so on
+   desktop it did nothing at all. */
+const sidebarVisible = () => (window.innerWidth <= 860 ? !!state.ui?.sidebarOpen : !state.ui?.sidebarCollapsed);
+function syncSidebarToggle() {
+  const visible = sidebarVisible();
+  refs.sidebarToggle.setAttribute("aria-expanded", String(visible));
+  refs.sidebarToggle.title = visible ? "Hide sidebar" : "Show sidebar";
+}
 refs.sidebarToggle.addEventListener("click", () => {
   if (window.innerWidth <= 860) set({ ui: { ...(state.ui || {}), sidebarOpen: !state.ui?.sidebarOpen } });
   else set({ ui: { ...(state.ui || {}), sidebarCollapsed: !state.ui?.sidebarCollapsed } });
 });
-refs.sidebarCollapse.addEventListener("click", () => set({ ui: { ...(state.ui || {}), sidebarOpen: false } }));
+refs.sidebarCollapse.addEventListener("click", () => {
+  const ui = { ...(state.ui || {}), sidebarOpen: false };
+  if (window.innerWidth > 860) ui.sidebarCollapsed = true;
+  set({ ui });
+});
+window.addEventListener("resize", syncSidebarToggle);
 refs.sidebarOverlay.addEventListener("click", () => set({ ui: { ...(state.ui || {}), sidebarOpen: false } }));
 refs.newSessionBtn.addEventListener("click", () => picker.open(state.bound?.cwd || state.meta?.cwd));
 refs.tabNew.addEventListener("click", () => newSession(state.bound?.cwd || state.meta?.cwd));
@@ -1063,6 +1365,16 @@ refs.homeBtn.addEventListener("click", () => {
 refs.csClose.addEventListener("click", () => {
   const runner = state.bound;
   if (runner) killRunner(runner, { confirm: true });
+});
+refs.contextChip.addEventListener("click", async () => {
+  if (refs.contextChip.disabled) return;
+  const ok = await dialogs.confirm("Compact context", "Summarize the transcript to free context? The full history stays on disk.");
+  if (!ok) return;
+  try {
+    await commandRequest({ type: "compact" }, 120000);
+  } catch (e) {
+    toast(e.message, { kind: "error" });
+  }
 });
 refs.settingsBtn.addEventListener("click", () => settings.open());
 refs.filesBtn.addEventListener("click", () => files.toggle(state.bound?.cwd || state.meta?.cwd, { dirName: state.historyDir, file: state.historyFile }));
@@ -1120,6 +1432,7 @@ render();
  *  overlay instead of a silent reconnect loop. */
 async function boot() {
   try {
+    settings.applyPrefs(); // theme + display prefs before first paint
     await refreshSessions();
     set({ booted: true });
   } catch (e) {

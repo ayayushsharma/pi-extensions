@@ -19,8 +19,10 @@
   --sidebar-w: 272px;
   --hub-max: 860px;
   --header-h: 46px;
-  --font-ui: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", "Segoe UI", Roboto, sans-serif;
-  --font-mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+  /* Google Fonts (Inter + JetBrains Mono, loaded in index.html) with the
+     system stacks behind them, so an offline hub still renders properly. */
+  --font-ui: "Inter", -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", "Segoe UI", Roboto, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
 
   /* motion */
   --ease: cubic-bezier(0.4, 0, 0.2, 1);

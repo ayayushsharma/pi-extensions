@@ -15,8 +15,10 @@ function firefoxBin() {
 }
 
 async function firefoxAvailable() {
+  // Fast negative: missing binary or a wrapper that cannot answer --version.
+  // (A 15s timeout here used to cost every run 10s just to skip.)
   try {
-    await run(firefoxBin(), ["--version"], { timeout: 15000 });
+    await run(firefoxBin(), ["--version"], { timeout: 3000 });
   } catch {
     return false;
   }
@@ -26,7 +28,7 @@ async function firefoxAvailable() {
     const { stdout } = await run(
       firefoxBin(),
       ["--headless", "--no-remote", "--dump-dom", "data:text/html,<h1>pi-hub-probe</h1>"],
-      { timeout: 30000, env: { ...process.env, MOZ_HEADLESS: "1" }, maxBuffer: 1024 * 1024 },
+      { timeout: 8000, env: { ...process.env, MOZ_HEADLESS: "1" }, maxBuffer: 1024 * 1024 },
     );
     return stdout.includes("pi-hub-probe");
   } catch {

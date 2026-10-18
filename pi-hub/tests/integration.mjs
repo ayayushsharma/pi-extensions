@@ -1,15 +1,25 @@
 // integration — hub contract tests over HTTP + WS (no browser).
+//
+// Three independent groups, each with its own hub: the main API/WS/relay
+// contract, the shell asset-versioning contract, and auth. They run
+// concurrently (see groups.mjs) so the whole suite is a few seconds.
 import fs from "node:fs";
 import path from "node:path";
-import { connectWs, fixtureSessionDir, freePort, jsonFetch, startHub, startMirror, waitFor } from "./helpers.mjs";
+import { runGroups } from "./groups.mjs";
+import { PKG_ROOT, connectWs, fixtureSessionDir, freePort, jsonFetch, startHub, startMirror, tmpDir, waitFor } from "./helpers.mjs";
 
 export async function runIntegration({ log }) {
-  const results = [];
-  const check = (name, cond, detail = "") => {
-    results.push({ name, ok: !!cond, detail });
-    log(`${cond ? "PASS" : "FAIL"} ${name}${detail && !cond ? ` — ${detail}` : ""}`);
-  };
+  return runGroups(
+    [
+      { name: "hub", run: hubGroup },
+      { name: "assets", run: assetsGroup },
+      { name: "auth", run: authGroup },
+    ],
+    { log },
+  );
+}
 
+async function hubGroup({ check }) {
   const port = await freePort();
   const sessions = fixtureSessionDir();
   const hub = await startHub({ port, sessionDir: sessions });
@@ -108,6 +118,25 @@ export async function runIntegration({ log }) {
     const g2Count = ws.frames.filter((m) => m.type === "event" && m.event?.id === "g2").length;
     check("H10b ring replay honours sinceSeq", !!replayed && g2Count === 1, `replayed=${!!replayed} g2=${g2Count}`);
 
+    // ── H35 (R-10) dead-cwd resume falls back and says so ──────────────
+    const goneCwd = path.join(tmpDir("pihub-gone-"), "project");
+    const wsDead = await connectWs(`ws://127.0.0.1:${port}/ws`);
+    await wsDead.wait((m) => m.type === "hello", 10000, "hello (dead cwd)");
+    wsDead.send({ type: "bind", id: "bd1", dirName: "--tmp-pihub-fixtures--", file: "2026-01-01T00-00-00Z_fixture.jsonl", cwd: goneCwd });
+    const deadBound = await wsDead.wait((m) => m.type === "bound" && m.id === "bd1", 30000, "dead-cwd bind ack");
+    check("H35 dead cwd falls back instead of failing",
+      deadBound.runner?.cwdFallback?.from === goneCwd && !!deadBound.runner?.cwdFallback?.to,
+      JSON.stringify(deadBound.runner?.cwdFallback));
+    check("H35b fallback cwd exists and is not the dead one",
+      deadBound.runner.cwdFallback.to !== goneCwd && fs.existsSync(deadBound.runner.cwdFallback.to),
+      deadBound.runner.cwdFallback.to);
+    check("H35c the session still resumes", deadBound.runner.sessionFile === "2026-01-01T00-00-00Z_fixture.jsonl", String(deadBound.runner.sessionFile));
+    wsDead.send({ type: "command", id: "gd1", command: { type: "get_state", id: "gd1" } });
+    const deadState = await wsDead.wait((m) => m.type === "event" && m.event?.id === "gd1" && m.event?.command === "get_state", 30000, "get_state after fallback");
+    check("H35d child is usable in the fallback cwd", deadState.event.success === true && !!deadState.event.data?.sessionFile, deadState.event.error || "");
+    wsDead.send({ type: "close", id: "cld1", runnerId: deadBound.runner.id });
+    await wsDead.wait((m) => m.type === "closed", 10000, "closed (dead cwd)").catch(() => {});
+
     ws.send({ type: "close", id: "cl1", runnerId: bound.runner.id });
     await ws.wait((m) => m.type === "closed", 10000, "closed ack").catch(() => {});
     await waitFor(async () => (await (await fetch(`${base}/api/runners`)).json()).runners.length === 0, { timeoutMs: 10000, what: "runner removed after close" });
@@ -141,11 +170,90 @@ export async function runIntegration({ log }) {
     // ── process list shape (ADR-013) ────────────────────────────────────
     const procs = await (await fetch(`${base}/api/processes`)).json();
     check("P1 processes endpoint shape", Array.isArray(procs.processes), JSON.stringify(procs).slice(0, 100));
+    check("P1b every process carries a title field", procs.processes.every((p) => p.title === null || typeof p.title === "string"),
+      JSON.stringify(procs.processes.map((p) => [p.pid, p.title])));
+
+    // ── P2 process rows are titled by the session they run (ADR-013) ─────
+    // A hub child bound to a stored session reports that session's title; a
+    // process whose session has no title yet reports null, which the settings
+    // panel renders as "new process".
+    const wsP = await connectWs(`ws://127.0.0.1:${port}/ws`);
+    await wsP.wait((m) => m.type === "hello", 10000, "hello (proc title)");
+    const titleProbe = await startMirror({ sock: path.join(hub.dir, "hub.sock"), cwd: "/tmp/pihub-fixtures", sessionDir: sessions });
+    try {
+      await waitFor(async () => {
+        const out = await (await fetch(`${base}/api/processes`)).json();
+        return out.processes.some((p) => p.pid === titleProbe.proc.pid);
+      }, { timeoutMs: 20000, what: "mirror process listed" });
+      const liveRow = (await (await fetch(`${base}/api/processes`)).json()).processes.find((p) => p.pid === titleProbe.proc.pid);
+      check("P2 a fresh live process has no title yet", liveRow?.owner === "live" && liveRow?.title === null, JSON.stringify(liveRow?.title));
+    } finally {
+      await titleProbe.close();
+    }
+
+    wsP.send({ type: "bind", id: "bp1", dirName: "--tmp-pihub-fixtures--", file: "2026-01-01T00-00-00Z_fixture.jsonl" });
+    const procBound = await wsP.wait((m) => m.type === "bound" && m.id === "bp1", 30000, "bound (proc title)");
+    const childPid = procBound.runner.pid;
+    const childRow = (await waitFor(async () => {
+      const out = await (await fetch(`${base}/api/processes`)).json();
+      const row = out.processes.find((p) => p.pid === childPid);
+      return row ? out.processes : null;
+    }, { timeoutMs: 20000, what: "child process listed" })).find((p) => p.pid === childPid);
+    check("P2b a bound child is titled by its session", childRow?.title === "Fixture session", JSON.stringify(childRow?.title));
+    check("P2c owned children are labelled child, not live", childRow?.owner === "hub", String(childRow?.owner));
+    wsP.send({ type: "close", id: "cp1", runnerId: procBound.runner.id });
+    await wsP.wait((m) => m.type === "closed", 10000, "closed (proc title)").catch(() => {});
+    await wsP.close();
   } finally {
     await hub.close();
     // fork fixture cleanup is left in place under the temp fixture dir only if copied there
   }
 
+}
+
+// ── shell asset versioning (own hub: it edits a copy of public/) ────────
+async function assetsGroup({ check }) {
+  // ── H12 shell asset versioning ──────────────────────────────────────
+  // The shell stamps the live asset version onto ?v= URLs so the year-long
+  // immutable caching of CSS/JS can never pair old styles with new markup
+  // (the phantom-UI bug: elements present but invisible).
+  const staticCopy = tmpDir("pihub-static-");
+  fs.cpSync(path.join(PKG_ROOT, "public"), staticCopy, { recursive: true });
+  const shellHub = await startHub({ port: await freePort(), sessionDir: fixtureSessionDir(), env: { PI_HUB_STATIC_DIR: staticCopy } });
+  try {
+    const html1 = await (await fetch(`${shellHub.url}/`)).text();
+    const v1 = /app\.js\?v=([^"&]+)/.exec(html1)?.[1] || "";
+    check("H12 shell stamps a real asset version", !!v1 && v1 !== "__ASSETV__", `v=${v1}`);
+    check("H12b no placeholder leaks into the shell", !html1.includes("__ASSETV__"));
+    const asset = await fetch(`${shellHub.url}/js/app.js?v=${v1}`);
+    check("H12c versioned assets stay immutable", /immutable/.test(asset.headers.get("cache-control") || ""), asset.headers.get("cache-control") || "");
+    const css1 = await (await fetch(`${shellHub.url}/css/app.css?v=${v1}`)).text();
+    check("H12d shell version matches the served asset", css1.length > 0);
+    await new Promise((r) => setTimeout(r, 1200)); // version cache TTL
+    fs.appendFileSync(path.join(staticCopy, "css", "app.css"), "\n/* versioning probe */\n");
+    const html2 = await (await fetch(`${shellHub.url}/`)).text();
+    const v2 = /app\.js\?v=([^"&]+)/.exec(html2)?.[1] || "";
+    check("H12e an asset edit bumps the version", !!v2 && v2 !== v1, `${v1} -> ${v2}`);
+    // ── H12f the webfonts come from Google, and only Google ─────────────
+    // The CSP must name the font origins exactly; anything narrower blocks
+    // the stylesheet, anything looser lets a third party into the app shell.
+    const shellRes = await fetch(`${shellHub.url}/`);
+    const csp = shellRes.headers.get("content-security-policy") || "";
+    check("H12f shell loads the Google webfonts + CSP allows exactly them",
+      html2.includes("https://fonts.googleapis.com/css2?family=Inter") &&
+        /style-src [^;]*https:\/\/fonts\.googleapis\.com/.test(csp) &&
+        /font-src 'self' https:\/\/fonts\.gstatic\.com/.test(csp) &&
+        !/font-src[^;]*\*/.test(csp),
+      csp.replace(/^.*?(style-src[^;]*)/, "$1"));
+  } finally {
+    await shellHub.close();
+    fs.rmSync(staticCopy, { recursive: true, force: true });
+  }
+
+}
+
+// ── auth (own hub: credentials in env) ─────────────────────────────────
+async function authGroup({ check }) {
   // ── auth (ADR-006) ─────────────────────────────────────────────────
   const authPort = await freePort();
   const secure = await startHub({ port: authPort, env: { PI_HUB_USER: "tau", PI_HUB_PASS: "tpass" }, sessionDir: fixtureSessionDir() });
@@ -167,6 +275,4 @@ export async function runIntegration({ log }) {
   } finally {
     await secure.close();
   }
-
-  return results;
 }

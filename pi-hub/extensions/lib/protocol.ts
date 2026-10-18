@@ -82,6 +82,7 @@ export const MIRROR_EVENTS = [
   "auto_retry_start",
   "auto_retry_end",
   "model_select",
+  "thinking_level_select",
 ] as const;
 
 /** Commands accepted as WS `command`/`rpc_command` payloads. */

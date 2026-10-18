@@ -26,9 +26,11 @@
     "ws": "^8.18.0"
   },
   "scripts": {
-    "test": "node tests/run.mjs",
-    "test:unit": "node --test tests/unit/",
+    "test": "node tests/run.mjs --unit",
+    "test:unit": "node --import ./tests/unit/ts-resolve.mjs --test tests/unit/",
+    "test:int": "node tests/run.mjs --integration",
     "test:e2e": "node tests/run.mjs --e2e",
+    "test:all": "node tests/run.mjs --all",
     "test:parity": "node tests/ui-parity.mjs"
   },
   "devDependencies": {

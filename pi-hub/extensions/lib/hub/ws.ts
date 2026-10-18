@@ -135,7 +135,11 @@ export class WsHub {
     for (const c of this.clients) {
       if (c.boundId !== frame.runnerId) continue;
       if (frame.seq > c.lastSeq + 1 && c.lastSeq > 0) {
-        for (const missed of runner.replayFrom(c.lastSeq)) this.deliver(c, missed);
+        // The triggering frame is already in the ring (emitEvent pushes
+        // before notifying); replay only the gap, it is delivered below.
+        for (const missed of runner.replayFrom(c.lastSeq)) {
+          if (missed.seq < frame.seq) this.deliver(c, missed);
+        }
       }
       c.lastSeq = frame.seq;
       hubDebug(`ws[${c.id}] <- ${frame.runnerId} seq=${frame.seq} ${frame.event?.type || "?"}`);
@@ -248,10 +252,14 @@ export class WsHub {
       this.deps.registry.bind(client.ws, runner);
     } else if (msg.dirName && msg.file) {
       const abs = this.deps.resolveSessionPath(msg.dirName, msg.file);
-      runner = await this.deps.registry.bindHeadless(client.ws, { cwd: msg.cwd || this.deps.defaultCwd, absFile: abs });
+      runner = await this.deps.registry.bindHeadless(client.ws, {
+        cwd: msg.cwd || this.deps.defaultCwd,
+        absFile: abs,
+        fallbackCwd: this.deps.defaultCwd,
+      });
     } else {
       const cwd = String(msg.cwd || this.deps.defaultCwd);
-      runner = await this.deps.registry.bindHeadless(client.ws, { cwd, absFile: null });
+      runner = await this.deps.registry.bindHeadless(client.ws, { cwd, absFile: null, fallbackCwd: this.deps.defaultCwd });
     }
     client.boundId = runner.id;
     // A rebinding client may resume from its last seen seq: the runner's

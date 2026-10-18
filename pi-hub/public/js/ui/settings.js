@@ -58,9 +58,11 @@ export function createSettings(refs, actions) {
 
   function applyPrefs() {
     if (state.prefs.theme) document.documentElement.dataset.theme = state.prefs.theme;
+    document.documentElement.dataset.wrapCode = state.prefs.wrapCode ? "1" : "";
     refs.thinkingToggle.checked = state.prefs.showThinking;
     refs.costsToggle.checked = state.prefs.showCosts;
     refs.toolsToggle.checked = state.prefs.expandTools;
+    refs.wrapToggle.checked = state.prefs.wrapCode;
     renderThemes();
     actions.applyPrefs?.();
   }
@@ -77,6 +79,11 @@ export function createSettings(refs, actions) {
   });
   refs.toolsToggle.addEventListener("change", () => {
     state.prefs.expandTools = refs.toolsToggle.checked;
+    savePrefs();
+    applyPrefs();
+  });
+  refs.wrapToggle.addEventListener("change", () => {
+    state.prefs.wrapCode = refs.wrapToggle.checked;
     savePrefs();
     applyPrefs();
   });
@@ -119,7 +126,8 @@ export function createSettings(refs, actions) {
             el(
               "div",
               { class: "grow" },
-              el("div", { text: `${p.owner === "hub" ? "hub" : "child"} · pid ${p.pid} · ${Math.round((p.rssKb || 0) / 1024)} MB` }),
+              el("div", { class: "proc-title", text: p.title || "new process" }),
+              el("div", { text: `${p.owner === "hub" ? "child" : "live"} · pid ${p.pid} · ${Math.round((p.rssKb || 0) / 1024)} MB` }),
               el("div", { class: "argv", text: p.argv || "" }),
             ),
             el("button", {

@@ -38,7 +38,8 @@ export function createComposer(refs, actions) {
     }
     if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
       e.preventDefault();
-      send();
+      // Alt+Enter queues a follow-up for after the run (native pi's binding).
+      send({ followUp: e.altKey });
     }
   });
   refs.form.addEventListener("submit", (e) => {
@@ -123,12 +124,8 @@ export function createComposer(refs, actions) {
       if (data) images.push({ type: "image", data, mimeType: file.type, name: file.name });
     }
     refs.imageInput.value = "";
-    renderImages();
+    renderImageChips();
   });
-  function renderImages() {
-    const host = refs.queueEl;
-    void host;
-  }
   const imageChips = el("div", { class: "queue hidden", style: "margin-bottom:6px" });
   refs.form.parentElement.insertBefore(imageChips, refs.queueEl);
   function renderImageChips() {
@@ -148,23 +145,28 @@ export function createComposer(refs, actions) {
   }
 
   /* ── queue ────────────────────────────────────────────────────────── */
+  // Pills mirror pi's own queues (`queue_update` events), never a local echo:
+  // steering lands after the current turn, follow-ups after the whole run.
   function renderQueue(queue) {
     refs.queueEl.replaceChildren();
-    for (const [i, q] of queue.entries()) {
+    for (const q of queue) {
+      const kind = q.kind === "followUp" ? "follow-up" : "steering";
       refs.queueEl.append(
-        el(
-          "span",
-          { class: "q-pill" },
-          el("span", { class: "txt", text: q }),
-          el("button", { class: "icon-btn", type: "button", style: "width:20px;height:20px", "aria-label": "Remove queued message", html: icon("x", 11).innerHTML, onclick: () => actions.removeQueue(i) }),
+        el("span", { class: `q-pill ${q.kind === "followUp" ? "later" : "steer"}`, title: kind === "steering" ? "Steering — delivered after the current turn" : "Follow-up — delivered when the run ends" },
+          el("span", { class: "txt", text: q.text }),
         ),
+      );
+    }
+    if (queue.length) {
+      refs.queueEl.append(
+        el("button", { class: "icon-btn", type: "button", title: "Restore queued messages to the editor", "aria-label": "Restore queued messages to the editor", html: icon("back", 12).innerHTML, onclick: () => actions.restoreQueue() }),
       );
     }
     show(refs.queueEl, queue.length > 0);
   }
 
   /* ── send ─────────────────────────────────────────────────────────── */
-  async function send() {
+  async function send({ followUp = false } = {}) {
     const text = refs.input.value.trim();
     if (!text && !images.length) return;
     if (state_.binding) return;
@@ -176,8 +178,10 @@ export function createComposer(refs, actions) {
     hideSlash();
     try {
       if (state_.streaming) {
-        await actions.steer(text, payloadImages);
-        actions.addQueue(text);
+        // Match native pi: Enter mid-run is a steering message; Alt+Enter is a
+        // follow-up. pi queues both itself and reports them back via
+        // `queue_update` — replaying them here would deliver the text twice.
+        await (followUp ? actions.followUp(text, payloadImages) : actions.steer(text, payloadImages));
       } else {
         const files = actions.takePendingFiles();
         const message = text + (files.length ? `\n\n${files.map((f) => `@${f}`).join("\n")}` : "");
@@ -214,7 +218,28 @@ export function createComposer(refs, actions) {
       currentModel = st?.model || currentModel;
     } catch {}
     refs.modelMenu.replaceChildren();
-    for (const m of models) {
+    const search = el("input", {
+      class: "menu-search", type: "text", placeholder: "Filter models…",
+      "aria-label": "Filter models", autocomplete: "off",
+      onclick: (ev) => ev.stopPropagation(),
+    });
+    search.addEventListener("input", () => renderModelItems(search.value));
+    search.addEventListener("keydown", (ev) => {
+      ev.stopPropagation();
+      if (ev.key === "Enter") refs.modelMenu.querySelector(".item")?.click();
+      if (ev.key === "Escape") closeMenus();
+    });
+    refs.modelMenu.append(search);
+    renderModelItems("");
+    show(refs.modelMenu, true);
+    refs.modelBtn.setAttribute("aria-expanded", "true");
+  });
+
+  function renderModelItems(filter) {
+    refs.modelMenu.querySelectorAll(".item,.meta").forEach((n) => n.remove());
+    const q = String(filter || "").trim().toLowerCase();
+    const list = models.filter((m) => !q || `${m.name || ""} ${m.id || ""} ${m.provider || ""}`.toLowerCase().includes(q));
+    for (const m of list) {
       const selected = currentModel && m.provider === currentModel.provider && m.id === currentModel.id;
       refs.modelMenu.append(
         el(
@@ -234,19 +259,32 @@ export function createComposer(refs, actions) {
         ),
       );
     }
-    if (!models.length) refs.modelMenu.append(el("div", { class: "meta", style: "padding:8px 10px", text: "No models available" }));
-    show(refs.modelMenu, true);
-    refs.modelBtn.setAttribute("aria-expanded", "true");
-  });
+    if (!list.length) {
+      refs.modelMenu.append(el("div", {
+        class: "meta", style: "padding:8px 10px",
+        text: models.length ? `No models match “${String(filter || "").trim()}”` : "No models available",
+      }));
+    }
+  }
 
-  refs.thinkingBtn.addEventListener("click", (e) => {
+  refs.thinkingBtn.addEventListener("click", async (e) => {
     e.stopPropagation();
     const wasOpen = !refs.thinkingMenu.classList.contains("hidden");
     closeMenus();
     if (wasOpen) return;
+    // Drop the previous model's items while the fresh query is in flight, so
+    // the menu can never flash (or be read as) a stale level list.
+    refs.thinkingMenu.replaceChildren();
+    // Per-model levels from the backend (R-2); the static list is only the
+    // fallback for unbound sessions, relays that cannot answer, and errors.
+    let levels = THINKING_LEVELS;
+    try {
+      const offered = (await actions.listThinkingLevels()) || [];
+      if (offered.length) levels = offered;
+    } catch {}
     const current = state_.meta?.thinkingLevel || state_.bound?.thinkingLevel || "off";
     refs.thinkingMenu.replaceChildren();
-    for (const level of THINKING_LEVELS) {
+    for (const level of levels) {
       refs.thinkingMenu.append(
         el("button", {
           type: "button",
@@ -331,7 +369,9 @@ export function createComposer(refs, actions) {
               ? "Preview only — press Drive to take over"
               : bound.state === "dead"
                 ? "Session ended — resume to continue"
-                : "Ask anything, / for commands…";
+                : state.streaming
+                  ? "Enter steers this turn · Alt+Enter queues a follow-up"
+                  : "Ask anything, / for commands…";
 
       show(refs.abortBtn, !!state.streaming && !previewing);
       renderQueue(state.queue || []);

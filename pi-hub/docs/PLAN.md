@@ -1,8 +1,8 @@
 # pi-hub — implementation plan
 
 Status: **implemented (P0–P6)** (2026-10-18 overnight).
-`node tests/run.mjs` = 37 integration checks green; `node tests/run.mjs --e2e`
-= 19 Playwright checks green (including one real model round-trip with
+`node tests/run.mjs` = 45 integration checks green (`--unit` 6, `npm run test:unit`); `node tests/run.mjs --e2e`
+= 74 Playwright checks green (including one real model round-trip with
 `PI_HUB_E2E_PROMPT=1`); `--firefox` adds the zero-dependency CLI smoke
 (skips where system Firefox cannot render headless). As-built deltas from the
 original plan: `playwright-core` + a small node runner instead of

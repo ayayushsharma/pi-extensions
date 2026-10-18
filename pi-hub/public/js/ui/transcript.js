@@ -26,14 +26,52 @@ function imageNodes(content) {
 export function createTranscript(container, opts = {}) {
   const settings = { showThinking: true, showCosts: true, expandTools: false, ...opts };
   const toolCards = new Map();
+  let sessionCwd = ""; // refreshed on every history load; shortens tool paths
   const nodeForEntry = new Map();
   let pending = null; // streaming assistant
   let flushQueued = false;
 
-  const atBottom = () => container.scrollHeight - container.scrollTop - container.clientHeight < 140;
+  /* #messages is NOT the scroller: the shell scrolls an ancestor (#view) on
+     both mobile and desktop, so all scroll math must resolve that element.
+     Getting this wrong made every scrollToBottom() a silent no-op, which is
+     why a resumed session opened at the top of its transcript. */
+  function scrollerEl() {
+    for (let n = container.parentElement; n; n = n.parentElement) {
+      const oy = getComputedStyle(n).overflowY;
+      if ((oy === "auto" || oy === "scroll") && n.scrollHeight > n.clientHeight) return n;
+    }
+    return document.scrollingElement || document.documentElement;
+  }
+
+  const bottomGap = () => {
+    const s = scrollerEl();
+    return s.scrollHeight - s.scrollTop - s.clientHeight;
+  };
+  const atBottom = () => bottomGap() < 140;
 
   function scrollToBottom() {
-    container.scrollTop = container.scrollHeight;
+    const s = scrollerEl();
+    s.scrollTop = s.scrollHeight;
+    ownScroll = s.scrollTop; // ignore the scroll event this write will fire
+  }
+
+  // Stay pinned to the newest message while the transcript grows (markdown,
+  // fonts, images, streaming) unless the reader scrolled away. A ResizeObserver
+  // also covers the pane being hidden at render time and revealed later.
+  let stick = true;
+  let ownScroll = -1;
+  document.addEventListener("scroll", (e) => {
+    if (e.target !== scrollerEl()) return;
+    if (Math.abs(e.target.scrollTop - ownScroll) < 2) {
+      ownScroll = -1;
+      return;
+    }
+    stick = atBottom();
+  }, true);
+  if (typeof ResizeObserver === "function") {
+    new ResizeObserver(() => {
+      if (stick) scrollToBottom();
+    }).observe(container);
   }
 
   /* ── nodes ───────────────────────────────────────────────────────── */
@@ -74,7 +112,7 @@ export function createTranscript(container, opts = {}) {
       else if ((block?.type === "thinking" || block?.type === "reasoning") && (block.thinking || block.text)) {
         wrap.append(thinkingNode(block.thinking || block.text));
       } else if (block?.type === "toolCall") {
-        const card = createToolCard(block.id, block.name, block.arguments || {}, { expanded: settings.expandTools });
+        const card = createToolCard(block.id, block.name, block.arguments || {}, { expanded: settings.expandTools, cwd: sessionCwd });
         toolCards.set(block.id, card);
         wrap.append(card);
       }
@@ -120,6 +158,7 @@ export function createTranscript(container, opts = {}) {
   function renderHistory(entries, meta) {
     toolCards.clear();
     nodeForEntry.clear();
+    if (meta?.cwd) sessionCwd = meta.cwd;
     pending = null;
     container.replaceChildren();
     for (const entry of entries || []) {
@@ -137,12 +176,13 @@ export function createTranscript(container, opts = {}) {
           : "New session — send a message to start.";
       container.append(el("div", { class: "msg system" }, el("div", { class: "bubble", text })));
     }
+    stick = true;
     scrollToBottom();
   }
 
   function prependHistory(entries) {
     const wasAtBottom = atBottom();
-    const before = container.scrollHeight;
+    const before = scrollerEl().scrollHeight;
     const frag = document.createDocumentFragment();
     for (const entry of entries || []) {
       const node = entryNode(entry);
@@ -153,7 +193,7 @@ export function createTranscript(container, opts = {}) {
     }
     container.prepend(frag);
     if (wasAtBottom) scrollToBottom();
-    else container.scrollTop += container.scrollHeight - before;
+    else scrollerEl().scrollTop += scrollerEl().scrollHeight - before;
   }
 
   /* ── live events ─────────────────────────────────────────────────── */
@@ -232,7 +272,7 @@ export function createTranscript(container, opts = {}) {
         break;
       }
       case "tool_execution_start": {
-        const card = createToolCard(event.toolCallId, event.toolName, event.args || {}, { expanded: settings.expandTools });
+        const card = createToolCard(event.toolCallId, event.toolName, event.args || {}, { expanded: settings.expandTools, cwd: sessionCwd });
         toolCards.set(event.toolCallId, card);
         const host = pending?.node || container;
         host.append(card);

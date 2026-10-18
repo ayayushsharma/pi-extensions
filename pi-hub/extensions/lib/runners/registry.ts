@@ -110,16 +110,29 @@ export class RunnerRegistry {
   /** Bind a browser to a headless child for a session (resuming when needed). */
   async bindHeadless(
     ws: unknown,
-    opts: { cwd: string; absFile?: string | null },
+    opts: { cwd: string; absFile?: string | null; fallbackCwd?: string },
   ): Promise<Runner> {
-    const cwd = resolve(opts.cwd || process.cwd());
-    assertValidCwd(cwd);
+    const requested = resolve(opts.cwd || process.cwd());
     const abs = opts.absFile ? resolve(opts.absFile) : null;
+    // R-10: a session whose folder is gone must still open — resume in the
+    // hub's default cwd and let the UI explain why (silent fallback would
+    // run tools in the wrong tree without telling anyone).
+    let cwd = requested;
+    let cwdFallback: { from: string; to: string } | null = null;
+    try {
+      assertValidCwd(cwd);
+    } catch {
+      cwd = resolve(opts.fallbackCwd || process.env.HOME || process.cwd());
+      assertValidCwd(cwd);
+      cwdFallback = { from: requested, to: cwd };
+      hubLog(`cwd fallback: ${requested} -> ${cwd}`);
+    }
 
     let runner = abs ? this.byFile.get(abs) : undefined;
     if (!runner) {
       // A fresh child in the same cwd with no identity yet is not reusable.
       runner = new HeadlessRunner({ cwd, absFile: abs, bin: this.opts.bin, env: this.opts.env });
+      runner.cwdFallback = cwdFallback;
       this.add(runner);
       this.enforceCap(runner.id);
       try {
@@ -129,6 +142,8 @@ export class RunnerRegistry {
         runner.close();
         throw e;
       }
+    } else if (cwdFallback && runner.kind === "headless") {
+      runner.cwdFallback = cwdFallback;
     }
     this.bind(ws, runner);
     return runner;

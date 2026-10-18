@@ -4,7 +4,7 @@
  * unordered lists, blockquotes, tables, horizontal rules, inline code/strong/
  * em/links. Deliberately small; anything fancier must degrade to text.
  */
-import { el } from "../core/dom.js";
+import { copyText, el } from "../core/dom.js";
 
 function safeUrl(url) {
   try {
@@ -70,10 +70,29 @@ export function renderMarkdown(src) {
     const fence = /^```(\w+)?\s*$/.exec(line);
     if (fence) {
       const body = [];
+      const lang = fence[1] || "";
       i++;
       while (i < lines.length && !/^```\s*$/.test(lines[i])) body.push(lines[i++]);
       i++;
-      frag.append(el("pre", { class: "code-block" }, el("code", { text: body.join("\n") })));
+      const codeText = body.join("\n");
+      frag.append(
+        el(
+          "div",
+          { class: "code-wrap" },
+          el(
+            "div",
+            { class: "code-head" },
+            el("span", { class: "code-lang", text: lang || "code" }),
+            el("button", {
+              class: "code-copy", type: "button", text: "Copy",
+              title: "Copy code to clipboard",
+              "aria-label": "Copy code to clipboard",
+              onclick: () => copyText(codeText),
+            }),
+          ),
+          el("pre", { class: "code-block" }, el("code", { text: codeText })),
+        ),
+      );
       continue;
     }
 

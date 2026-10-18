@@ -8,6 +8,7 @@ import type { HubConfig } from "../../env.js";
 import {
   deleteSession,
   forkSession,
+  relocateSession,
   listSessionDirs,
   readWindow,
   renameSession,
@@ -130,6 +131,18 @@ export function sessionRoutes(deps: SessionDeps): Route[] {
         if (!body.dirName || !body.file) return sendError(res, 400, "dirName and file required");
         const out = forkSession(String(body.dirName), String(body.file));
         return sendJson(res, 200, out);
+      },
+    },
+    {
+      // R-10: continue a session in a folder that exists. Copies the file with
+      // a rewritten cwd header (never edits the original).
+      method: "POST",
+      path: "/api/sessions/relocate",
+      auth: true,
+      handler: async ({ req, res }) => {
+        const body = await readJson(req, BODY_SMALL);
+        if (!body.dirName || !body.file || !body.cwd) return sendError(res, 400, "dirName, file and cwd required");
+        return sendJson(res, 200, relocateSession(String(body.dirName), String(body.file), String(body.cwd)));
       },
     },
     {

@@ -22,6 +22,20 @@ export function renderBanner(node, state, actions) {
 
   if (!bound) return;
 
+  // R-10: the session's folder no longer exists — tools run in the fallback.
+  if (state.cwdFallback) {
+    node.dataset.kind = "warn";
+    node.replaceChildren(
+      icon("alert", 18),
+      el("div", { class: "banner-copy" },
+        el("div", { class: "banner-title", text: "This project folder is gone" }),
+        el("div", { class: "banner-sub", text: `${state.cwdFallback.from} no longer exists — the session resumed in ${state.cwdFallback.to}, so tools run there.` }),
+      ),
+      el("button", { class: "btn small", type: "button", text: "Dismiss", onclick: () => actions.onDismissFallback() }),
+    );
+    return show(node, true);
+  }
+
   if (bound.state === "dead") {
     node.dataset.kind = "error";
     node.replaceChildren(

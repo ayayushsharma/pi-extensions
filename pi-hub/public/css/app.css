@@ -75,9 +75,19 @@ a { color: var(--accent-text); }
 .tabbar .brand-logo {
   width: 22px; height: 22px; border-radius: 6px; display: block;
 }
-.tab-strip { display: flex; align-items: center; gap: 2px; min-width: 0; overflow: hidden; }
+/* Scrolls sideways once the tabs outgrow the bar (clipping them made tabs
+   unreachable). The bar is hidden in favour of wheel/drag scrolling — see
+   tabs.js — so the tab row never shifts by the scrollbar's height. */
+.tab-strip {
+  display: flex; align-items: center; gap: 2px; min-width: 0;
+  flex: 0 1 auto; overflow-x: auto; overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+}
+.tab-strip::-webkit-scrollbar { display: none; }
 .tab {
   display: inline-flex; align-items: center; gap: 7px;
+  flex: none; /* keep their width so the strip overflows and scrolls */
   max-width: 200px; padding: 4px 8px 4px 10px;
   border-radius: var(--r-pill); border: 1px solid transparent;
   color: var(--text-2); font-size: var(--fs-md); white-space: nowrap;
@@ -90,8 +100,8 @@ a { color: var(--accent-text); }
 }
 .tab .tab-title { overflow: hidden; text-overflow: ellipsis; max-width: 150px; }
 .tab .tab-close {
-  display: inline-flex; align-items: center; justify-content: center;
-  width: 18px; height: 18px; border-radius: 50%; color: var(--text-3);
+  display: inline-flex; align-items: center; justify-content: center; flex: none;
+  width: 22px; height: 22px; border-radius: 50%; color: var(--text-3);
 }
 .tab .tab-close:hover { background: var(--active); color: var(--text); }
 .tab .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-4); flex: none; }
@@ -113,8 +123,11 @@ a { color: var(--accent-text); }
 
 /* ── title bar (below tabs) ──────────────────────────────────────────── */
 .titlebar {
+  /* Symmetric padding: the old 8px-top/0-bottom pushed the title 4px below
+     the visual centre of the bar (align-items only centres inside the padded
+     box). One line of text + 8px above and below = a stable 38px band. */
   display: flex; align-items: center; gap: 10px;
-  padding: 8px 16px 0; flex: none;
+  padding: 8px 16px; flex: none;
 }
 .titlebar .tb-title { font-weight: 600; font-size: var(--fs-md); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chip {
@@ -179,6 +192,21 @@ a { color: var(--accent-text); }
   user-select: none;
 }
 .section-label .count { color: var(--text-4); }
+/* Live terminals get their own eye-catching header (accent, icon). */
+.section-label.live-label { color: var(--accent-text); }
+.section-label.live-label .count { color: var(--accent-text); opacity: 0.7; }
+
+/* "Currently running tabs" is the live workspace, not the archive: frame it
+   as its own panel so it cannot be mistaken for another session list. */
+.tabs-block {
+  margin: 8px 8px 4px; padding: 1px 5px 5px;
+  border: 1px solid var(--border-2); border-radius: var(--r-md);
+  border-left: 3px solid var(--accent); padding-left: 3px;
+  background: var(--bg-elev); box-shadow: var(--shadow-sm);
+}
+.tabs-block .section-label { padding: 6px 5px 3px; margin: 0; }
+.tabs-block .section-label.tabs-label { color: var(--text-2); }
+.tabs-block .sb-row { width: 100%; margin: 1px 0; padding: 6px 8px; }
 .section-label .grow { flex: 1; }
 .section-label .caret { display: inline-flex; transition: transform var(--dur) var(--ease); }
 .section-label.collapsed .caret { transform: rotate(-90deg); }
@@ -201,21 +229,86 @@ a { color: var(--accent-text); }
   display: flex; align-items: center; gap: 6px;
   font-size: var(--fs-sm); color: var(--text-3);
   overflow: hidden; white-space: nowrap;
+  /* The row reserves width for the hover actions, but those sit on the title
+     line only — the detail line may use the space it reserved (it used to be
+     hard-clipped mid-number: "pid 175"). */
+  margin-right: -58px;
 }
+.sb-row .row-sub > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .sb-row .row-sub .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--text-4); flex: none; }
 .sb-row .row-sub .dot.on { background: var(--ok); }
 .sb-row .row-sub .dot.working { background: var(--accent); }
 .sb-row .row-actions {
-  position: absolute; right: 4px; top: 6px; display: none; gap: 2px;
-  background: linear-gradient(90deg, transparent, var(--bg) 35%);
-  padding-left: 12px;
+  position: absolute; right: 4px; top: 6px; display: flex; gap: 2px;
+  opacity: 0; pointer-events: none;
+  transition: opacity var(--dur) var(--ease);
 }
-.sb-row:hover .row-actions { display: flex; }
-.sb-row .row-actions .icon-btn { width: 24px; height: 24px; }
+/* Plain outlined controls: 1px border, no fill, no shadow. The actions used
+   to sit on a background gradient that masked the title — the gradient's
+   opaque end (var(--bg)) did not match hovered/active/panel row backgrounds,
+   so it read as a grey rectangle behind the close icon. */
+.sb-row .row-actions .icon-btn {
+  width: 24px; height: 24px;
+  border: 1px solid var(--border-2); border-radius: var(--r-sm);
+  color: var(--text-2);
+}
+.sb-row .row-actions .icon-btn:hover {
+  background: var(--hover); border-color: var(--border-3); color: var(--text);
+}
+/* The row always reserves the actions' width (4px inset + 2×24px + 2px gap
+   = 54px, 72px with slack) so the title ellipsizes instead of running under
+   them — that is what the gradient used to fake, and it never shifts on hover. */
+.sb-row:has(.row-actions) { padding-right: 72px; }
+.sb-row:hover .row-actions, .sb-row:focus-within .row-actions { opacity: 1; pointer-events: auto; }
+/* Live terminals read differently from owned headless backends: accent
+   edge + live chip (the chip markup is shared with session rows). */
+.sb-row.live-row { box-shadow: inset 2px 0 0 var(--accent); }
+/* Touch devices have no hover: the actions must simply stay visible. */
+@media (hover: none) {
+  .sb-row .row-actions { opacity: 1; pointer-events: auto; }
+}
 .sb-row.flash { animation: flash 1.1s var(--ease); }
 @keyframes flash { 30% { background: var(--tap); } }
 
+/* Small text action inside a section header (e.g. "Kill all" backends). */
+.section-label .label-action {
+  flex: none; padding: 1px 7px; border-radius: var(--r-pill);
+  border: 1px solid var(--border-2); color: var(--text-3);
+  font-size: var(--fs-xs); font-weight: 600; letter-spacing: 0.04em;
+  text-transform: uppercase;
+  transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+.section-label .label-action:hover { background: var(--hover); border-color: var(--border-3); color: var(--danger); }
+
 .sb-empty { padding: 8px 14px; color: var(--text-3); font-size: var(--fs-sm); }
+
+/* Welcome-screen live TUI card (home view). */
+.welcome-live { width: 100%; max-width: 560px; margin: 4px auto 0; text-align: left; }
+.welcome-live-row {
+  display: flex; align-items: center; gap: 8px;
+  margin: 2px 0; padding: 6px 6px 6px 10px;
+  border: 1px solid var(--accent-soft); border-radius: var(--r-md);
+  background: var(--accent-soft);
+}
+.welcome-live-row .welcome-live-main {
+  display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0;
+  text-align: left; background: none; border: 0; padding: 0; cursor: pointer; color: inherit;
+}
+.welcome-live-row.live-row { box-shadow: inset 2px 0 0 var(--accent); }
+/* The row parts borrow the sidebar row's look (those rules are scoped to
+   .sb-row, so they need restating here). */
+.welcome-live-row .row-title {
+  display: flex; align-items: center; gap: 6px; font-size: var(--fs-md); font-weight: 500;
+  overflow: hidden; white-space: nowrap;
+}
+.welcome-live-row .row-title .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.welcome-live-row .row-sub {
+  display: flex; align-items: center; gap: 8px; font-size: var(--fs-sm); color: var(--text-3);
+  overflow: hidden; white-space: nowrap;
+}
+.welcome-live-row .row-sub .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--text-4); flex: none; }
+.welcome-live-row .row-sub .dot.on { background: var(--ok); }
+.welcome-live-row .row-sub .dot.working { background: var(--accent); }
 
 /* context menu */
 .ctx-menu {
@@ -259,6 +352,8 @@ a { color: var(--accent-text); }
 .banner[data-kind="error"] { background: rgba(210, 75, 75, 0.08); }
 .banner[data-kind="error"] .banner-icon { color: var(--danger); }
 .banner[data-kind="ok"] { background: var(--accent-soft); }
+.banner[data-kind="warn"] { background: rgba(214, 158, 46, 0.12); }
+.banner[data-kind="warn"] .banner-icon { color: #b7791f; }
 
 /* welcome */
 .welcome {
@@ -338,6 +433,23 @@ a { color: var(--accent-text); }
   overflow-x: auto;
 }
 .msg .bubble pre code { background: none; padding: 0; font-size: var(--fs-sm); line-height: 1.55; }
+.code-wrap { margin: 0.6em 0; }
+.code-wrap .code-block { margin: 0; }
+.code-head {
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: var(--fs-xs); color: var(--text-3); padding: 0 2px 4px;
+}
+.code-lang { text-transform: lowercase; }
+.code-copy {
+  background: none; border: none; padding: 2px 4px; cursor: pointer;
+  font-size: inherit; color: inherit;
+}
+.code-copy:hover { color: var(--text); text-decoration: underline; }
+/* Optional wrapping for long lines and code (Settings → Chat). */
+html[data-wrap-code="1"] .msg .bubble pre,
+html[data-wrap-code="1"] .code-block {
+  white-space: pre-wrap; word-break: break-word; overflow-x: hidden;
+}
 .cursor { display: inline-block; width: 7px; height: 1em; vertical-align: -0.15em; background: var(--accent); animation: pulse 1s var(--ease) infinite; }
 
 /* thinking */
@@ -389,7 +501,12 @@ a { color: var(--accent-text); }
 .tool .diff .del { background: rgba(210, 75, 75, 0.09); color: var(--danger); padding: 0 10px; white-space: pre-wrap; }
 
 /* load earlier */
-.load-earlier-wrap { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 4px 0 10px; }
+/* Aligned with the transcript column (not the pane) so the control reads as
+   part of the conversation instead of floating over it. */
+.load-earlier-wrap {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
+  max-width: var(--hub-max); margin: 0 auto; padding: 10px 20px 0;
+}
 
 /* ── composer ────────────────────────────────────────────────────────── */
 .composer-wrap { flex: none; padding: 0 20px calc(10px + env(safe-area-inset-bottom)); }
@@ -452,6 +569,12 @@ a { color: var(--accent-text); }
 .menu .item:hover, .menu .item[aria-selected="true"] { background: var(--hover); }
 .menu .item .sub { font-size: var(--fs-sm); color: var(--text-3); }
 .menu .item.sel { background: var(--active); }
+.menu-search {
+  width: calc(100% - 12px); margin: 2px 6px 4px; padding: 6px 9px;
+  border: 1px solid var(--border-2); border-radius: var(--r-sm);
+  background: var(--bg); color: var(--text); font-size: var(--fs-md);
+}
+.menu-search:focus { outline: none; border-color: var(--accent); }
 .slash-menu { bottom: calc(100% + 6px); left: 0; right: auto; min-width: 300px; }
 
 .queue { max-width: var(--hub-max); margin: 0 auto 6px; width: 100%; display: flex; flex-wrap: wrap; gap: 6px; }
@@ -462,6 +585,11 @@ a { color: var(--accent-text); }
   font-size: var(--fs-sm); max-width: 320px;
 }
 .queue .q-pill .txt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Steering lands before the next model call; follow-ups wait for the run. */
+.queue .q-pill.steer { border-style: solid; border-color: var(--accent); color: var(--accent-text); }
+.queue .q-pill.later { border-style: dashed; opacity: 0.85; }
+.queue .q-pill.steer::before { content: "\21B3"; color: var(--accent); font-size: 10px; }
+.queue .q-pill.later::before { content: "\21B4"; color: var(--text-3); font-size: 10px; }
 
 .statusline {
   display: flex; align-items: center; gap: 10px;
@@ -477,6 +605,10 @@ a { color: var(--accent-text); }
 }
 .statusline .chip-mini.warn { color: var(--warn); }
 .statusline .chip-mini.danger { color: var(--danger); }
+.statusline button.chip-mini { font: inherit; }
+.statusline button.chip-mini:disabled { cursor: default; }
+/* Over budget the pill is a button: one click toward a compact. */
+.statusline button.chip-mini:not(:disabled) { cursor: pointer; border-color: currentColor; }
 .cwd-label { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
 .cwd-label .cwd-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
@@ -581,6 +713,7 @@ a { color: var(--accent-text); }
 .theme-swatch .sw { width: 14px; height: 14px; border-radius: 4px; }
 .proc-row { display: flex; align-items: center; gap: 8px; padding: 7px 2px; border-bottom: 1px solid var(--border); }
 .proc-row .grow { min-width: 0; }
+.proc-row .proc-title { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .proc-row .argv { font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* viewer */
@@ -667,6 +800,14 @@ a { color: var(--accent-text); }
   .tab-strip { max-width: 42vw; }
   .tab .tab-close { display: none; }
   .welcome .hints { display: none; }
+  /* Composer on a phone: keep the field clear of the action cluster and let
+     long model ids ellipsize instead of pushing the pills wider. */
+  .composer textarea { padding-right: 88px; }
+  .composer .actions .icon-btn { width: 32px; height: 32px; }
+  .send-btn { width: 36px; height: 36px; }
+  .composer-footer .right { gap: 4px; min-width: 0; }
+  .pill-btn { max-width: 34vw; }
+  .pill-btn .label { min-width: 0; }
 }
 @media (prefers-reduced-motion: reduce) {
   * { animation: none !important; transition: none !important; }

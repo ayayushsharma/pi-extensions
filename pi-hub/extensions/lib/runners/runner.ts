@@ -23,6 +23,8 @@ export interface RunnerInfo {
   title?: string;
   state: RunnerState;
   isStreaming: boolean;
+  /** set when the session's own folder was gone and the child fell back */
+  cwdFallback?: { from: string; to: string } | null;
   model?: string | null;
   thinkingLevel?: string | null;
   viewers: number;
@@ -46,6 +48,8 @@ export abstract class Runner {
   title?: string;
   state: RunnerState = "idle";
   isStreaming = false;
+  /** {from,to} when the requested cwd vanished and the hub fell back (R-10) */
+  cwdFallback: { from: string; to: string } | null = null;
   model: string | null = null;
   thinkingLevel: string | null = null;
   lastActiveAt = Date.now();
@@ -72,6 +76,7 @@ export abstract class Runner {
       title: this.title,
       state: this.state,
       isStreaming: this.isStreaming,
+      cwdFallback: this.cwdFallback,
       model: this.model,
       thinkingLevel: this.thinkingLevel,
       viewers: this.clients.size,

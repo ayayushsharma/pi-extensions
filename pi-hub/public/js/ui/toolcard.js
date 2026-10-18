@@ -3,7 +3,7 @@
  * output, copy. Running cards stay open; finished cards collapse unless the
  * user pinned them open or "Expand tool calls" is enabled in settings.
  */
-import { el, copyText } from "../core/dom.js";
+import { el, copyText, shortenPath } from "../core/dom.js";
 import { icon } from "../core/icons.js";
 
 const TOOL_ICON = {
@@ -18,14 +18,15 @@ const TOOL_ICON = {
   task: "branch",
 };
 
-function hintOf(name, args = {}) {
+function hintOf(name, args = {}, cwd = "") {
+  const short = (p) => shortenPath(p, cwd);
   switch (name) {
     case "bash":
       return args.command || "";
     case "read":
     case "write":
     case "edit":
-      return args.path || args.file_path || "";
+      return short(args.path || args.file_path || "");
     case "grep":
     case "glob":
     case "search":
@@ -33,7 +34,7 @@ function hintOf(name, args = {}) {
     case "webfetch":
       return args.url || "";
     default:
-      return args.path || args.file_path || "";
+      return short(args.path || args.file_path || "");
   }
 }
 
@@ -54,8 +55,9 @@ function diffBlock(oldText, newText) {
   return wrap;
 }
 
-export function createToolCard(toolCallId, name, args, { expanded = false } = {}) {
-  const hint = hintOf(name, args || {});
+export function createToolCard(toolCallId, name, args, { expanded = false, cwd = "" } = {}) {
+  const hint = hintOf(name, args || {}, cwd);
+  const full = hintOf(name, args || {});
   const body = el("div", { class: "tool-body" });
   const status = el("span", { class: "tool-status", text: "running" });
   const card = el(
@@ -63,7 +65,7 @@ export function createToolCard(toolCallId, name, args, { expanded = false } = {}
     { class: "tool", dataset: { toolId: toolCallId || "", toolName: name || "tool", status: "running" }, open: expanded ? "" : undefined },
     el(
       "summary",
-      {},
+      full && full !== hint ? { title: full } : {},
       icon(TOOL_ICON[name] || "chip", 13),
       el("span", { class: "tool-name", text: name || "tool" }),
       hint ? el("span", { class: "tool-hint", text: hint.slice(0, 160) }) : null,

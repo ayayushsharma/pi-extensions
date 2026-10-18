@@ -12,6 +12,8 @@ export interface SessionSummary {
   file: string;
   dirName: string;
   cwd: string | null;
+  /** false when the recorded cwd no longer exists (R-10) */
+  cwdExists?: boolean;
   title: string;
   mtime: number;
   size: number;
@@ -144,6 +146,9 @@ function parseSummary(file: string, dirName: string, st: fs.Stats): SessionSumma
       summary.cost += Number(e.usage.cost?.total || 0);
     }
   }
+  // R-10: pi refuses to resume a session whose stored cwd is gone, so the UI
+  // must know before it tries (and offer to continue somewhere real).
+  summary.cwdExists = !summary.cwd || fs.existsSync(summary.cwd);
   return summary;
 }
 
@@ -292,6 +297,21 @@ export function windowInfo(absPath: string): { total: number } {
 }
 
 /** Resolve a session basename to its project dir (most recent wins). */
+/** The human title of a session file, given any absolute path to it.
+ *  Sessions that never saw a prompt carry their file stem as the placeholder
+ *  title — that counts as "no title" so callers can say "new process" instead
+ *  of leaking a `.jsonl` name (same rule the web UI applies to the sidebar). */
+export function titleForSessionFile(absFile: string): string | null {
+  if (!absFile || typeof absFile !== "string") return null;
+  const found = findSessionByBasename(path.basename(absFile));
+  if (!found) return null;
+  if (path.resolve(found.abs) !== path.resolve(absFile)) return null;
+  const stem = found.file.replace(/\.jsonl$/, "");
+  const summary = listSessions(found.dirName).find((s) => s.file === found.file);
+  const title = summary?.title;
+  return title && title !== stem ? title : null;
+}
+
 export function findSessionByBasename(file: string): { dirName: string; file: string; abs: string } | null {
   if (!file || /[/\\]|\.\./.test(file) || !file.endsWith(".jsonl")) return null;
   let best: { dirName: string; file: string; abs: string; mtime: number } | null = null;
@@ -402,6 +422,42 @@ export function forkSession(dirName: string, file: string): { file: string } {
   fs.copyFileSync(src, dest);
   invalidateSession(src);
   return { file: name };
+}
+
+/**
+ * R-10: resume a session whose stored cwd is gone. pi refuses to switch to a
+ * session whose cwd is missing and RPC `switch_session` has no cwd override,
+ * so the only honest fix is a copy with a rewritten `cwd` header — the same
+ * history, continued in a folder that exists.
+ */
+export function relocateSession(dirName: string, file: string, cwd: string): { file: string; dirName: string; cwd: string } {
+  const src = resolveSessionPath(dirName, file);
+  const target = path.resolve(String(cwd || ""));
+  const st = fs.statSync(target); // throws when the target is gone too
+  if (!st.isDirectory()) throw new Error("target cwd is not a directory");
+  const raw = fs.readFileSync(src, "utf8");
+  const lines = raw.split("\n");
+  let rewritten = false;
+  for (let i = 0; i < lines.length; i++) {
+    if (!lines[i]) continue;
+    try {
+      const e = JSON.parse(lines[i]);
+      if (e && e.type === "session") {
+        e.cwd = target;
+        lines[i] = JSON.stringify(e);
+        rewritten = true;
+      }
+    } catch {}
+    if (rewritten) break;
+  }
+  if (!rewritten) throw new Error("no session header found");
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const name = `${stamp}_${crypto.randomUUID()}.jsonl`;
+  const dest = path.join(SESSIONS_DIR, dirName, name);
+  fs.writeFileSync(dest, lines.join("\n"));
+  invalidateSession(src);
+  invalidateSession(dest);
+  return { file: name, dirName, cwd: target };
 }
 
 export function renameSession(dirName: string, file: string, name: string): void {

@@ -8,23 +8,39 @@ spec, silently skipped, or has no assertion.
 
 ### As built (2026-10-18)
 
-- Runner: `node tests/run.mjs` (integration) / `--e2e` (Playwright) /
-  `--all` (+ Firefox CLI smoke); there is no `cases.json` registry yet —
-  checks print `PASS/FAIL <name>`, and a failing check exits non-zero.
-- Browser driver: `playwright-core` + system Chrome (`channel: "chrome"`,
-  bundled-Cromium fallback) instead of `@playwright/test`: same engine, no
-  test-runner dependency, and the same spec functions can move under
-  `@playwright/test` later without rewriting assertions.
-- Cross-platform backend implemented as the zero-dependency `CLI` smoke
-  (`firefox --headless --dump-dom/--screenshot`, ADR-020). The
-  selenium/geckodriver backend for interaction on Termux is the next step.
-- Testability contract shipped: `body[data-ready="1"]`, `window.__errs`,
-  `data-runner-*` hooks; every browser case asserts no page errors.
+- Counts: **19 unit**, **54 integration**, **104 Playwright** (`--e2e`),
+  **178 total** including the Firefox smoke (`--all`).
+- **Parallelism is a knob**: `-j N` / `--jobs N` (or `--serial`), default
+  `min(4, cpus)`. Groups are independent (own hub, own store copy, own page),
+  so they run concurrently: `-j1` for deterministic logs, higher on a fast box.
+  Measured on the dev phone: unit 0.3 s · integration 3.0 s at `-j4` ·
+  Playwright 13 s at `-j4` (11 groups) · `--all` ≈ 13 s wall.
+- `--e2e` replaces integration, `--unit` alone is unit-only; reuse `--all` for a
+  full gate. `--integration --jobs 1` is the debugging mode.
+- **Tiers** (and why): unit = pure contracts, sub-second, run constantly;
+  integration = HTTP/WS contract over a real hub, seconds, run before a commit;
+  Playwright = real browser, the "fire once when the work is done" gate.
 
-## 1. Layers
+### Isolation (no more test sessions in the real store)
 
-| Layer | What | Needs | Runs |
-|---|---|---|---|
+Every pi process a test spawns gets `PI_CODING_AGENT_DIR` and
+`PI_CODING_AGENT_SESSION_DIR` pointing inside a temp sandbox
+(`tests/sandbox.mjs`), so nothing can write to `~/.pi/agent`. The runner
+snapshots the real session store before the run and fails the suite with
+`ISO real session store untouched` if a single file appeared or changed.
+
+### The model is fake (no keys, no cost, no variance)
+
+`tests/fixtures/fake-llm.mjs` is an in-process OpenAI-compatible endpoint
+(`/v1/chat/completions`, streaming and non-streaming). The sandbox's
+`models.json` + `settings.json` point pi at it with a fixed catalog
+(`fake/fake-haiku`, `fake/fake-spark`, `fake/fake-plain`), so model/thinking
+tests are deterministic and prompt round-trips finish in milliseconds. The
+stub records every request: tests assert a message reached the model exactly
+once (`llmMentioning`, `llmCopiesInLastRequest`), and `POST /__hold {ms}`
+keeps a run open on purpose (steering tests).
+
+---|---|---|---|
 | **L0 unit** (`node:test`) | pure logic: protocol guards, session parse, jails, fork naming, registry invariants with a recording fake child, ring replay, coalescer, env scrub | node | everywhere |
 | **L1 fakes** | scripted `pi --mode rpc` double + fake hub.sock mirror: slow start, no ack, late file, crash mid-run, ENOENT, stderr spam, huge output, CRLF, U+2028 | node | everywhere |
 | **L2 Playwright stub** | UI + protocol flows against a stub hub (deterministic WS/HTTP), DOM/ARIA/mobile | Chrome | CI |
@@ -280,6 +296,28 @@ WS is filtered only in layer-A cases.
 | U10 | Themes | All themes render, contrast AA, status dot fixed traffic-light |
 | U11 | Tabs & home | Real anchors, Ctrl+click, restore, search home |
 | U12 | PWA | Manifest/SW installed; offline shell loads; version bump busts cache |
+| U13 | Tab close switches session | Closing the active tab binds the next tab (card/hash/transcript follow); closing the last shows the homepage (UX-1) |
+| U14 | Backend kill confirms | Sidebar row X confirms like the card X; Cancel keeps the child (UX-2) |
+| U15 | Quiet unbound kill | Killing an unbound backend shows no banner and no banner-hint toast (UX-3) |
+| U16 | Home composer inert | Disabled input + guidance placeholder until a session binds |
+| U17 | Model/thinking menus | Model list renders; thinking levels are the static 7 (per-model support: UX.md R-2) |
+| U18 | Touch row actions | Session ⋯ opens by tap with no hover (UX-4) |
+| U19 | Model filter | Menu narrows as you type; Enter picks the top match (R-1) |
+| U20 | Per-model thinking | Menu renders backend-offered levels, static list only as fallback (R-2) |
+| U21 | Live treatment | Live rows carry `.live-row` + live chip (R-4) |
+| U22 | Backend titles | Rows show session titles + full basename sub (R-5) |
+| U23 | Favourites once+star | No group dupes; star toggles without the menu; per-session keys (R-6, UX-7) |
+| U24 | Wrap pref | Toggle flips `data-wrap-code`; persists across reload (R-8, UX-6) |
+| U25 | Code copy | Fence header with lang + clipboard-verified Copy (R-9) |
+| U26 | Tool hint paths | Session-relative hints, full path on hover (UX-8) |
+| U27 | Compact nudge | Over-budget pill compacts via confirm; healthy pill inert (UX-9) |
+| U28 | Asset versioning | Shell stamps a live `?v=` on CSS/JS; assets immutable; any edit bumps it (UX-10) |
+| U29 | Touch row space | Titles ellipsize clear of the always-visible row actions (UX-11) |
+| U30 | Session titles | Tab/card/rows show the title (prompt-derived), never a `.jsonl` name (UX-12) |
+| U31 | Live block | Live terminals on top of the sidebar + a Drive card on home, listed even when tabbed (UX-13) |
+| U32 | Durable close | Card X closes the session: tab gone, hash cleared, reload stays on home (UX-14) |
+| U33 | One tab per session | Backend list + session list converge on one tab (R-12) |
+| U34 | Chrome details | One collapse icon, ≥20 px tab-close hit area, load-earlier aligned with the transcript column, phone composer without overflow (R-7, R-11) |
 
 ### CP — cross-platform drivers (ADR-020)
 

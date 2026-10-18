@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
+import { sandbox, snapshotTree, diffRealStore, REAL_SESSIONS_DIR } from "./sandbox.mjs";
 
 const require = createRequire(import.meta.url);
 const WS = require("ws");
@@ -94,21 +95,71 @@ export function killTree(proc) {
   } catch {}
 }
 
-function cleanEnv() {
+/**
+ * Env for every pi child a test spawns: no tau, no hub autoload, and — the
+ * important part — a throwaway agent dir + session store, so nothing a test
+ * does can appear in the developer's real `~/.pi/agent`.
+ */
+function cleanEnv(extra = {}) {
   const env = { ...process.env };
   for (const key of Object.keys(env)) {
     if (key.startsWith("TAU_") || key.startsWith("PI_HUB_") || key === "PI_WEB_PI_BIN") delete env[key];
+    if (key === "PI_CODING_AGENT_DIR" || key === "PI_CODING_AGENT_SESSION_DIR") delete env[key];
   }
+  Object.assign(env, sandbox(extra).env);
   env.TAU_DISABLED = "1"; // an installed tau-web must stay inert
   return env;
 }
 
-export async function startHub({ port, env = {}, sessionDir } = {}) {
+/** Every request the sandbox's fake model has received this run. */
+export async function llmRequests() {
+  const url = process.env.PI_HUB_TEST_LLM_URL;
+  if (!url) return [];
+  const res = await fetch(`${url}/__requests`).catch(() => null);
+  if (!res?.ok) return [];
+  return (await res.json()).requests || [];
+}
+
+/**
+ * How many *user* messages in the newest conversation contain `text`.
+ * Requests carry the whole history, so a double-send shows up as two copies
+ * in the final conversation. (Counting raw JSON would also match tool output
+ * and the assistant's own echo.)
+ */
+export async function llmCopiesInLastRequest(text) {
+  const all = await llmRequests();
+  if (!all.length) return 0;
+  const messages = all[all.length - 1].messages || [];
+  return messages.filter((m) => m?.role === "user" && JSON.stringify(m.content ?? "").includes(text)).length;
+}
+
+/** Requests whose conversation contains `text` (double-send detector). */
+export async function llmMentioning(text) {
+  const all = await llmRequests();
+  return all.filter((r) => JSON.stringify(r.messages).includes(text));
+}
+
+/** Hold the fake model mid-stream so a test can act while a run is in flight. */
+export async function setLlmHold(ms) {
+  const url = process.env.PI_HUB_TEST_LLM_URL;
+  if (!url) return;
+  await fetch(`${url}/__hold`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ms }) }).catch(() => {});
+}
+
+/** Leak guard: snapshot the real store so run.mjs can assert it stayed clean. */
+export function realStoreSnapshot() {
+  return snapshotTree(REAL_SESSIONS_DIR);
+}
+export function realStoreDiff(before) {
+  return diffRealStore(before);
+}
+
+export async function startHub({ port, env = {}, sessionDir, llmUrl } = {}) {
   fs.mkdirSync("/tmp/pihub-fixtures", { recursive: true }); // fixture session cwd
   const piBin = findPi();
   if (!piBin) throw Object.assign(new Error("pi binary not found (set PI_BIN or TAU_NO_PI=1)"), { skip: true });
   const dir = tmpDir();
-  const fullEnv = cleanEnv();
+  const fullEnv = cleanEnv({ llmUrl: llmUrl ?? process.env.PI_HUB_TEST_LLM_URL });
   Object.assign(fullEnv, {
     PI_HUB_PORT: String(port),
     PI_HUB_HOST: "127.0.0.1",
@@ -117,7 +168,7 @@ export async function startHub({ port, env = {}, sessionDir } = {}) {
     PI_HUB_STATIC_DIR: path.join(PKG_ROOT, "public"),
     PI_HUB_PI_BIN: piBin,
   });
-  if (sessionDir) fullEnv.PI_CODING_AGENT_SESSION_DIR = sessionDir;
+  fullEnv.PI_CODING_AGENT_SESSION_DIR = sessionDir || fullEnv.PI_CODING_AGENT_SESSION_DIR;
   Object.assign(fullEnv, env);
   const proc = spawn(piBin, ["-e", PKG_ROOT, "--mode", "rpc"], {
     cwd: PKG_ROOT,
@@ -155,10 +206,10 @@ export async function startHub({ port, env = {}, sessionDir } = {}) {
   };
 }
 
-export async function startMirror({ sock, cwd, sessionDir } = {}) {
+export async function startMirror({ sock, cwd, sessionDir, llmUrl } = {}) {
   const piBin = findPi();
   if (!piBin) throw Object.assign(new Error("pi binary not found"), { skip: true });
-  const env = cleanEnv();
+  const env = cleanEnv({ llmUrl: llmUrl ?? process.env.PI_HUB_TEST_LLM_URL });
   env.PI_HUB_FORCE_ROLE = "mirror";
   env.PI_HUB_SOCK = sock;
   env.PI_HUB_DIR = path.dirname(sock);

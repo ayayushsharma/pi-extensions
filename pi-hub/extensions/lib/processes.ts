@@ -13,6 +13,8 @@ export interface PiProcess {
   startedAt: number | null;
   sessionHint: string | null;
   owner: "hub" | "live";
+  /** resolved session title, filled in by the route (null => "new process") */
+  title?: string | null;
 }
 
 const LINUX = process.platform === "linux";

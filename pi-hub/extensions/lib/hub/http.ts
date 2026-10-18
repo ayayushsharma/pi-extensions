@@ -41,8 +41,12 @@ export function securityHeaders(res: http.ServerResponse): void {
   res.setHeader("Cross-Origin-Resource-Policy", "same-origin");
   res.setHeader(
     "Content-Security-Policy",
-    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
-      "img-src 'self' data: blob:; connect-src 'self' ws: wss:; font-src 'self'; " +
+    // Google Fonts is the one allowed third party (UI + mono webfonts); if it
+    // is unreachable the font stacks fall back to the system fonts.
+    "default-src 'self'; script-src 'self'; " +
+      "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +
+      "img-src 'self' data: blob:; connect-src 'self' ws: wss:; " +
+      "font-src 'self' https://fonts.gstatic.com; " +
       "frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
   );
 }
@@ -120,6 +124,75 @@ export function createHttpServer(opts: HttpOptions): http.Server {
   const routes = opts.routes.map((r) => ({ ...r, match: compile(r.path) }));
   const root = path.resolve(opts.staticDir);
 
+  /** Newest mtime under the static root, base36 — the cache-busting token
+   *  stamped onto `?v=` asset URLs in the shell. Any edit to a shipped file
+   *  changes it, so the year-long immutable caching of `?v=` URLs can never
+   *  serve stale CSS/JS against freshly-served HTML (the phantom-UI bug:
+   *  new markup, old styles). Cached briefly to avoid stat storms. */
+  let versionCache: { at: number; version: string } | null = null;
+  const assetVersion = (): string => {
+    const now = Date.now();
+    if (versionCache && now - versionCache.at < 1000) return versionCache.version;
+    let newest = 0;
+    const walk = (dir: string, depth = 0): void => {
+      if (depth > 6) return;
+      let entries: fs.Dirent[] = [];
+      try {
+        entries = fs.readdirSync(dir, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const e of entries) {
+        const full = path.join(dir, e.name);
+        if (e.isDirectory()) {
+          walk(full, depth + 1);
+          continue;
+        }
+        try {
+          const st = fs.statSync(full);
+          if (st.mtimeMs > newest) newest = st.mtimeMs;
+        } catch {}
+      }
+    };
+    walk(root);
+    const version = Math.round(newest).toString(36) || "0";
+    versionCache = { at: now, version };
+    return version;
+  };
+
+  /** The app shell: serve index.html with the live asset version stamped in
+   *  (`?v=__ASSETV__` placeholders). no-cache + ETag, so the shell itself is
+   *  always revalidated while versioned assets stay immutable. */
+  const serveShell = (req: http.IncomingMessage, res: http.ServerResponse): boolean => {
+    if (req.method !== "GET" && req.method !== "HEAD") return false;
+    const file = path.join(root, "index.html");
+    let html = "";
+    let st: fs.Stats;
+    try {
+      html = fs.readFileSync(file, "utf8");
+      st = fs.statSync(file);
+    } catch {
+      return false;
+    }
+    const version = assetVersion();
+    const body = html.replace(/__ASSETV__/g, version);
+    const etag = `W/"shell-${st.size}-${Math.round(st.mtimeMs)}-${version}"`;
+    if (req.headers["if-none-match"] === etag) {
+      res.writeHead(304, { ETag: etag });
+      res.end();
+      return true;
+    }
+    res.writeHead(200, {
+      "Content-Type": "text/html; charset=utf-8",
+      "Content-Length": Buffer.byteLength(body),
+      ETag: etag,
+      "Cache-Control": "no-cache",
+    });
+    if (req.method === "HEAD") return res.end(), true;
+    res.end(body);
+    return true;
+  };
+
   const serveStatic = (req: http.IncomingMessage, res: http.ServerResponse, url: URL): boolean => {
     if (req.method !== "GET" && req.method !== "HEAD") return false;
     let rel: string;
@@ -169,6 +242,9 @@ export function createHttpServer(opts: HttpOptions): http.Server {
     const p = url.pathname;
     if (!opts.auth.hostAllowed(req)) return sendError(res, 403, "host not allowed");
     if (p === "/" || p === "/index.html") {
+      // Stamp the live asset version into the shell before the generic static
+      // path can stream index.html verbatim (or cache the placeholder).
+      if (serveShell(req, res)) return;
       if (serveStatic(req, res, new URL("/index.html" + url.search, url))) return;
     }
     if (p === "/hub" || p === "/hub/") {

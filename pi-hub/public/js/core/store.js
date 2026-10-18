@@ -66,13 +66,15 @@ export const state = {
 
   /* composer */
   commands: [],
+  cwdFallback: null, // {from,to} when a session's folder was gone (R-10)
+  serverCwd: null, // the hub's own working directory (R-10 fallback target)
   queue: [],
   pendingFiles: [],
   images: [],
   voice: false,
 
   prefs: Object.assign(
-    { theme: null, showThinking: true, showCosts: true, expandTools: false },
+    { theme: null, showThinking: true, showCosts: true, expandTools: false, wrapCode: false },
     readJSON(PREFS_KEY, {}),
   ),
 };
@@ -169,6 +171,15 @@ export function allSessions() {
 
 export function isFavourite(file) {
   return state.favourites.includes(file);
+}
+
+/** Stable favourites identity: the server never sends absolute session
+ *  paths in listings, so favourites key on `dirName/file` (search hits
+ *  carry the same pair). Pre-fix entries keyed on `filePath`/`undefined`
+ *  simply stop matching and can be re-starred. */
+export function favKey(session, project) {
+  const dir = session.dirName || project?.dirName || "";
+  return `${dir}/${session.file}`;
 }
 
 export function toggleFavourite(file) {

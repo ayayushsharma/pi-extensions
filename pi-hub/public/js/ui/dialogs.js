@@ -104,6 +104,21 @@ export function createDialogs(container, sendResponse) {
 
   return {
     handleEvent,
+    /** Continue/Cancel decision with caller-supplied labels (R-10 flow). */
+    offer(title, message, { confirmLabel = "Continue", cancelLabel = "Cancel" } = {}) {
+      return new Promise((resolve) => {
+        container.append(
+          frame({
+            title,
+            message,
+            actions: [
+              el("button", { class: "btn small", type: "button", text: cancelLabel, onclick: () => { close(); resolve(false); } }),
+              el("button", { class: "btn small primary", type: "button", text: confirmLabel, onclick: () => { close(); resolve(true); } }),
+            ],
+          }),
+        );
+      });
+    },
     confirm(title, message) {
       return new Promise((resolve) => {
         container.append(

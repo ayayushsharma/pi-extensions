@@ -64,7 +64,9 @@ pi -e .
 ```
 
 `.ts` changes need a jiti cache clear + `/reload`; `public/` changes are a
-browser reload (bump `?v=` in `public/index.html` when editing JS/CSS).
+browser reload. Asset cache-busting is automatic: the shell stamps a live
+version (newest mtime under `public/`) onto the `?v=` URLs, so edited CSS/JS
+can never pair with freshly-served HTML — no manual bump needed.
 
 Auth: set `PI_HUB_USER` / `PI_HUB_PASS` (or `piHub.user/pass` in
 `~/.pi/agent/settings.json`). The shell is public so the login overlay can
@@ -95,15 +97,28 @@ Deprecation-free coexistence with an installed `tau-web`: pi-hub only reads
 ## Tests
 
 ```bash
+node tests/run.mjs --unit       # pure contracts (store, protocol) — no hub
 node tests/run.mjs              # HTTP/WS integration (real pi, fixture store)
-node tests/run.mjs --e2e        # + Playwright (system Chrome) browser flows
-PI_HUB_E2E_PROMPT=1 node tests/run.mjs --e2e   # + one real model round-trip
+node tests/run.mjs --e2e        # Playwright browser flows (system Chrome)
 node tests/run.mjs --all        # + Firefox CLI smoke (cross-platform, ADR-020)
+node tests/run.mjs --all -j1    # serial, deterministic logs/timings
 ```
 
-Current: **37 integration + 19 Playwright checks green**; the Firefox CLI
-smoke SKIPs on hosts whose system Firefox cannot render headless (it is the
+Current: **19 unit + 54 integration + 104 Playwright checks green**; the Firefox
+CLI smoke SKIPs on hosts whose system Firefox cannot render headless (it is the
 Termux/Android backend — Playwright's bundled Chromium cannot run there).
+
+```bash
+npm test              # unit contracts only, sub-second (run constantly)
+npm run test:int      # + hub contract over HTTP/WS        (~3 s, parallel)
+npm run test:all      # + real browser + Firefox smoke     (fire once when done)
+```
+
+Every suite runs against a **sandboxed agent dir + session store** (nothing can
+reach `~/.pi/agent`; the runner fails the suite if it does) and a **local fake
+model** (`tests/fixtures/fake-llm.mjs`) — no API keys, no cost, no variance.
+Independent groups run in parallel: `-j N` / `--jobs N` (default 4), `--serial`
+for deterministic logs.
 
 The fixture store (`tests/fixtures/sessions/`) is copied to a temp dir per
 run, so tests never touch real sessions. Hubs and mirrors are killed by
@@ -129,5 +144,8 @@ parent PID; every browser case fails on a page error or a non-empty
 
 - `docs/PLAN.md` — architecture, budgets, phases.
 - `docs/testing.md` — case matrix, cross-platform drivers.
+- `docs/UX.md` — scripted user flows, the UX-1…14 bug log (each with its
+  pinning case), implemented recommendations R-1…R-12, and the handoff
+  section (semantics, ordered backlog, repro table). **Start here.**
 - `docs/adr/019` — parallel rewrite decision; `docs/adr/020` — browser
   driver strategy.

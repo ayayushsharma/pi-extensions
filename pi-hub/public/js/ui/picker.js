@@ -7,7 +7,7 @@
 import { listDir, listSessions, mkdir } from "../core/api.js";
 import { el, show, shortCwd, timeAgo, basename, toast } from "../core/dom.js";
 import { icon } from "../core/icons.js";
-import { isFavourite } from "../core/store.js";
+import { isFavourite, favKey } from "../core/store.js";
 
 export function createPicker(refs, actions) {
   let dir = "";
@@ -59,7 +59,7 @@ export function createPicker(refs, actions) {
   }
 
   function sessionRow(session, project) {
-    const fav = isFavourite(session.filePath);
+    const fav = isFavourite(favKey(session, project));
     return el(
       "button",
       {
@@ -86,7 +86,7 @@ export function createPicker(refs, actions) {
         { class: "picker-choice" },
         el("button", { class: "btn primary small", type: "button", text: "Resume", onclick: () => { const c = choice; close(); actions.onResume(c.session, c.project); } }),
         el("button", { class: "btn small", type: "button", text: "Fork as new", onclick: () => { const c = choice; close(); actions.onFork(c.session, c.project); } }),
-        el("button", { class: "btn small", type: "button", text: "Favourite", onclick: (e) => { actions.toggleFavourite(choice.session.filePath); e.currentTarget.textContent = isFavourite(choice.session.filePath) ? "Unfavourite" : "Favourite"; } }),
+        el("button", { class: "btn small", type: "button", text: "Favourite", onclick: (e) => { actions.toggleFavourite(favKey(choice.session, choice.project)); e.currentTarget.textContent = isFavourite(favKey(choice.session, choice.project)) ? "Unfavourite" : "Favourite"; } }),
         el("button", { class: "btn small", type: "button", text: "Cancel", onclick: () => { choice = null; renderChoice(); } }),
       ),
     );
@@ -132,12 +132,12 @@ export function createPicker(refs, actions) {
   async function renderFavourites() {
     refs.favs.replaceChildren();
     const favs = [];
-    for (const p of projects) for (const s of p.sessions || []) if (isFavourite(s.filePath)) favs.push({ s, p });
+    for (const p of projects) for (const s of p.sessions || []) if (isFavourite(favKey(s, p))) favs.push({ s, p });
     if (!favs.length) return show(refs.favs, false);
     refs.favs.append(el("div", { class: "section-label" }, "★ Favourites"));
     for (const { s, p } of favs) {
       const row = sessionRow(s, p);
-      row.prepend(el("span", { class: "icon-btn", title: "Remove favourite", html: icon("star", 13).innerHTML, onclick: (e) => { e.stopPropagation(); actions.toggleFavourite(s.filePath); renderFavourites(); } }));
+      row.prepend(el("span", { class: "icon-btn", title: "Remove favourite", html: icon("star", 13).innerHTML, onclick: (e) => { e.stopPropagation(); actions.toggleFavourite(favKey(s, p)); renderFavourites(); } }));
       refs.favs.append(row);
     }
     show(refs.favs, true);

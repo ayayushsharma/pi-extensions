@@ -130,9 +130,12 @@ export function createTranscript(container, opts = {}) {
       }
     }
     if (!container.childElementCount) {
-      container.append(
-        el("div", { class: "msg system" }, el("div", { class: "bubble", text: meta?.sessionName ? `${meta.sessionName} — no messages yet.` : "New session — send a message to start." })),
-      );
+      const text = meta?.loading
+        ? "Loading session…"
+        : meta?.sessionName
+          ? `${meta.sessionName} — no messages yet.`
+          : "New session — send a message to start.";
+      container.append(el("div", { class: "msg system" }, el("div", { class: "bubble", text })));
     }
     scrollToBottom();
   }

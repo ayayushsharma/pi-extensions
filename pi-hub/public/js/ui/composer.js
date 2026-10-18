@@ -316,26 +316,31 @@ export function createComposer(refs, actions) {
       state_ = state;
       const bound = state.bound;
       const previewing = bound?.kind === "live" && state.driving !== bound.id;
-      const disabled = !bound || state.binding || previewing || bound.state === "dead";
+      const offline = state.connected === false;
+      const disabled = !bound || state.binding || previewing || bound.state === "dead" || offline;
       refs.input.disabled = !!disabled;
       refs.sendBtn.disabled = !!disabled;
       refs.attachBtn.disabled = !!disabled;
-      refs.input.placeholder = state.binding
-        ? "Loading session…"
-        : !bound
-          ? "Pick or start a session…"
-          : previewing
-            ? "Preview only — press Drive to take over"
-            : bound.state === "dead"
-              ? "Session ended — resume to continue"
-              : "Ask anything, / for commands…";
+      refs.input.placeholder = offline
+        ? "Reconnecting to the hub…"
+        : state.binding
+          ? "Loading session…"
+          : !bound
+            ? "Pick or start a session…"
+            : previewing
+              ? "Preview only — press Drive to take over"
+              : bound.state === "dead"
+                ? "Session ended — resume to continue"
+                : "Ask anything, / for commands…";
 
       show(refs.abortBtn, !!state.streaming && !previewing);
       renderQueue(state.queue || []);
       renderImageChips();
 
-      const modelLabel = state.meta?.model || bound?.model || "model";
-      refs.modelLabel.textContent = modelLabel.length > 26 ? `${modelLabel.slice(0, 25)}…` : modelLabel;
+      const rawModel = state.meta?.model || bound?.model || "model";
+      const modelId = rawModel.includes("/") ? rawModel.split("/").pop() : rawModel;
+      refs.modelLabel.textContent = modelId.length > 26 ? `${modelId.slice(0, 25)}…` : modelId;
+      refs.modelBtn.title = rawModel;
       refs.thinkingLabel.textContent = state.meta?.thinkingLevel || bound?.thinkingLevel || "off";
 
       if (disabled) closeMenus();

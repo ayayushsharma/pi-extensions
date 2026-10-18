@@ -412,6 +412,7 @@ function render() {
   renderStatusline();
   renderTitlebar();
 
+  if (state.binding && state.view === "session") transcript.renderHistory([], { loading: true });
   const sessionView = state.view === "session" && !!state.bound;
   show(refs.welcome, !sessionView);
   show(refs.messages, sessionView);
@@ -576,6 +577,9 @@ async function newSession(cwd, starter) {
 }
 
 function openSession(session, project) {
+  // A live TUI owns its file: never put a second writer on it (ADR-003).
+  const live = [...state.runners.values()].find((r) => r.kind === "live" && r.absFile && session.filePath && r.absFile === session.filePath);
+  if (live) return bindRunner(live.id, live);
   const key = sessionKey(session.dirName || project?.dirName, session.file);
   const existing = state.tabs.find((t) => t.key === key);
   if (existing) return activateTab(key);
@@ -1076,6 +1080,12 @@ refs.view.addEventListener("scroll", () => {
 refs.jumpLatest.addEventListener("click", () => {
   transcript.scrollToBottom();
   show(refs.jumpLatest, false);
+});
+
+/* iOS keeps the keyboard over a fixed composer; nudge it into view. */
+refs.input.addEventListener("focus", () => {
+  if (window.innerWidth > 860) return;
+  setTimeout(() => refs.input.scrollIntoView({ block: "nearest", behavior: "smooth" }), 250);
 });
 
 document.addEventListener("keydown", (e) => {

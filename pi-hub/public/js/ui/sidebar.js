@@ -101,6 +101,9 @@ export function createSidebar(refs, actions) {
   function sessionRow(state, session, project) {
     const active = state.view === "session" && state.historyFile === session.file;
     const fav = isFavourite(session.filePath);
+    const liveOwned = session.filePath
+      ? [...state.runners?.values?.() || []].some((r) => r.kind === "live" && r.absFile === session.filePath)
+      : false;
     const row = el(
       "button",
       {
@@ -111,7 +114,7 @@ export function createSidebar(refs, actions) {
         onclick: () => actions.openSession(session, project),
         oncontextmenu: (e) => openMenu(e, session, project),
       },
-      el("span", { class: "row-title" }, fav ? icon("star", 12) : null, el("span", { class: "grow", style: "overflow:hidden;text-overflow:ellipsis", text: session.title || session.file })),
+      el("span", { class: "row-title" }, fav ? icon("star", 12) : null, el("span", { class: "grow", style: "overflow:hidden;text-overflow:ellipsis", text: session.title || session.file }), liveOwned ? el("span", { class: "chip live", text: "live" }) : null),
       el(
         "span",
         { class: "row-sub" },

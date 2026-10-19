@@ -4,6 +4,7 @@
  * browser own extension dialogs while connected (ADR-007). It never opens a
  * TCP port (ADR-011).
  */
+import * as fs from "node:fs";
 import { HubSocketClient } from "./socket.js";
 import { hubLog } from "../log.js";
 import { randId } from "../protocol.js";
@@ -29,10 +30,18 @@ export class Mirror {
     return !!this.client?.connected;
   }
 
+  /** the socket we actually dial (configured or advertised) */
+  get sockPath(): string {
+    return this.client?.sockPath ?? this.config.sockPath;
+  }
+
   start(): void {
     if (this.client) return;
-    this.client = new HubSocketClient(this.config.sockPath);
-    this.client.on("connected", () => this.sendHello());
+    this.client = new HubSocketClient(() => this.candidateSocks());
+    this.client.on("connected", () => {
+      hubLog(`mirror connected on ${this.client!.sockPath}`);
+      this.sendHello();
+    });
     this.client.on("frame", (frame: any) => {
       try {
         this.onFrame(frame);
@@ -41,6 +50,24 @@ export class Mirror {
       }
     });
     this.client.connect();
+  }
+
+  /** Socket candidates, in preference order: our configured path first, then
+   *  the hub's advert (a TUI started from any directory still finds it). The
+   *  client connects to the first one that actually accepts — mere existence
+   *  is not enough, a hard-killed hub leaves a dead socket file behind. */
+  candidateSocks(): string[] {
+    const out = [this.config.sockPath];
+    try {
+      const advert = JSON.parse(fs.readFileSync(this.config.advertPath, "utf8"));
+      let alive = false;
+      try {
+        process.kill(advert?.pid, 0);
+        alive = typeof advert?.pid === "number";
+      } catch {}
+      if (alive && typeof advert?.sock === "string" && fs.existsSync(advert.sock)) out.push(advert.sock);
+    } catch {}
+    return [...new Set(out)];
   }
 
   stop(): void {

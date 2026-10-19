@@ -68,6 +68,8 @@ export const previewUrl = (path, session) => {
   return `/api/files/preview?${q}`;
 };
 export const mkdir = (path) => api("/api/files/mkdir", { method: "POST", body: { path } });
+/** current git branch for a session cwd (null when it is not a repo) */
+export const gitBranch = (cwd) => api(`/api/git?cwd=${encodeURIComponent(cwd)}`);
 export const downloadUrl = (path) => `/api/file/download?path=${encodeURIComponent(path)}`;
 
 /* ── runners / processes ─────────────────────────────────────────────── */

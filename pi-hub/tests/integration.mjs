@@ -114,7 +114,7 @@ async function hubGroup({ check }) {
     await ws.wait((m) => m.type === "bound" && m.id === "b3", 10000, "sinceSeq re-bind ack");
     ws.send({ type: "command", id: "g2", command: { type: "get_state", id: "g2" } });
     const replayed = await ws.wait((m) => m.type === "event" && m.seq === stateSeq, 10000, "replayed ring frame").catch(() => null);
-    const g2 = await ws.wait((m) => m.type === "event" && m.event?.id === "g2", 20000, "g2 response");
+    const git2 = await ws.wait((m) => m.type === "event" && m.event?.id === "g2", 20000, "g2 response");
     const g2Count = ws.frames.filter((m) => m.type === "event" && m.event?.id === "g2").length;
     check("H10b ring replay honours sinceSeq", !!replayed && g2Count === 1, `replayed=${!!replayed} g2=${g2Count}`);
 
@@ -167,6 +167,47 @@ async function hubGroup({ check }) {
     await waitFor(async () => (await (await fetch(`${base}/api/instances`)).json()).instances.length === 0, { timeoutMs: 10000, what: "mirror removed" });
     check("D4 mirror death clears the live row", true);
 
+    // ── hub advert: a TUI finds the hub without knowing PI_HUB_DIR ──────
+    const advert = JSON.parse(fs.readFileSync(hub.advertPath, "utf8"));
+    check("D5 hub advertises its socket", advert.sock === path.join(hub.dir, "hub.sock") && advert.port === port, JSON.stringify(advert));
+    // stale configured sock (a TUI started with a different/old path) still
+    // mirrors into the running hub via the advert
+    const lost = await startMirror({
+      sock: path.join(tmpDir("pihub-lost-"), "gone.sock"),
+      cwd: "/tmp/pihub-fixtures",
+      sessionDir: sessions,
+      env: { PI_HUB_ADVERT_FILE: hub.advertPath },
+    });
+    try {
+      const found = await waitFor(async () => {
+        const out = await (await fetch(`${base}/api/instances`)).json();
+        return out.instances.length ? out : null;
+      }, { timeoutMs: 30000, what: "mirror found the advertised hub" });
+      check("D6 a mirror with a stale socket path still connects", found.instances.length === 1, JSON.stringify(found.instances.map((i) => i.pid)));
+    } finally {
+      await lost.close();
+    }
+    // A *file* at the configured path (hard-killed hub) must not pin the
+    // mirror there: existence is not enough, the connect has to succeed.
+    const deadSock = path.join(tmpDir("pihub-deadsock-"), "hub.sock");
+    fs.writeFileSync(deadSock, "");
+    const stale = await startMirror({
+      sock: deadSock,
+      cwd: "/tmp/pihub-fixtures",
+      sessionDir: sessions,
+      env: { PI_HUB_ADVERT_FILE: hub.advertPath },
+    });
+    try {
+      const viaAdvert = await waitFor(async () => {
+        const out = await (await fetch(`${base}/api/instances`)).json();
+        return out.instances.length ? out : null;
+      }, { timeoutMs: 30000, what: "mirror skipped a dead socket file" });
+      check("D6b a dead socket file is skipped for the advertised one", viaAdvert.instances.length === 1, JSON.stringify(viaAdvert.instances.map((i) => i.pid)));
+    } finally {
+      await stale.close();
+    }
+    await waitFor(async () => (await (await fetch(`${base}/api/instances`)).json()).instances.length === 0, { timeoutMs: 10000, what: "lost mirror removed" });
+
     // ── process list shape (ADR-013) ────────────────────────────────────
     const procs = await (await fetch(`${base}/api/processes`)).json();
     check("P1 processes endpoint shape", Array.isArray(procs.processes), JSON.stringify(procs).slice(0, 100));
@@ -204,8 +245,51 @@ async function hubGroup({ check }) {
     wsP.send({ type: "close", id: "cp1", runnerId: procBound.runner.id });
     await wsP.wait((m) => m.type === "closed", 10000, "closed (proc title)").catch(() => {});
     await wsP.close();
+    // ── G1–G5 git branch probe (statusline) ─────────────────────────────
+    // HEAD is read straight from disk: no git binary, no lock contention.
+    const repoRoot = path.join("/tmp/pihub-fixtures", `git-probe-${Date.now().toString(36)}`);
+    const repoDetached = `${repoRoot}-detached`;
+    const repoWorktree = `${repoRoot}-wt`;
+    const buildRepo = (root, head) => {
+      fs.mkdirSync(path.join(root, ".git"), { recursive: true });
+      fs.writeFileSync(path.join(root, ".git", "HEAD"), head);
+    };
+    fs.mkdirSync(path.join(repoRoot, "nested", "deep"), { recursive: true });
+    buildRepo(repoRoot, "ref: refs/heads/feature/hub\n");
+    const nestedCwd = path.join(repoRoot, "nested", "deep");
+    const probeGit = async (cwd) => (await fetch(`${base}/api/git?cwd=${encodeURIComponent(cwd)}`)).json();
+    const b1 = await probeGit(nestedCwd);
+    check("G1 branch resolves from a nested cwd", b1.branch === "feature/hub" && b1.root === repoRoot && b1.detached === false, JSON.stringify(b1));
+    buildRepo(repoDetached, `${"a".repeat(40)}\n`);
+    const b2 = await probeGit(repoDetached);
+    check("G2 detached HEAD shows the short sha", b2.branch === "a".repeat(7) && b2.detached === true, JSON.stringify(b2));
+    fs.mkdirSync(repoWorktree, { recursive: true });
+    fs.writeFileSync(path.join(repoWorktree, ".git"), `gitdir: ${path.join(repoRoot, ".git")}\n`);
+    const b3 = await probeGit(repoWorktree);
+    check("G3 worktree .git files are followed", b3.branch === "feature/hub", JSON.stringify(b3));
+    // A sibling directory: nested dirs correctly inherit the parent repo.
+    const plainRoot = `${repoRoot}-plain`;
+    fs.mkdirSync(plainRoot, { recursive: true });
+    const b4 = await probeGit(plainRoot);
+    check("G4 a non-repo directory reports no branch", b4.branch === null && b4.root === null, JSON.stringify(b4));
+    fs.rmSync(plainRoot, { recursive: true, force: true });
+    fs.rmSync(repoRoot, { recursive: true, force: true });
+    fs.rmSync(repoDetached, { recursive: true, force: true });
+    fs.rmSync(repoWorktree, { recursive: true, force: true });
+    const gitOutside = await fetch(`${base}/api/git?cwd=${encodeURIComponent("/etc")}`);
+    check("G5 the probe stays inside the file jail", gitOutside.status === 403, `status=${gitOutside.status}`);
+
   } finally {
     await hub.close();
+    // Graceful stops withdraw the file; a hard kill leaves it behind, so the
+    // mirror also refuses adverts whose pid is gone (D6 covers the live case).
+    const stale = fs.existsSync(hub.advertPath) ? JSON.parse(fs.readFileSync(hub.advertPath, "utf8")) : null;
+    let stalePidAlive = false;
+    try {
+      process.kill(stale?.pid, 0);
+      stalePidAlive = true;
+    } catch {}
+    check("D7 a dead hub's advert is withdrawn or refused", !stale || !stalePidAlive, JSON.stringify(stale));
     // fork fixture cleanup is left in place under the temp fixture dir only if copied there
   }
 

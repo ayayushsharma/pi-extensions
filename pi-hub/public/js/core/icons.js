@@ -22,11 +22,19 @@ const P = {
   gear: '<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/>',
   folder: '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>',
   refresh: '<path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/>',
+  palette:
+    '<circle cx="13.5" cy="6.5" r=".8"/><circle cx="17.5" cy="10.5" r=".8"/><circle cx="8.5" cy="7.5" r=".8"/><circle cx="6.5" cy="12.5" r=".8"/><path d="M12 2a10 10 0 1 0 0 20c1.2 0 2-.9 2-2 0-.5-.2-1-.5-1.4-.3-.4-.5-.8-.5-1.3 0-1.1.9-2 2-2h2.3c2.3 0 4.2-1.9 4.2-4.2C21.5 6.2 17.3 2 12 2Z"/>',
+  message: '<path d="M21 15a2 2 0 0 1-2 2H8l-5 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2Z"/>',
+  server: '<rect x="2" y="3" width="20" height="7" rx="2"/><rect x="2" y="14" width="20" height="7" rx="2"/><path d="M6 6.5h.01M6 17.5h.01"/>',
   terminal: '<path d="m7 8 4 4-4 4"/><path d="M13 16h4"/>',
+  commands: '<rect x="3" y="4" width="18" height="16" rx="4"/><path d="m14 8.5-4 7"/>',
   tabs: '<rect x="3" y="8" width="12" height="12" rx="2"/><path d="M8 8V6a3 3 0 0 1 3-3h7a3 3 0 0 1 3 3v7a3 3 0 0 1-3 3h-3"/>',
   chip: '<rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"/>',
   star: '<path d="m12 3 2.7 5.6 6.3.9-4.5 4.4 1 6.1-5.5-2.9L6.5 20l1-6.1L3 9.5l6.3-.9Z"/>',
   "star-outline": '<path d="m12 3 2.7 5.6 6.3.9-4.5 4.4 1 6.1-5.5-2.9L6.5 20l1-6.1L3 9.5l6.3-.9Z" fill="none"/>',
+  // Filled variant: `star` alone is still a stroke glyph (fill:none on the
+  // svg), so a "favourited" star looked hollow and read as "add to favourites".
+  starFill: '<path fill="currentColor" stroke="none" d="m12 3 2.7 5.6 6.3.9-4.5 4.4 1 6.1-5.5-2.9L6.5 20l1-6.1L3 9.5l6.3-.9Z"/>',
   pencil: '<path d="M17 3a2.8 2.8 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/>',
   trash: '<path d="M3 6h18"/><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M10 11v6M14 11v6"/>',
   download: '<path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/>',
@@ -62,17 +70,57 @@ export function icon(name, size = 16) {
   return span;
 }
 
+/* ── pi-hub mark ──────────────────────────────────────────────────────
+ * Five marks inspired by the pi glyph, none of them a copy of it. The
+ * badge is drawn with `currentColor`, the π in the badge's negative space,
+ * so a theme switch recolours the logo with everything else. */
+const MARKS = {
+  /** pi: bare lettermark — the Greek π with a thin orbit, no badge */
+  pi: {
+    body: "",
+    ink: '<ellipse cx="12" cy="12" rx="9.2" ry="3.6" fill="none" transform="rotate(-26 12 12)" ' +
+      'style="stroke:var(--accent);stroke-opacity:.38" stroke-width="1.05"/>' +
+      '<path d="M6.8 9.3h10.4M9.4 9.3v5.7M14.6 9.3v5.7" fill="none" ' +
+      'style="stroke:var(--accent)" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"/>',
+  },
+  /** knockout: heavier π, small dot tucked into the corner */
+  knockout: {
+    body: '<rect x="1.5" y="1.5" width="21" height="21" rx="7" style="fill:var(--accent)"/>',
+    ink: '<g fill="none" style="stroke:var(--on-accent)" stroke-width="2.4" stroke-linecap="round"><path d="M7.4 9.2h9.2M9.2 9.2v6.1M14.8 9.2v6.1"/></g>' +
+      '<circle cx="18.6" cy="18.4" r="1.5" style="fill:var(--on-accent)" opacity=".75"/>',
+  },
+  /** badge: thin ring, dot sitting on the ring */
+  badge: {
+    body: '<circle cx="12" cy="12" r="10" fill="none" style="stroke:var(--accent)" stroke-width="1.7"/>' +
+      '<circle cx="17.6" cy="18.4" r="2.4" style="fill:var(--accent)"/>',
+    ink: '<g fill="none" style="stroke:var(--accent)" stroke-width="2" stroke-linecap="round"><path d="M8 9.6h8M9.6 9.6v5.2M14.4 9.6v5.2"/></g>',
+  },
+  /** nodes: the π's strokes end in hub nodes */
+  nodes: {
+    body: '<rect x="1.5" y="1.5" width="21" height="21" rx="6.5" style="fill:var(--accent)"/>',
+    ink: '<g fill="none" style="stroke:var(--on-accent)" stroke-width="1.7" stroke-linecap="round"><path d="M7.3 9.6h9.4M9.2 9.6v5.6M14.8 9.6v5.6"/></g>' +
+      '<g style="fill:var(--on-accent)"><circle cx="7.3" cy="9.6" r="1.6"/><circle cx="16.7" cy="9.6" r="1.6"/>' +
+      '<circle cx="9.2" cy="15.2" r="1.6"/><circle cx="14.8" cy="15.2" r="1.6"/></g>',
+  },
+  /** node: a hub node above the π */
+  node: {
+    body: '<rect x="1.5" y="1.5" width="21" height="21" rx="6.5" style="fill:var(--accent)"/>',
+    ink: '<circle cx="12" cy="6.6" r="1.5" style="fill:var(--on-accent)"/>' +
+      '<path d="M12 8.1v1.1" style="stroke:var(--on-accent)" stroke-width="1.4" stroke-linecap="round"/>' +
+      '<g fill="none" style="stroke:var(--on-accent)" stroke-width="1.9" stroke-linecap="round"><path d="M8 9.6h8M9.5 9.6v6.2M14.5 9.6v6.2"/></g>',
+  },
+};
+
+/** default mark; switch this one string to pick another */
+export const LOGO_MARK = "pi";
+
 /** pi-hub mark: an app-icon badge with the pi glyph (π). */
-export function logo(size = 22) {
+export function logo(size = 22, mark = LOGO_MARK) {
   const span = document.createElement("span");
   span.className = "icon";
   span.style.width = `${size}px`;
   span.style.height = `${size}px`;
-  span.innerHTML =
-    `<svg viewBox="0 0 24 24">` +
-    `<rect x="1.5" y="1.5" width="21" height="21" rx="6" fill="currentColor" opacity="0.92"/>` +
-    `<g fill="none" stroke="#fff" stroke-width="2.1" stroke-linecap="round">` +
-    `<path d="M8 9h8M9.5 9v6M14.5 9v6"/>` +
-    `</g></svg>`;
+  const m = MARKS[mark] || MARKS[LOGO_MARK];
+  span.innerHTML = `<svg viewBox="0 0 24 24">${m.body}${m.ink}</svg>`;
   return span;
 }

@@ -49,6 +49,24 @@ function writeAgentConfig(agentDir, llmUrl) {
   );
 }
 
+/** A skill + a prompt template in the sandbox agent dir: pi reports them from
+ *  `get_commands` as sources `skill` and `prompt`, which the command palette
+ *  must render. Fixed names keep the palette tests independent of whatever
+ *  skills the developer happens to have in ~/.agents. */
+function writeAgentResources(agentDir) {
+  const skillDir = path.join(agentDir, "skills", "hub-probe-skill");
+  fs.mkdirSync(skillDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(skillDir, "SKILL.md"),
+    "---\nname: hub-probe-skill\ndescription: Sandbox probe skill for the pi-hub command palette.\n---\n\nSay PROBE.\n",
+  );
+  fs.mkdirSync(path.join(agentDir, "prompts"), { recursive: true });
+  fs.writeFileSync(
+    path.join(agentDir, "prompts", "hub-probe.md"),
+    "---\ndescription: Sandbox probe prompt template\n---\n\nDo the probe.\n",
+  );
+}
+
 let current = null;
 
 /**
@@ -63,6 +81,7 @@ export function sandbox({ llmUrl } = {}) {
       writeAgentConfig(current.agentDir, want);
       current.llmUrl = want;
     }
+    writeAgentResources(current.agentDir);
     return current;
   }
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "pihub-sbx-"));
@@ -72,6 +91,7 @@ export function sandbox({ llmUrl } = {}) {
   fs.mkdirSync(sessionsDir, { recursive: true });
   fs.mkdirSync(cwd, { recursive: true });
   writeAgentConfig(agentDir, want || "http://127.0.0.1:9");
+  writeAgentResources(agentDir);
   current = {
     root,
     agentDir,

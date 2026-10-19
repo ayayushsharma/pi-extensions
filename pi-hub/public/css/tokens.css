@@ -3,8 +3,9 @@
  *
  * Palettes intentionally mirror tau-web's theme values (so the two packages
  * look like one product), but the token names, structure and components are
- * pi-hub's own. Themes: night/midnight/dawn (dark), clean/terracotta/sage
- * (light). Default is chosen from the OS preference.
+ * pi-hub's own. Twelve themes, six light (terracotta, clean, sage, linen,
+ * paper, rose) and six dark (night, dawn, midnight, slate, forest, plum).
+ * Default is chosen from the OS preference.
  */
 :root {
   /* shape */
@@ -244,4 +245,208 @@
   --shadow-lg: none;
   --code-bg: rgba(255, 255, 255, 0.04);
   --ok: #34d399;
+}
+
+/* ── Linen (warm ivory + teal) ───────────────────────────────────────── */
+:root[data-theme="linen"] {
+  color-scheme: light;
+  --bg: #f7f5ef;
+  --bg-elev: #fcfbf7;
+  --panel: rgba(255, 255, 255, 0.7);
+  --panel-solid: #fffefb;
+  --hover: rgba(28, 25, 20, 0.04);
+  --active: rgba(28, 25, 20, 0.075);
+  --tap: rgba(47, 111, 106, 0.12);
+  --text: rgba(28, 25, 20, 0.92);
+  --text-2: rgba(28, 25, 20, 0.62);
+  --text-3: rgba(28, 25, 20, 0.38);
+  --text-4: rgba(28, 25, 20, 0.16);
+  --accent: #2f6f6a;
+  --accent-soft: rgba(47, 111, 106, 0.12);
+  --accent-text: #28615c;
+  --on-accent: #fff;
+  --user-bubble: #2f6f6a;
+  --user-text: #fff;
+  --tool-accent: #7a5a2e;
+  --tool-bg: rgba(122, 90, 46, 0.07);
+  --think-accent: #4a6f9a;
+  --think-bg: rgba(74, 111, 154, 0.07);
+  --border: rgba(28, 25, 20, 0.07);
+  --border-2: rgba(28, 25, 20, 0.13);
+  --border-3: rgba(28, 25, 20, 0.2);
+  --shadow-sm: 0 1px 2px rgba(28, 25, 20, 0.05);
+  --shadow-md: 0 2px 8px rgba(28, 25, 20, 0.06);
+  --shadow-lg: 0 8px 28px rgba(28, 25, 20, 0.1);
+  --code-bg: rgba(28, 25, 20, 0.045);
+  --ok: #1f8a63;
+}
+
+/* ── Paper (crisp editorial + cobalt) ────────────────────────────────── */
+:root[data-theme="paper"] {
+  color-scheme: light;
+  --bg: #fbfbf9;
+  --bg-elev: #ffffff;
+  --panel: rgba(255, 255, 255, 0.85);
+  --panel-solid: #ffffff;
+  --hover: rgba(17, 24, 39, 0.04);
+  --active: rgba(17, 24, 39, 0.07);
+  --tap: rgba(29, 78, 216, 0.1);
+  --text: rgba(17, 24, 39, 0.92);
+  --text-2: rgba(17, 24, 39, 0.58);
+  --text-3: rgba(17, 24, 39, 0.36);
+  --text-4: rgba(17, 24, 39, 0.14);
+  --accent: #1d4ed8;
+  --accent-soft: rgba(29, 78, 216, 0.1);
+  --accent-text: #1e40af;
+  --on-accent: #fff;
+  --user-bubble: #1d4ed8;
+  --user-text: #fff;
+  --tool-accent: #7c3aed;
+  --tool-bg: rgba(124, 58, 237, 0.06);
+  --think-accent: #0f766e;
+  --think-bg: rgba(15, 118, 110, 0.07);
+  --border: rgba(17, 24, 39, 0.08);
+  --border-2: rgba(17, 24, 39, 0.13);
+  --border-3: rgba(17, 24, 39, 0.19);
+  --shadow-sm: 0 1px 2px rgba(17, 24, 39, 0.06);
+  --shadow-md: 0 2px 8px rgba(17, 24, 39, 0.07);
+  --shadow-lg: 0 8px 28px rgba(17, 24, 39, 0.11);
+  --code-bg: rgba(17, 24, 39, 0.04);
+  --ok: #15803d;
+}
+
+/* ── Rose (soft blush + wine) ────────────────────────────────────────── */
+:root[data-theme="rose"] {
+  color-scheme: light;
+  --bg: #fbf4f2;
+  --bg-elev: #fefaf9;
+  --panel: rgba(255, 255, 255, 0.72);
+  --panel-solid: #fffdfc;
+  --hover: rgba(48, 24, 30, 0.04);
+  --active: rgba(48, 24, 30, 0.075);
+  --tap: rgba(181, 84, 106, 0.12);
+  --text: rgba(48, 24, 30, 0.9);
+  --text-2: rgba(48, 24, 30, 0.6);
+  --text-3: rgba(48, 24, 30, 0.36);
+  --text-4: rgba(48, 24, 30, 0.14);
+  --accent: #b5546a;
+  --accent-soft: rgba(181, 84, 106, 0.12);
+  --accent-text: #a2485d;
+  --on-accent: #fff;
+  --user-bubble: #b5546a;
+  --user-text: #fff;
+  --tool-accent: #6d5a9c;
+  --tool-bg: rgba(109, 90, 156, 0.07);
+  --think-accent: #4a7a9a;
+  --think-bg: rgba(74, 122, 154, 0.07);
+  --border: rgba(48, 24, 30, 0.07);
+  --border-2: rgba(48, 24, 30, 0.12);
+  --border-3: rgba(48, 24, 30, 0.18);
+  --shadow-sm: 0 1px 2px rgba(48, 24, 30, 0.05);
+  --shadow-md: 0 2px 8px rgba(48, 24, 30, 0.06);
+  --shadow-lg: 0 8px 28px rgba(48, 24, 30, 0.1);
+  --code-bg: rgba(48, 24, 30, 0.045);
+  --ok: #2a8a5a;
+}
+
+/* ── Slate (cool neutral dark + steel blue) ──────────────────────────── */
+:root[data-theme="slate"] {
+  color-scheme: dark;
+  --bg: #15181d;
+  --bg-elev: #1a1e24;
+  --panel: rgba(255, 255, 255, 0.04);
+  --panel-solid: #1e232b;
+  --hover: rgba(255, 255, 255, 0.055);
+  --active: rgba(255, 255, 255, 0.09);
+  --tap: rgba(111, 143, 184, 0.14);
+  --text: rgba(236, 240, 245, 0.9);
+  --text-2: rgba(236, 240, 245, 0.55);
+  --text-3: rgba(236, 240, 245, 0.34);
+  --text-4: rgba(236, 240, 245, 0.12);
+  --accent: #6f8fb8;
+  --accent-soft: rgba(111, 143, 184, 0.16);
+  --accent-text: #a3bedd;
+  --on-accent: #0d1116;
+  --user-bubble: rgba(111, 143, 184, 0.28);
+  --user-text: rgba(236, 240, 245, 0.95);
+  --tool-accent: #b08fc8;
+  --tool-bg: rgba(176, 143, 200, 0.09);
+  --think-accent: #7fb3c8;
+  --think-bg: rgba(127, 179, 200, 0.09);
+  --border: rgba(255, 255, 255, 0.08);
+  --border-2: rgba(255, 255, 255, 0.13);
+  --border-3: rgba(255, 255, 255, 0.19);
+  --shadow-sm: none;
+  --shadow-md: none;
+  --shadow-lg: none;
+  --code-bg: rgba(255, 255, 255, 0.05);
+  --ok: #4ade80;
+}
+
+/* ── Forest (deep green dark) ────────────────────────────────────────── */
+:root[data-theme="forest"] {
+  color-scheme: dark;
+  --bg: #101614;
+  --bg-elev: #141c18;
+  --panel: rgba(255, 255, 255, 0.035);
+  --panel-solid: #18211c;
+  --hover: rgba(255, 255, 255, 0.05);
+  --active: rgba(255, 255, 255, 0.085);
+  --tap: rgba(95, 158, 127, 0.14);
+  --text: rgba(226, 238, 230, 0.9);
+  --text-2: rgba(226, 238, 230, 0.54);
+  --text-3: rgba(226, 238, 230, 0.33);
+  --text-4: rgba(226, 238, 230, 0.11);
+  --accent: #5f9e7f;
+  --accent-soft: rgba(95, 158, 127, 0.16);
+  --accent-text: #8fc9a9;
+  --on-accent: #0a120d;
+  --user-bubble: rgba(95, 158, 127, 0.26);
+  --user-text: rgba(233, 244, 237, 0.95);
+  --tool-accent: #c0a06a;
+  --tool-bg: rgba(192, 160, 106, 0.08);
+  --think-accent: #6fa8b8;
+  --think-bg: rgba(111, 168, 184, 0.08);
+  --border: rgba(255, 255, 255, 0.07);
+  --border-2: rgba(255, 255, 255, 0.11);
+  --border-3: rgba(255, 255, 255, 0.17);
+  --shadow-sm: none;
+  --shadow-md: none;
+  --shadow-lg: none;
+  --code-bg: rgba(255, 255, 255, 0.045);
+  --ok: #4ade80;
+}
+
+/* ── Plum (deep aubergine dark) ──────────────────────────────────────── */
+:root[data-theme="plum"] {
+  color-scheme: dark;
+  --bg: #16121c;
+  --bg-elev: #1b1623;
+  --panel: rgba(255, 255, 255, 0.04);
+  --panel-solid: #201928;
+  --hover: rgba(255, 255, 255, 0.055);
+  --active: rgba(255, 255, 255, 0.09);
+  --tap: rgba(161, 122, 194, 0.14);
+  --text: rgba(238, 232, 246, 0.9);
+  --text-2: rgba(238, 232, 246, 0.55);
+  --text-3: rgba(238, 232, 246, 0.34);
+  --text-4: rgba(238, 232, 246, 0.12);
+  --accent: #a17ac2;
+  --accent-soft: rgba(161, 122, 194, 0.16);
+  --accent-text: #c4a5dd;
+  --on-accent: #120d18;
+  --user-bubble: rgba(161, 122, 194, 0.28);
+  --user-text: rgba(244, 238, 250, 0.95);
+  --tool-accent: #7f9ec8;
+  --tool-bg: rgba(127, 158, 200, 0.09);
+  --think-accent: #c89ab8;
+  --think-bg: rgba(200, 154, 184, 0.08);
+  --border: rgba(255, 255, 255, 0.075);
+  --border-2: rgba(255, 255, 255, 0.12);
+  --border-3: rgba(255, 255, 255, 0.18);
+  --shadow-sm: none;
+  --shadow-md: none;
+  --shadow-lg: none;
+  --code-bg: rgba(255, 255, 255, 0.05);
+  --ok: #4ade80;
 }

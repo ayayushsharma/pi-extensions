@@ -29,6 +29,30 @@ a { color: var(--accent-text); }
   overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
 }
 
+/* ── scrollbars ──────────────────────────────────────────────────────── */
+/* A thin themed pill instead of the OS bar: no hard track, rounded thumb,
+   colours taken from the same tokens as borders/text so it follows every
+   theme. Chromium/Safari get the legacy pseudo-elements (only they allow the
+   rounded, inset thumb); setting `scrollbar-width`/`scrollbar-color` would
+   make Chromium ignore those rules, so the standard properties are scoped to
+   Firefox in the @supports block below. */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background-color: var(--border-3);
+  border: 3px solid transparent; /* inset the pill inside the gutter */
+  border-radius: var(--r-pill);
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover { background-color: var(--text-3); }
+::-webkit-scrollbar-corner { background: transparent; }
+@media (prefers-reduced-motion: no-preference) {
+  ::-webkit-scrollbar-thumb { transition: background-color var(--dur) var(--ease); }
+}
+@supports (-moz-appearance: none) {
+  * { scrollbar-width: thin; scrollbar-color: var(--border-3) transparent; }
+}
+
 /* ── icons ───────────────────────────────────────────────────────────── */
 .icon { display: inline-flex; width: 1em; height: 1em; flex: none; }
 .icon svg { width: 100%; height: 100%; display: block; }
@@ -123,12 +147,15 @@ a { color: var(--accent-text); }
 
 /* ── title bar (below tabs) ──────────────────────────────────────────── */
 .titlebar {
-  /* Symmetric padding: the old 8px-top/0-bottom pushed the title 4px below
-     the visual centre of the bar (align-items only centres inside the padded
-     box). One line of text + 8px above and below = a stable 38px band. */
-  display: flex; align-items: center; gap: 10px;
-  padding: 8px 16px; flex: none;
+  /* Lean band: the 30px icon button, not the 21px title line, set the old
+     46px height — cap the controls at 24px and keep the padding symmetric so
+     the text sits on the centre line (it used to be 8px-top/0-bottom).
+     A hairline underneath separates the bar from the transcript. */
+  display: flex; align-items: center; gap: 8px;
+  padding: 4px 16px; flex: none;
+  border-bottom: 1px solid var(--border);
 }
+.titlebar .icon-btn { width: 24px; height: 24px; }
 .titlebar .tb-title { font-weight: 600; font-size: var(--fs-md); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chip {
   display: inline-flex; align-items: center; gap: 5px;
@@ -229,11 +256,14 @@ a { color: var(--accent-text); }
   display: flex; align-items: center; gap: 6px;
   font-size: var(--fs-sm); color: var(--text-3);
   overflow: hidden; white-space: nowrap;
-  /* The row reserves width for the hover actions, but those sit on the title
-     line only — the detail line may use the space it reserved (it used to be
-     hard-clipped mid-number: "pid 175"). */
-  margin-right: -58px;
 }
+
+/* Only rows that actually reserve space for hover actions may reclaim it:
+ * the detail line sits on its own line, so it can use the width the actions
+ * reserved on the title line (it used to be hard-clipped mid-number: "pid
+ * 175"). Rows without actions — welcome recents — must not paint past the
+ * row, which is what pushed the home screen into horizontal scroll. */
+.sb-row:has(.row-actions) .row-sub { margin-right: -58px; }
 .sb-row .row-sub > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .sb-row .row-sub .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--text-4); flex: none; }
 .sb-row .row-sub .dot.on { background: var(--ok); }
@@ -247,13 +277,27 @@ a { color: var(--accent-text); }
    to sit on a background gradient that masked the title — the gradient's
    opaque end (var(--bg)) did not match hovered/active/panel row backgrounds,
    so it read as a grey rectangle behind the close icon. */
+/* Sidebar icon language: quiet, border-free 22px targets with a 13px glyph —
+   the same treatment as the session card's close button (#cs-close). */
 .sb-row .row-actions .icon-btn {
-  width: 24px; height: 24px;
-  border: 1px solid var(--border-2); border-radius: var(--r-sm);
-  color: var(--text-2);
+  width: 22px; height: 22px;
+  border: 0; border-radius: var(--r-sm);
+  color: var(--text-3);
 }
 .sb-row .row-actions .icon-btn:hover {
-  background: var(--hover); border-color: var(--border-3); color: var(--text);
+  background: var(--hover); color: var(--text);
+}
+/* A favourited star is filled and accent-coloured: an outline star read as
+   "add to favourites" even on rows that already were favourites. */
+.sb-row .row-actions .fav-btn[data-fav="1"] { color: var(--accent); }
+/* Keep a favourited row's star on screen: favourites become scannable, and
+   the star is the one action whose state matters at a glance. */
+@media (hover: hover) {
+  .sb-row .row-actions:has(.fav-btn[data-fav="1"]) { opacity: 1; pointer-events: none; }
+  .sb-row .row-actions:has(.fav-btn[data-fav="1"]) .fav-btn { pointer-events: auto; }
+  .sb-row .row-actions:has(.fav-btn[data-fav="1"]) .icon-btn:not(.fav-btn) { visibility: hidden; }
+  .sb-row:hover .row-actions .icon-btn,
+  .sb-row:focus-within .row-actions .icon-btn { visibility: visible; }
 }
 /* The row always reserves the actions' width (4px inset + 2×24px + 2px gap
    = 54px, 72px with slack) so the title ellipsizes instead of running under
@@ -332,6 +376,18 @@ a { color: var(--accent-text); }
   z-index: 40; box-shadow: var(--shadow-md);
   animation: toast-in 0.18s var(--spring);
 }
+/* It floats over the transcript, so hover must not swap the solid surface for
+   the shared .btn wash (which is translucent and let the text show through).
+   Layer the tint over the solid panel instead of replacing it. */
+.jump-latest:hover {
+  background-color: var(--panel-solid);
+  background-image: linear-gradient(var(--hover), var(--hover));
+  border-color: var(--border-3);
+}
+.jump-latest:active {
+  background-color: var(--panel-solid);
+  background-image: linear-gradient(var(--active), var(--active));
+}
 .welcome .logo { color: var(--accent); }
 .scroll-area { flex: 1; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
 .transcript-inner { max-width: var(--hub-max); margin: 0 auto; padding: 18px 20px 24px; }
@@ -360,24 +416,23 @@ a { color: var(--accent-text); }
   min-height: 100%; display: flex; flex-direction: column;
   align-items: center; justify-content: center; gap: 10px;
   text-align: center; padding: 20px;
+  /* Never wider than the scroll area, whatever the child rows ask for. */
+  max-width: 100%;
 }
 .welcome .logo { width: 44px; height: 44px; border-radius: 12px; opacity: 0.85; }
 .welcome h2 { margin: 6px 0 0; font-size: var(--fs-xl); font-weight: 600; }
 .welcome p { margin: 0; color: var(--text-2); max-width: 420px; }
 .welcome .hints { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; justify-content: center; }
-.welcome-actions { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; justify-content: center; }
+.welcome-actions { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; justify-content: center; max-width: 100%; }
 .welcome-recents {
   margin-top: 22px; width: min(520px, 100%);
   display: flex; flex-direction: column; gap: 4px; text-align: left;
+  min-width: 0;
 }
 .welcome-recents .sb-row { width: 100%; margin: 0; }
 
 /* ── transcript ──────────────────────────────────────────────────────── */
 .msg { display: flex; flex-direction: column; margin: 14px 0; }
-.msg .role {
-  font-size: var(--fs-xs); font-weight: 700; letter-spacing: 0.08em;
-  text-transform: uppercase; color: var(--text-3); margin-bottom: 5px;
-}
 .msg.user { align-items: flex-end; }
 .msg.user .bubble {
   max-width: min(78%, 620px); padding: 10px 15px;
@@ -408,6 +463,20 @@ a { color: var(--accent-text); }
   padding: 6px 12px; text-align: center; max-width: 90%;
 }
 .msg.error .bubble { background: rgba(210, 75, 75, 0.1); color: var(--danger); }
+/* Session-scoped notice (extension/skill notifications, command feedback):
+   reads like part of the conversation, not like chrome. */
+/* Quiet note, not a capsule: command/skill results are content, so they use
+   the same modest rounding as the other inline system rows (a full pill read
+   as a dismissible chip). */
+.msg.system.notice .bubble {
+  display: inline-flex; align-items: center; gap: 7px; text-align: left;
+  background: var(--hover); border: 0; border-radius: var(--r-sm);
+  color: var(--text-2); padding: 5px 11px;
+}
+.msg.system.notice .icon { color: var(--text-3); }
+.msg.system.notice.warning .bubble { background: rgba(194, 128, 38, 0.12); color: var(--warn); }
+.msg.system.notice.error .bubble { background: rgba(210, 75, 75, 0.1); color: var(--danger); }
+.msg.system.notice .notice-text { white-space: pre-wrap; }
 
 /* images */
 .msg .image-grid { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
@@ -503,29 +572,40 @@ html[data-wrap-code="1"] .code-block {
 /* load earlier */
 /* Aligned with the transcript column (not the pane) so the control reads as
    part of the conversation instead of floating over it. */
+/* Recall control: the button owns the line, its count caption sits under it —
+   side by side the pair read as one long, off-centre label. */
 .load-earlier-wrap {
-  display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
+  display: flex; flex-direction: column; align-items: center;
+  gap: 6px; text-align: center;
   max-width: var(--hub-max); margin: 0 auto; padding: 10px 20px 0;
 }
+.load-earlier-wrap .meta { font-size: var(--fs-xs); color: var(--text-3); }
 
 /* ── composer ────────────────────────────────────────────────────────── */
 .composer-wrap { flex: none; padding: 0 20px calc(10px + env(safe-area-inset-bottom)); }
 .composer-inner { max-width: var(--hub-max); margin: 0 auto; width: 100%; }
 .composer {
+  --composer-min-h: 68px;
   position: relative; border: 1px solid var(--border-2);
   border-radius: var(--r-lg); background: var(--panel-solid);
   box-shadow: var(--shadow-sm);
   transition: border-color var(--dur) var(--ease);
 }
 .composer:focus-within { border-color: var(--border-3); }
+.composer-input { position: relative; display: flex; }
 .composer textarea {
   display: block; width: 100%; border: 0; outline: none; resize: none;
   background: transparent; padding: 13px 120px 8px 15px;
-  font-size: var(--fs-lg); line-height: 1.45; max-height: 38dvh; min-height: 24px;
+  font-size: var(--fs-lg); line-height: 1.45; max-height: 38dvh;
+  /* A two-line resting height: the old one-line field read like a search box
+     and made multi-line prompts feel cramped. autoGrow() clamps to this. */
+  min-height: var(--composer-min-h, 68px);
 }
 .composer textarea::placeholder { color: var(--text-3); }
 .composer .actions {
-  position: absolute; right: 10px; top: 9px;
+  /* Bottom-right of the text area: with a two-line field the controls used to
+     float at the top and leave a dead band under them. */
+  position: absolute; right: 10px; bottom: 8px;
   display: flex; align-items: center; gap: 4px;
 }
 .send-btn {
@@ -569,13 +649,41 @@ html[data-wrap-code="1"] .code-block {
 .menu .item:hover, .menu .item[aria-selected="true"] { background: var(--hover); }
 .menu .item .sub { font-size: var(--fs-sm); color: var(--text-3); }
 .menu .item.sel { background: var(--active); }
+/* Sticky footer of a scrollable menu: the filter box is the control a phone
+   thumb reaches for, so it must not scroll away with a long model list. */
+.menu-foot {
+  position: sticky; bottom: -4px; z-index: 2;
+  margin-top: 2px; padding: 4px 2px 4px;
+  background: var(--panel-solid);
+  border-top: 1px solid var(--border);
+}
 .menu-search {
-  width: calc(100% - 12px); margin: 2px 6px 4px; padding: 6px 9px;
+  width: 100%; margin: 0; padding: 6px 9px;
   border: 1px solid var(--border-2); border-radius: var(--r-sm);
   background: var(--bg); color: var(--text); font-size: var(--fs-md);
 }
 .menu-search:focus { outline: none; border-color: var(--accent); }
 .slash-menu { bottom: calc(100% + 6px); left: 0; right: auto; min-width: 300px; }
+
+/* Commands + skills palette (the composer's "commands" button). */
+.command-menu { min-width: 320px; max-width: min(560px, 92vw); left: 0; right: auto; }
+.cmd-item .cmd-head { display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0; }
+.cmd-item .cmd-name {
+  font-family: var(--font-mono); font-size: 0.95em;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.cmd-item .cmd-source {
+  flex: none; margin-left: auto; padding: 1px 7px; border-radius: var(--r-sm);
+  background: var(--hover); color: var(--text-3);
+  font-size: var(--fs-xs); font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase;
+}
+.cmd-item .cmd-source.skill { background: var(--accent-soft); color: var(--accent-text); }
+.cmd-item .cmd-source.prompt { background: var(--think-bg); color: var(--think-accent); }
+.cmd-item .cmd-source.extension { background: var(--tool-bg); color: var(--tool-accent); }
+.cmd-item .sub {
+  display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.cmd-item.sel { background: var(--hover); }
 
 .queue { max-width: var(--hub-max); margin: 0 auto 6px; width: 100%; display: flex; flex-wrap: wrap; gap: 6px; }
 .queue .q-pill {
@@ -605,12 +713,41 @@ html[data-wrap-code="1"] .code-block {
 }
 .statusline .chip-mini.warn { color: var(--warn); }
 .statusline .chip-mini.danger { color: var(--danger); }
-.statusline button.chip-mini { font: inherit; }
-.statusline button.chip-mini:disabled { cursor: default; }
-/* Over budget the pill is a button: one click toward a compact. */
-.statusline button.chip-mini:not(:disabled) { cursor: pointer; border-color: currentColor; }
+.statusline button.chip-mini { font: inherit; cursor: pointer; }
+.statusline button.chip-mini:hover { border-color: var(--border-3); color: var(--text); }
+.statusline button.chip-mini[aria-expanded="true"] { border-color: var(--border-3); color: var(--text); }
+
+/* context popover: percent, a bar, three numbers, nothing else */
+.ctx-pop {
+  position: fixed; z-index: 120; width: 212px;
+  padding: 10px 12px 11px;
+  background: var(--panel-solid); border: 1px solid var(--border-2);
+  border-radius: var(--r-md); box-shadow: var(--shadow-lg);
+  font-size: var(--fs-sm);
+  animation: toast-in 0.14s var(--ease);
+}
+.ctx-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
+.ctx-title { font-weight: 600; font-size: var(--fs-sm); color: var(--text); }
+.ctx-pct { font-weight: 600; color: var(--text-2); font-variant-numeric: tabular-nums; }
+.ctx-bar { height: 6px; border-radius: 3px; background: var(--border); overflow: hidden; }
+.ctx-fill { display: block; height: 100%; border-radius: 3px; background: var(--accent); transition: width var(--dur) var(--ease); }
+.ctx-fill.warn { background: var(--warn); }
+.ctx-fill.danger { background: var(--danger); }
+.ctx-rows { display: flex; flex-direction: column; gap: 3px; margin-top: 9px; }
+.ctx-row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; color: var(--text-3); }
+.ctx-row b { font-weight: 500; color: var(--text); font-variant-numeric: tabular-nums; }
+.ctx-row.ctx-left b { color: var(--text-2); }
+.ctx-pop .ctx-compact { width: 100%; justify-content: center; margin-top: 10px; }
 .cwd-label { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
 .cwd-label .cwd-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* the branch a session's directory is on, next to the path */
+.cwd-label .cwd-branch {
+  display: inline-flex; align-items: center; gap: 4px; flex: none;
+  max-width: 140px; padding-left: 6px; border-left: 1px solid var(--border-2);
+  color: var(--text-3);
+}
+.cwd-label .cwd-branch .icon { opacity: 0.8; }
+.cwd-label .cwd-branch-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* ── file panel ──────────────────────────────────────────────────────── */
 .file-panel {
@@ -688,33 +825,120 @@ html[data-wrap-code="1"] .code-block {
 .fav-row .icon-btn { width: 26px; height: 26px; }
 
 /* settings */
-.settings-card { max-width: 640px; }
-.settings-tabs { display: flex; gap: 4px; padding: 8px 12px 0; flex: none; }
+.settings-card { max-width: 780px; height: min(86dvh, 660px); }
+.settings-note { font-size: var(--fs-xs); color: var(--text-3); }
+.settings-body {
+  flex: 1; min-height: 0;
+  display: grid; grid-template-columns: 184px minmax(0, 1fr);
+}
+.settings-tabs {
+  display: flex; flex-direction: column; gap: 2px; padding: 10px 8px;
+  border-right: 1px solid var(--border); overflow-y: auto;
+}
 .settings-tabs .tab-btn {
-  padding: 6px 12px; border-radius: var(--r-pill); font-size: var(--fs-md);
-  color: var(--text-2);
+  display: flex; align-items: center; gap: 9px; width: 100%; text-align: left;
+  padding: 8px 10px; border-radius: var(--r-md);
+  color: var(--text-2); font-size: var(--fs-md);
 }
-.settings-tabs .tab-btn.active { background: var(--active); color: var(--text); font-weight: 500; }
-.settings-pane { padding: 4px 16px 16px; }
-.settings-pane h3 { font-size: var(--fs-md); margin: 16px 0 8px; }
-.settings-pane .row {
-  display: flex; align-items: center; gap: 10px;
-  padding: 8px 0; font-size: var(--fs-md);
+.settings-tabs .tab-btn:hover { background: var(--hover); color: var(--text); }
+.settings-tabs .tab-btn.active { background: var(--active); color: var(--text); font-weight: 600; }
+.settings-tabs .tab-btn .tab-ico { display: inline-flex; color: var(--text-3); }
+.settings-tabs .tab-btn.active .tab-ico { color: var(--accent); }
+.settings-tabs .tab-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.settings-content { min-width: 0; overflow-y: auto; overscroll-behavior: contain; }
+.settings-pane { padding: 18px 22px 24px; }
+.pane-head { margin: 0 0 18px; }
+.pane-head h2 { margin: 0 0 4px; font-size: var(--fs-lg); font-weight: 600; }
+.pane-head p { margin: 0; max-width: 52ch; font-size: var(--fs-sm); line-height: 1.5; color: var(--text-2); }
+.field-group + .field-group { margin-top: 22px; }
+.group-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  margin-bottom: 6px; font-size: var(--fs-xs); font-weight: 600;
+  letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-3);
 }
-.settings-pane .row .grow { flex: 1; }
-.theme-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 8px; }
+.field-row {
+  display: flex; align-items: center; gap: 14px;
+  padding: 11px 0; border-bottom: 1px solid var(--border); cursor: pointer;
+}
+.field-row:last-child { border-bottom: 0; }
+.field-row:has(.btn) { cursor: default; }
+.field-copy { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
+.field-title { font-size: var(--fs-md); color: var(--text); }
+.field-sub { font-size: var(--fs-sm); line-height: 1.45; color: var(--text-2); }
+
+/* switch: a real checkbox, restyled (keyboard + a11y preserved) */
+input.switch {
+  appearance: none; -webkit-appearance: none; flex: none;
+  width: 36px; height: 21px; margin: 0; border-radius: var(--r-pill);
+  background: var(--border-3); position: relative; cursor: pointer;
+  transition: background var(--dur) var(--ease);
+}
+input.switch::after {
+  content: ""; position: absolute; top: 2px; left: 2px;
+  width: 17px; height: 17px; border-radius: 50%; background: #fff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.28);
+  transition: transform var(--dur) var(--ease);
+}
+input.switch:checked { background: var(--accent); }
+input.switch:checked::after { transform: translateX(15px); }
+input.switch:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* theme picker: preview tiles grouped light/dark */
+.theme-groups { display: flex; flex-direction: column; gap: 16px; }
+.theme-group-label {
+  margin-bottom: 8px; font-size: var(--fs-xs); font-weight: 600;
+  letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-3);
+}
+.theme-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(142px, 1fr)); gap: 8px; }
 .theme-swatch {
-  display: flex; flex-direction: column; gap: 6px; align-items: center;
-  padding: 8px; border-radius: var(--r-md); border: 1px solid var(--border-2);
-  font-size: var(--fs-sm);
+  display: flex; flex-direction: column; gap: 8px; text-align: left;
+  padding: 7px; border-radius: var(--r-md);
+  border: 1px solid var(--border-2); background: var(--panel-solid);
+  transition: border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
 }
+.theme-swatch:hover { border-color: var(--border-3); }
 .theme-swatch[aria-selected="true"] { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
-.theme-swatch .swatches { display: flex; gap: 3px; }
-.theme-swatch .sw { width: 14px; height: 14px; border-radius: 4px; }
-.proc-row { display: flex; align-items: center; gap: 8px; padding: 7px 2px; border-bottom: 1px solid var(--border); }
-.proc-row .grow { min-width: 0; }
-.proc-row .proc-title { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.proc-row .argv { font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.theme-swatch:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.theme-swatch[aria-selected="true"] .theme-preview::after {
+  content: ""; position: absolute; top: 5px; right: 5px;
+  width: 13px; height: 13px; border-radius: 50%;
+  background: var(--accent) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m4 12 5 5L20 6'/%3E%3C/svg%3E") center/8px no-repeat;
+}
+.theme-preview {
+  position: relative; display: block; height: 52px; overflow: hidden;
+  border-radius: calc(var(--r-md) - 3px); border: 1px solid var(--border-2);
+}
+.theme-preview .tp-bar { position: absolute; inset: 0 auto 0 0; width: 30%; }
+.theme-preview .tp-line {
+  position: absolute; left: 38%; height: 4px; border-radius: 2px; opacity: 0.55;
+}
+.theme-preview .tp-line.one { top: 14px; width: 34%; }
+.theme-preview .tp-line.two { top: 22px; width: 46%; }
+.theme-preview .tp-bubble {
+  position: absolute; left: 38%; bottom: 9px; width: 30%; height: 9px; border-radius: 5px;
+}
+.theme-meta { display: flex; align-items: baseline; justify-content: space-between; gap: 6px; padding: 0 2px 2px; }
+.theme-name { font-size: var(--fs-sm); font-weight: 500; color: var(--text); }
+.theme-scheme { font-size: var(--fs-xs); color: var(--text-3); }
+
+/* server pane */
+.info-grid { display: grid; grid-template-columns: auto 1fr; gap: 7px 16px; font-size: var(--fs-md); }
+.info-grid dt { color: var(--text-3); font-size: var(--fs-sm); }
+.info-grid dd { margin: 0; color: var(--text); font-variant-numeric: tabular-nums; }
+.proc-list { display: flex; flex-direction: column; }
+.proc-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 0; border-bottom: 1px solid var(--border);
+}
+.proc-row:last-child { border-bottom: 0; }
+.proc-row .grow { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 2px; }
+.proc-row .proc-title { font-size: var(--fs-md); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.proc-row .proc-meta { font-size: var(--fs-sm); color: var(--text-2); }
+.proc-row .argv {
+  font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--text-3);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.proc-empty { padding: 10px 0; font-size: var(--fs-sm); color: var(--text-2); }
 
 /* viewer */
 .viewer-card { max-width: 900px; height: 80dvh; }
@@ -756,15 +980,53 @@ html[data-wrap-code="1"] .code-block {
 @keyframes toast-in { from { opacity: 0; transform: translate(-50%, 8px); } }
 
 /* login */
-.login-card { max-width: 380px; padding: 22px; display: flex; flex-direction: column; gap: 12px; }
-.login-card h1 { margin: 0; font-size: var(--fs-xl); }
-.login-card label { display: flex; flex-direction: column; gap: 5px; font-size: var(--fs-sm); color: var(--text-2); }
-.login-card input {
-  padding: 9px 11px; border-radius: var(--r-md);
-  border: 1px solid var(--border-2); background: transparent; outline: none;
+.login-card {
+  max-width: 344px; padding: 28px 26px 22px;
+  display: flex; flex-direction: column; gap: 16px;
+  border-radius: var(--r-xl);
 }
-.login-card input:focus { border-color: var(--accent); }
-.login-card .error { color: var(--danger); font-size: var(--fs-sm); margin: 0; min-height: 1em; }
+.login-brand { display: flex; flex-direction: column; align-items: center; gap: 10px; text-align: center; }
+.login-mark {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 76px; height: 76px;
+  color: var(--accent);
+}
+.login-brand h1 { margin: 2px 0 0; font-size: var(--fs-lg); font-weight: 600; letter-spacing: -0.01em; }
+.login-sub { margin: 0; font-size: var(--fs-sm); color: var(--text-2); }
+.login-fields { display: flex; flex-direction: column; gap: 12px; }
+.login-field { display: flex; flex-direction: column; gap: 5px; font-size: var(--fs-sm); }
+.login-label { color: var(--text-3); font-weight: 500; letter-spacing: 0.02em; }
+.login-card input {
+  width: 100%; padding: 10px 11px; border-radius: var(--r-md);
+  border: 1px solid var(--border-2); background: var(--bg-elev); color: var(--text);
+  outline: none; transition: border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
+}
+.login-card input::placeholder { color: var(--text-3); }
+.login-card input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.login-pw { position: relative; display: block; }
+.login-pw input { padding-right: 38px; }
+.login-reveal {
+  position: absolute; top: 50%; right: 5px; transform: translateY(-50%);
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px; border-radius: var(--r-sm); color: var(--text-3);
+}
+.login-reveal:hover { background: var(--hover); color: var(--text); }
+.login-reveal[aria-pressed="true"] { color: var(--accent); }
+.login-error {
+  margin: -6px 0 0; font-size: var(--fs-sm);
+  color: var(--danger); text-align: center;
+}
+/* Empty error takes no space: a permanent 1.2em gap made the form feel loose. */
+.login-error:empty { display: none; }
+.login-submit {
+  width: 100%; justify-content: center; padding: 10px 12px;
+  border-radius: var(--r-md); font-weight: 550;
+}
+.login-submit:disabled { opacity: 0.7; cursor: progress; }
+@media (max-width: 430px) {
+  .login-card { max-width: 100%; padding: 24px 18px 18px; }
+  .login-mark { width: 66px; height: 66px; }
+}
 
 /* ── mobile ──────────────────────────────────────────────────────────── */
 .sidebar-overlay { display: none; }
@@ -795,6 +1057,40 @@ html[data-wrap-code="1"] .code-block {
   .msg.user .bubble { max-width: 88%; }
   .tab .tab-title { max-width: 96px; }
   .conn #status-text { display: none; }
+  /* Settings on a phone is a full-screen sheet: the rail becomes a
+     scrollable tab strip above the pane. */
+  #settings.overlay { padding: 0; align-items: stretch; }
+  .settings-card { max-width: none; width: 100%; height: 100dvh; max-height: 100dvh; border-radius: 0; border: 0; }
+  .settings-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+  .settings-tabs {
+    flex-direction: row; gap: 4px; padding: 8px 12px;
+    border-right: 0; border-bottom: 1px solid var(--border);
+    overflow-x: auto; overflow-y: hidden; scrollbar-width: none;
+  }
+  .settings-tabs::-webkit-scrollbar { display: none; }
+  .settings-tabs .tab-btn { width: auto; flex: none; padding: 7px 12px; border-radius: var(--r-pill); }
+  .settings-pane { padding: 16px 16px 28px; }
+  .theme-grid { grid-template-columns: repeat(auto-fill, minmax(128px, 1fr)); }
+}
+/* Narrow phones: the two welcome actions stack full-width instead of
+   wrapping into a ragged, off-centre pair. */
+@media (max-width: 430px) {
+  .welcome-actions { flex-direction: column; align-items: stretch; width: 100%; max-width: 280px; }
+  .welcome-actions .btn { justify-content: center; width: 100%; }
+}
+/* Short viewports (phone landscape, small phones): tighten the welcome block
+   so it fits without a scroll where possible, and let it scroll when it cannot. */
+@media (max-height: 480px) {
+  /* Landscape phones: give the little height there is back to the page. */
+  .composer { --composer-min-h: 44px; }
+  .composer-footer { padding-bottom: 5px; }
+}
+@media (max-height: 640px) {
+  .welcome { gap: 6px; padding: 12px 16px; justify-content: flex-start; }
+  .welcome .logo { width: 36px; height: 36px; }
+  .welcome h2 { margin-top: 2px; }
+  .welcome-recents { margin-top: 14px; }
+  .welcome-actions { margin-top: 10px; }
 }
 @media (max-width: 520px) {
   .tab-strip { max-width: 42vw; }

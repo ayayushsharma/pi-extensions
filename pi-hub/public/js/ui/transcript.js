@@ -50,6 +50,9 @@ export function createTranscript(container, opts = {}) {
   const atBottom = () => bottomGap() < 140;
 
   function scrollToBottom() {
+    // Nothing to reveal: scrolling the shared #view here would push the
+    // home screen's welcome block out of sight.
+    if (!container.childElementCount) return;
     const s = scrollerEl();
     s.scrollTop = s.scrollHeight;
     ownScroll = s.scrollTop; // ignore the scroll event this write will fire
@@ -81,11 +84,11 @@ export function createTranscript(container, opts = {}) {
     if (text) bubble.append(renderMarkdown(text));
     const imgs = imageNodes(message.content);
     if (imgs) bubble.append(imgs);
-    return el("div", { class: "msg user" }, el("div", { class: "role", text: "You" }), bubble);
+    return el("div", { class: "msg user" }, bubble);
   }
 
   function assistantMessageNode(message) {
-    const wrap = el("div", { class: "msg assistant" }, el("div", { class: "role", text: "Pi" }));
+    const wrap = el("div", { class: "msg assistant" });
     renderAssistantBlocks(wrap, message);
     if (message?.usage && settings.showCosts) {
       const t = usageText({ usage: message.usage });
@@ -133,6 +136,29 @@ export function createTranscript(container, opts = {}) {
     return el("div", { class: `msg system ${kind}` }, el("div", { class: "bubble", text }));
   }
 
+  /** Inline note about something that happened *in this session* — an
+   *  extension/skill notification or a command's own feedback. It is part of
+   *  the transcript, so it does not vanish after a couple of seconds (like a
+   *  toast) and it is gone the next time history renders (resume/reload),
+   *  which is exactly the lifetime a session-scoped note should have. */
+  function notice(text, { kind = "info" } = {}) {
+    const message = String(text ?? "").trim();
+    if (!message) return null;
+    const node = el(
+      "div",
+      { class: `msg system notice ${kind}` },
+      el(
+        "div",
+        { class: "bubble" },
+        icon(kind === "error" || kind === "warning" ? "alert" : "info", 13),
+        el("span", { class: "notice-text", text: message }),
+      ),
+    );
+    container.append(node);
+    if (stick) scrollToBottom();
+    return node;
+  }
+
   function entryNode(entry) {
     if (!entry || typeof entry !== "object") return null;
     if (entry.type === "message") {
@@ -168,16 +194,18 @@ export function createTranscript(container, opts = {}) {
         container.append(node);
       }
     }
-    if (!container.childElementCount) {
-      const text = meta?.loading
+    // `meta === null` means "empty the pane" (home screen / closed tab): no
+    // placeholder, no scroll, nothing for the ResizeObserver to pin.
+    if (meta && !container.childElementCount) {
+      const text = meta.loading
         ? "Loading session…"
-        : meta?.sessionName
+        : meta.sessionName
           ? `${meta.sessionName} — no messages yet.`
           : "New session — send a message to start.";
       container.append(el("div", { class: "msg system" }, el("div", { class: "bubble", text })));
     }
-    stick = true;
-    scrollToBottom();
+    stick = !!meta;
+    if (meta) scrollToBottom();
   }
 
   function prependHistory(entries) {
@@ -220,7 +248,7 @@ export function createTranscript(container, opts = {}) {
         if (msg?.role === "user") {
           container.append(userNode(msg));
         } else if (msg?.role === "assistant") {
-          const node = el("div", { class: "msg assistant streaming" }, el("div", { class: "role", text: "Pi" }));
+          const node = el("div", { class: "msg assistant streaming" });
           const textWrap = el("div", { class: "bubble" });
           node.append(textWrap);
           container.append(node);
@@ -250,7 +278,7 @@ export function createTranscript(container, opts = {}) {
           if (pending) {
             const wrap = pending.node;
             wrap.classList.remove("streaming");
-            wrap.replaceChildren(el("div", { class: "role", text: "Pi" }));
+            wrap.replaceChildren();
             renderAssistantBlocks(wrap, msg);
             if (msg.usage && settings.showCosts) {
               const t = usageText({ usage: msg.usage });
@@ -309,6 +337,7 @@ export function createTranscript(container, opts = {}) {
 
   return {
     renderHistory,
+    notice,
     prependHistory,
     handleEvent,
     scrollToBottom,

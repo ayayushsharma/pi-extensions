@@ -41,7 +41,7 @@ export class HubSocketServer extends EventEmitter {
   private conns = new Set<Conn>();
   private ownedIno: bigint | null = null;
 
-  constructor(private sockPath: string) {
+  constructor(public sockPath: string) {
     super();
   }
 
@@ -155,8 +155,18 @@ export class HubSocketClient extends EventEmitter {
   private stopped = false;
   private retryMs = 1000;
 
-  constructor(private sockPath: string) {
+  /** `source` may be a function: it is asked again on every retry, so a stale
+   *  socket file (hub killed hard) cannot pin the mirror to a dead path. */
+  constructor(private source: string | (() => string[])) {
     super();
+  }
+
+  /** the socket actually in use (set on connect) */
+  sockPath = "";
+
+  private candidates(): string[] {
+    const raw = typeof this.source === "function" ? this.source() : [this.source];
+    return [...new Set(raw.filter((p) => typeof p === "string" && p.length > 0))];
   }
 
   connect(): void {
@@ -165,11 +175,23 @@ export class HubSocketClient extends EventEmitter {
   }
 
   private dial(): void {
+    this.tryNext(this.candidates(), 0);
+  }
+
+  /** Try each candidate socket in order; only a successful connect wins. */
+  private tryNext(list: string[], index: number): void {
     if (this.stopped) return;
-    const socket = net.connect(this.sockPath);
+    if (index >= list.length) {
+      if (list.length === 1) this.sockPath = list[0];
+      this.scheduleRetry();
+      return;
+    }
+    const path = list[index];
+    const socket = net.connect(path);
     this.socket = socket;
     socket.setEncoding("utf8");
     socket.on("connect", () => {
+      this.sockPath = path;
       this.connected = true;
       this.retryMs = 1000;
       this.emit("connected");
@@ -188,21 +210,35 @@ export class HubSocketClient extends EventEmitter {
         idx = this.buffer.indexOf("\n");
       }
     });
-    const retry = () => {
-      if (this.connected) this.emit("disconnected");
-      this.connected = false;
-      this.socket = null;
-      if (this.stopped) return;
-      const wait = this.retryMs;
-      this.retryMs = Math.min(this.retryMs * 2, 30000);
-      setTimeout(() => this.dial(), wait).unref?.();
-    };
-    socket.on("close", retry);
+    socket.on("close", () => {
+      if (this.socket !== socket) return; // superseded by another candidate
+      this.retry();
+    });
     socket.on("error", () => {
       try {
         socket.destroy();
       } catch {}
+      // This path refused (stale file, no listener): try the next candidate
+      // before falling back to the retry timer.
+      if (this.socket === socket) {
+        this.socket = null;
+        this.tryNext(list, index + 1);
+      }
     });
+  }
+
+  private retry(): void {
+    if (this.connected) this.emit("disconnected");
+    this.connected = false;
+    this.socket = null;
+    if (this.stopped) return;
+    this.scheduleRetry();
+  }
+
+  private scheduleRetry(): void {
+    const wait = this.retryMs;
+    this.retryMs = Math.min(this.retryMs * 2, 30000);
+    setTimeout(() => this.dial(), wait).unref?.();
   }
 
   send(frame: any): void {

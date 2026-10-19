@@ -17,7 +17,8 @@ import {
   sessionsDir,
 } from "../../store/sessions.js";
 import type { RunnerRegistry } from "../../runners/registry.js";
-import { browseRoots, listDir, makeDir, readContent, readPreview } from "../../store/files.js";
+import { browseRoots, jailPath, listDir, makeDir, readContent, readPreview } from "../../store/files.js";
+import { gitInfo } from "../../store/git.js";
 import { BODY_SMALL, readJson, sendError, sendJson, type Route } from "../http.js";
 
 export interface SessionDeps {
@@ -185,6 +186,18 @@ export function sessionRoutes(deps: SessionDeps): Route[] {
       handler: ({ res, url }) => {
         const out = listDir(url.searchParams.get("path") || "~", deps.config);
         return sendJson(res, 200, { ...out, roots: browseRoots(deps.config) });
+      },
+    },
+    {
+      method: "GET",
+      path: "/api/git",
+      auth: true,
+      handler: ({ res, url }) => {
+        // Same jail as the file panel: only directories the hub already
+        // exposes may be probed for a branch.
+        const raw = url.searchParams.get("cwd") || "~";
+        const cwd = jailPath(raw, browseRoots(deps.config));
+        return sendJson(res, 200, gitInfo(cwd));
       },
     },
     {

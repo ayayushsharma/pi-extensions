@@ -23,6 +23,9 @@ export const AGENT_DIR = process.env.PI_CODING_AGENT_DIR || path.join(HOME, ".pi
 export const SESSIONS_DIR =
   process.env.PI_CODING_AGENT_SESSION_DIR || path.join(AGENT_DIR, "sessions");
 export const HUB_DIR = process.env.PI_HUB_DIR || path.join(HOME, ".pi", "pi-hub");
+/** Stable pointer to the most recently started hub, independent of PI_HUB_DIR:
+ *  an interactive TUI mirrors into *some* hub without knowing its directory. */
+export const ADVERT_FILE = process.env.PI_HUB_ADVERT_FILE || path.join(AGENT_DIR, "pi-hub", "hub.json");
 export const CONFIG_FILE = path.join(AGENT_DIR, "settings.json");
 
 function fmt(tpl: string, ...args: Array<string | number>): string {
@@ -42,6 +45,8 @@ export interface HubConfig {
   ttlMs: number;
   maxHeadless: number;
   sockPath: string;
+  /** where the hub writes its sock/port so TUIs can find it */
+  advertPath: string;
   fsRoots: string[];
   logFile: string;
   debug: boolean;
@@ -101,6 +106,7 @@ export function loadConfig(): HubConfig {
       Number(process.env.PI_HUB_MAX_HEADLESS || settings.maxHeadless || 0) || 0,
     ),
     sockPath: process.env.PI_HUB_SOCK || settings.sock || path.join(HUB_DIR, "hub.sock"),
+    advertPath: ADVERT_FILE,
     fsRoots: [...new Set(roots)],
     logFile: process.env.PI_HUB_LOG_FILE || path.join(HUB_DIR, "pi-hub.log"),
     debug: envBool("PI_HUB_DEBUG") === true,

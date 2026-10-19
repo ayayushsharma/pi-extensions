@@ -4,6 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="color-scheme" content="light dark" />
+  <script src="/js/theme-boot.js?v=__ASSETV__"></script>
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="default" />
   <title>Pi Hub</title>
@@ -22,17 +23,31 @@
 </head>
 <body>
   <div id="login" class="overlay hidden" role="dialog" aria-modal="true" aria-labelledby="login-title">
-    <form id="login-form" class="card login-card">
-      <h1 id="login-title">Pi Hub</h1>
-      <p class="meta" id="login-sub">This server requires authentication.</p>
-      <label>User <input id="login-user" name="user" autocomplete="username" autocapitalize="off" spellcheck="false" /></label>
-      <label>Password <input id="login-pass" name="pass" type="password" autocomplete="current-password" /></label>
-      <p id="login-error" class="error" role="alert"></p>
-      <button type="submit" class="btn primary">Sign in</button>
+    <form id="login-form" class="card login-card" autocomplete="on">
+      <div class="login-brand">
+        <span class="login-mark" id="login-mark"></span>
+        <h1 id="login-title">Pi Hub</h1>
+        <p class="login-sub" id="login-sub">This server requires authentication.</p>
+      </div>
+      <div class="login-fields">
+        <label class="login-field">
+          <span class="login-label" for="login-user">User</span>
+          <input id="login-user" name="user" autocomplete="username" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="user" required />
+        </label>
+        <label class="login-field">
+          <span class="login-label" for="login-pass">Password</span>
+          <span class="login-pw">
+            <input id="login-pass" name="pass" type="password" autocomplete="current-password" placeholder="••••••••" required />
+            <button id="login-reveal" class="login-reveal" type="button" aria-label="Show password" aria-pressed="false" title="Show password"></button>
+          </span>
+        </label>
+      </div>
+      <p id="login-error" class="login-error" role="alert"></p>
+      <button type="submit" class="btn primary login-submit" id="login-submit">Sign in</button>
     </form>
   </div>
 
-  <div id="app" class="app">
+  <div id="app" class="app hidden">
     <header class="tabbar" id="tabbar">
       <button id="sidebar-toggle" class="icon-btn" type="button" aria-label="Toggle sidebar" aria-expanded="false" title="Sessions sidebar"></button>
       <button id="home-btn" class="icon-btn" type="button" aria-label="All sessions" title="All sessions"></button>
@@ -47,13 +62,6 @@
       <button id="settings-btn" class="icon-btn" type="button" aria-label="Settings" title="Settings"></button>
       <button id="reload-btn" class="icon-btn" type="button" aria-label="Reload" title="Reload"></button>
     </header>
-
-    <div class="titlebar hidden" id="titlebar">
-      <span class="tb-title" id="tb-title"></span>
-      <span class="chip" id="tb-chip"></span>
-      <span class="grow"></span>
-      <button id="tb-close" class="icon-btn" type="button" aria-label="Close session tab" title="Close tab"></button>
-    </div>
 
     <div class="shell">
       <aside class="sidebar" id="sidebar" aria-label="Sessions and running terminals">
@@ -82,6 +90,13 @@
       <div class="sidebar-overlay" id="sidebar-overlay"></div>
 
       <main class="main">
+        <div class="titlebar hidden" id="titlebar">
+          <span class="tb-title" id="tb-title"></span>
+          <span class="chip" id="tb-chip"></span>
+          <span class="grow"></span>
+          <button id="tb-close" class="icon-btn" type="button" aria-label="Close session tab" title="Close tab"></button>
+        </div>
+
         <div id="banner" class="banner hidden" role="status"></div>
         <div class="scroll-area" id="view">
           <div class="welcome hidden" id="welcome">
@@ -101,11 +116,13 @@
           <div class="composer-inner">
             <div class="queue hidden" id="queue"></div>
             <form id="composer" class="composer" autocomplete="off">
-              <textarea id="input" rows="1" aria-label="Message" placeholder="Ask anything, / for commands…"></textarea>
-              <div class="actions">
-                <button id="mic-btn" class="icon-btn" type="button" aria-label="Voice input" title="Voice input"></button>
-                <button id="abort-btn" class="icon-btn abort-btn hidden" type="button" aria-label="Stop" title="Stop (Esc)"></button>
-                <button id="send-btn" class="send-btn" type="submit" aria-label="Send message" title="Send (Enter)"></button>
+              <div class="composer-input">
+                <textarea id="input" rows="1" aria-label="Message" placeholder="Ask anything, / for commands…"></textarea>
+                <div class="actions">
+                  <button id="mic-btn" class="icon-btn" type="button" aria-label="Voice input" title="Voice input"></button>
+                  <button id="abort-btn" class="icon-btn abort-btn hidden" type="button" aria-label="Stop" title="Stop (Esc)"></button>
+                  <button id="send-btn" class="send-btn" type="submit" aria-label="Send message" title="Send (Enter)"></button>
+                </div>
               </div>
               <div class="composer-footer">
                 <div class="left">
@@ -129,12 +146,13 @@
                 </div>
               </div>
               <div id="slash" class="menu slash-menu hidden" role="listbox" aria-label="Commands"></div>
+              <div id="command-menu" class="menu command-menu hidden" role="listbox" aria-label="Commands and skills"></div>
             </form>
             <div class="statusline">
               <span class="cwd-label" id="cwd-label"></span>
               <span class="grow"></span>
               <span class="chip-mini hidden" id="cost-chip"></span>
-              <button class="chip-mini hidden" id="context-chip" type="button"></button>
+              <button class="chip-mini hidden" id="context-chip" type="button" aria-haspopup="dialog" aria-expanded="false" title="Context usage"></button>
             </div>
           </div>
         </div>
@@ -186,34 +204,96 @@
       <div class="card-head">
         <span class="card-title" id="settings-title">Settings</span>
         <span class="grow"></span>
+        <span class="settings-note">Saved in this browser</span>
         <button id="settings-close" class="icon-btn" type="button" aria-label="Close"></button>
       </div>
-      <div class="settings-tabs" role="tablist">
-        <button class="tab-btn active" data-tab="appearance" type="button">Appearance</button>
-        <button class="tab-btn" data-tab="chat" type="button">Chat</button>
-        <button class="tab-btn" data-tab="server" type="button">Server</button>
-      </div>
-      <div class="card-body">
-        <section class="settings-pane" data-pane="appearance">
-          <h3>Theme</h3>
-          <div class="theme-grid" id="theme-grid" role="listbox" aria-label="Theme"></div>
-        </section>
-        <section class="settings-pane hidden" data-pane="chat">
-          <h3>Display</h3>
-          <label class="row"><input id="toggle-thinking" type="checkbox" /> <span class="grow">Show thinking blocks</span></label>
-          <label class="row"><input id="toggle-costs" type="checkbox" /> <span class="grow">Show usage and cost</span></label>
-          <label class="row"><input id="toggle-tools" type="checkbox" /> <span class="grow">Expand tool calls by default</span></label>
-          <label class="row"><input id="toggle-wrap" type="checkbox" /> <span class="grow">Wrap long lines and code</span></label>
-        </section>
-        <section class="settings-pane hidden" data-pane="server">
-          <h3>Connection</h3>
-          <div class="meta" id="server-info"></div>
-          <h3>Processes</h3>
-          <button id="proc-refresh" class="btn small" type="button">Refresh</button>
-          <div id="proc-list"></div>
-          <h3>Session</h3>
-          <button id="logout-btn" class="btn danger small" type="button">Log out</button>
-        </section>
+      <div class="settings-body">
+        <nav class="settings-tabs" role="tablist" aria-orientation="vertical" aria-label="Settings sections">
+          <button class="tab-btn active" data-tab="appearance" type="button" role="tab" aria-selected="true">
+            <span class="tab-ico" data-icon="palette"></span><span>Appearance</span>
+          </button>
+          <button class="tab-btn" data-tab="chat" type="button" role="tab" aria-selected="false">
+            <span class="tab-ico" data-icon="message"></span><span>Chat</span>
+          </button>
+          <button class="tab-btn" data-tab="server" type="button" role="tab" aria-selected="false">
+            <span class="tab-ico" data-icon="server"></span><span>Server</span>
+          </button>
+        </nav>
+        <div class="settings-content">
+          <section class="settings-pane" data-pane="appearance" role="tabpanel" aria-label="Appearance">
+            <header class="pane-head">
+              <h2>Appearance</h2>
+              <p>Pick a palette. It restyles the whole hub and is remembered on this device.</p>
+            </header>
+            <div class="field-group">
+              <div class="theme-groups" id="theme-grid" role="listbox" aria-label="Theme"></div>
+            </div>
+          </section>
+          <section class="settings-pane hidden" data-pane="chat" role="tabpanel" aria-label="Chat">
+            <header class="pane-head">
+              <h2>Chat</h2>
+              <p>How much of each turn the transcript shows. Changes apply to open sessions immediately.</p>
+            </header>
+            <div class="field-group">
+              <div class="group-head">Transcript</div>
+              <label class="field-row">
+                <span class="field-copy">
+                  <span class="field-title">Thinking blocks</span>
+                  <span class="field-sub">Show the model's reasoning above each answer.</span>
+                </span>
+                <input id="toggle-thinking" class="switch" type="checkbox" />
+              </label>
+              <label class="field-row">
+                <span class="field-copy">
+                  <span class="field-title">Usage and cost</span>
+                  <span class="field-sub">Token counts and spend under every assistant turn.</span>
+                </span>
+                <input id="toggle-costs" class="switch" type="checkbox" />
+              </label>
+              <label class="field-row">
+                <span class="field-copy">
+                  <span class="field-title">Expand tool calls</span>
+                  <span class="field-sub">Open tool cards with their arguments and output instead of a one-line summary.</span>
+                </span>
+                <input id="toggle-tools" class="switch" type="checkbox" />
+              </label>
+              <label class="field-row">
+                <span class="field-copy">
+                  <span class="field-title">Wrap long lines</span>
+                  <span class="field-sub">Wrap code and wide output rather than scrolling sideways.</span>
+                </span>
+                <input id="toggle-wrap" class="switch" type="checkbox" />
+              </label>
+            </div>
+          </section>
+          <section class="settings-pane hidden" data-pane="server" role="tabpanel" aria-label="Server">
+            <header class="pane-head">
+              <h2>Server</h2>
+              <p>The hub process behind this page and the pi processes it can see.</p>
+            </header>
+            <div class="field-group">
+              <div class="group-head">Connection</div>
+              <div class="info-grid" id="server-info"></div>
+            </div>
+            <div class="field-group">
+              <div class="group-head with-action">
+                <span>Processes</span>
+                <button id="proc-refresh" class="label-action" type="button">Refresh</button>
+              </div>
+              <div id="proc-list" class="proc-list"></div>
+            </div>
+            <div class="field-group">
+              <div class="group-head">Session</div>
+              <div class="field-row">
+                <span class="field-copy">
+                  <span class="field-title">Log out</span>
+                  <span class="field-sub">Clears the auth cookie for this browser. Sessions and files are untouched.</span>
+                </span>
+                <button id="logout-btn" class="btn small danger" type="button">Log out</button>
+              </div>
+            </div>
+          </section>
+        </div>
       </div>
     </div>
   </div>

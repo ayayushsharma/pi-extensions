@@ -27,6 +27,7 @@ import {
 import {
   deleteSession as apiDelete,
   forkSession as apiFork,
+  gitBranch,
   history as fetchHistory,
   listSessions,
   login,
@@ -49,10 +50,17 @@ import { createTabs } from "./ui/tabs.js";
 import { renderBanner } from "./ui/banner.js";
 
 /* ── refs ────────────────────────────────────────────────────────────── */
+/** The context chip's popover: one small card, opened on demand. */
+const ctxPop = { node: null, open: false };
+
 const refs = {
+  app: $("app"),
   login: $("login"),
   loginForm: $("login-form"),
+  loginMark: $("login-mark"),
   loginSub: $("login-sub"),
+  loginReveal: $("login-reveal"),
+  loginSubmit: $("login-submit"),
   loginUser: $("login-user"),
   loginPass: $("login-pass"),
   loginError: $("login-error"),
@@ -117,6 +125,7 @@ const refs = {
   thinkingMenu: $("thinking-menu"),
   thinkingLabel: $("thinking-label"),
   slash: $("slash"),
+  commandMenu: $("command-menu"),
   cwdLabel: $("cwd-label"),
   costChip: $("cost-chip"),
   contextChip: $("context-chip"),
@@ -188,7 +197,15 @@ function sendExtensionResponse(msg) {
   rawSend(msg);
 }
 
-const dialogs = createDialogs(refs.dialogContainer, sendExtensionResponse);
+const dialogs = createDialogs(refs.dialogContainer, sendExtensionResponse, {
+  /** Extension notifications (skills, command runs) belong to the session they
+   *  happened in — show them in the transcript, not as a toast that vanishes.
+   *  With no session on screen a toast is the only channel left. */
+  notify: (message, kind) => {
+    if (state.view === "session" && state.bound) transcript.notice(message, { kind });
+    else toast(message, { kind });
+  },
+});
 
 const transcript = createTranscript(refs.messages, {
   showThinking: state.prefs.showThinking,
@@ -309,6 +326,7 @@ const composer = createComposer(
     imageInput: refs.imageInput,
     queueEl: refs.queue,
     slashEl: refs.slash,
+    commandMenu: refs.commandMenu,
     modelBtn: refs.modelBtn,
     modelMenu: refs.modelMenu,
     modelLabel: refs.modelLabel,
@@ -350,7 +368,6 @@ const composer = createComposer(
     },
     restoreQueue: async () => restoreToEditor(await clearQueue()),
     takePendingFiles: () => state.pendingFiles.splice(0),
-    openPicker: () => picker.open(state.bound?.cwd || state.meta?.cwd),
     toast: (message, opts) => toast(message, opts),
   },
 );
@@ -400,7 +417,8 @@ const tabs = createTabs(
 /* ── titlebar ────────────────────────────────────────────────────────── */
 refs.tbClose.append(icon("x", 14));
 refs.tbClose.addEventListener("click", () => state.activeKey && closeTab(state.activeKey));
-refs.welcomeLogo.append(logo(44));
+refs.welcomeLogo.append(logo(60));
+refs.loginMark.append(logo(48));
 refs.welcomeHints.append(
   el("span", { class: "chip-mini" }, "/", " focus input"),
   el("span", { class: "chip-mini" }, "Esc", " stop"),
@@ -471,7 +489,7 @@ function renderWelcome() {
     );
   }
 }
-refs.homeBtn.append(logo(20));refs.filesBtn.append(icon("folder", 16));
+refs.homeBtn.append(logo(22));refs.filesBtn.append(icon("folder", 16));
 refs.settingsBtn.append(icon("gear", 17));
 refs.reloadBtn.append(icon("refresh", 15));
 refs.sidebarToggle.append(icon("menu", 18));
@@ -508,6 +526,9 @@ function render() {
     transcript.renderHistory([], null);
     clearLoadEarlier();
     show(refs.jumpLatest, false);
+    // The pane is shared with the transcript; a scrolled session must not
+    // leave the welcome block scrolled off its top.
+    if (refs.view.scrollTop !== 0) refs.view.scrollTop = 0;
   }
   document.body.dataset.view = state.view;
   if (state.booted) document.body.dataset.ready = "1";
@@ -515,7 +536,10 @@ function render() {
 
 function renderTitlebar() {
   const tab = activeTab();
-  const hidden = !tab || state.view !== "session" || !state.ui?.sidebarCollapsed;
+  // Shown for any open session — it used to require a collapsed sidebar,
+  // which made the title (and its state chip + close) vanish for no reason
+  // while the sidebar was open.
+  const hidden = !tab || state.view !== "session";
   show(refs.titlebar, !hidden);
   if (hidden) return;
   refs.tbTitle.textContent = tab.title || tab.file || "session";
@@ -524,9 +548,37 @@ function renderTitlebar() {
   refs.tbChip.className = `chip ${runner?.kind === "live" ? "live" : runner?.state === "dead" ? "dead" : "headless"}`;
 }
 
+/* git branch for the open session's directory (fetched once per cwd) */
+const gitCache = new Map();
+let gitPending = null;
+
+function refreshGit(cwd) {
+  if (!cwd || state.view !== "session") return;
+  if (gitCache.has(cwd) || gitPending === cwd) return;
+  gitPending = cwd;
+  gitBranch(cwd)
+    .then((info) => gitCache.set(cwd, info))
+    .catch(() => gitCache.set(cwd, { branch: null }))
+    .finally(() => {
+      if (gitPending === cwd) gitPending = null;
+      render();
+    });
+}
+
 function renderStatusline() {
   const cwd = state.bound?.cwd || state.meta?.cwd || "";
-  refs.cwdLabel.replaceChildren(icon("folder", 13), el("span", { class: "cwd-text", text: shortCwd(cwd) || "no session" }));
+  const parts = [icon("folder", 13), el("span", { class: "cwd-text", text: shortCwd(cwd) || "no session" })];
+  const branch = cwd ? gitCache.get(cwd)?.branch : null;
+  if (branch) {
+    parts.push(
+      el("span", { class: "cwd-branch", title: `git branch: ${branch}` },
+        icon("branch", 11),
+        el("span", { class: "cwd-branch-name", text: branch }),
+      ),
+    );
+  }
+  refs.cwdLabel.replaceChildren(...parts);
+  refreshGit(cwd);
 
   const cost = state.meta?.cost ?? 0;
   const tokens = state.meta?.tokens ?? 0;
@@ -539,17 +591,15 @@ function renderStatusline() {
     refs.costChip.textContent = bits.join(" · ");
   }
   const usage = state.contextUsage;
-  show(refs.contextChip, state.view === "session" && usage != null);
-  if (usage != null) {
-    const pct = Number(usage);
+  show(refs.contextChip, state.view === "session" && usage?.percent != null);
+  if (usage?.percent != null) {
+    const pct = Number(usage.percent);
     refs.contextChip.textContent = pct < 1 ? "<1% ctx" : `${Math.round(pct)}% ctx`;
     refs.contextChip.classList.toggle("warn", pct >= 70 && pct < 90);
     refs.contextChip.classList.toggle("danger", pct >= 90);
-    // Over budget the pill offers a way out: confirm, then compact.
-    const canCompact = state.view === "session" && !!state.bound && state.bound.state !== "dead"
-      && pct >= 90 && !state.streaming && !state.compacting && !state.binding;
-    refs.contextChip.disabled = !canCompact;
-    refs.contextChip.title = canCompact ? "Context over budget — compact now" : refs.contextChip.textContent;
+    refs.contextChip.disabled = false;
+    refs.contextChip.title = "Context usage — click for details";
+    if (ctxPop.open) renderContextPopover();
   }
 
   // connection pill
@@ -927,16 +977,26 @@ async function loadEarlier() {
   renderLoadEarlier();
 }
 
+/** pi reports context usage as { tokens, contextWindow, percent }; older and
+ *  live-runner paths only give a percent, so normalise both into one object. */
+function normalizeUsage(value) {
+  if (value == null) return null;
+  if (typeof value === "number") return { percent: value };
+  if (typeof value === "object") return { ...value };
+  return null;
+}
+
 /** Map get_session_stats onto the statusline fields. */
 function applyStats(data) {
   if (!data) return;
+  const next = normalizeUsage(data.contextUsage);
   set({
     meta: {
       ...(state.meta || {}),
       cost: typeof data.cost === "number" ? data.cost : state.meta?.cost,
       tokens: data.tokens?.total ?? state.meta?.tokens,
     },
-    contextUsage: data.contextUsage?.percent ?? state.contextUsage,
+    contextUsage: next ? { ...(state.contextUsage || {}), ...next } : state.contextUsage,
   });
 }
 
@@ -1236,7 +1296,10 @@ function handleRunnerEvent(event) {
   }
   if (event.type === "runner_status") {
     set({ bound: { ...state.bound, state: event.state || state.bound?.state } });
-    if (event.contextUsage != null) set({ contextUsage: event.contextUsage });
+    if (event.contextUsage != null) {
+      const next = normalizeUsage(event.contextUsage);
+      set({ contextUsage: next ? { ...(state.contextUsage || {}), ...next } : state.contextUsage });
+    }
     return;
   }
   if (event.type === "session_file") {
@@ -1317,19 +1380,41 @@ function connect() {
 
 onUnauthorized(() => {
   show(refs.login, true);
-  refs.loginSub.textContent = "This server requires authentication.";
+  refs.loginSub.textContent = "Sign in to this hub";
+  setTimeout(() => refs.loginUser.focus(), 30);
+});
+
+/* Password reveal: the field types "password" until the eye is pressed. */
+let pwVisible = false;
+refs.loginReveal.append(icon("eye", 15));
+refs.loginReveal.addEventListener("click", () => {
+  pwVisible = !pwVisible;
+  refs.loginPass.type = pwVisible ? "text" : "password";
+  refs.loginReveal.setAttribute("aria-pressed", String(pwVisible));
+  refs.loginReveal.setAttribute("aria-label", pwVisible ? "Hide password" : "Show password");
+  refs.loginReveal.title = pwVisible ? "Hide password" : "Show password";
+  refs.loginPass.focus();
 });
 
 refs.loginForm.addEventListener("submit", async (e) => {
   e.preventDefault();
+  if (refs.loginSubmit.disabled) return;
   refs.loginError.textContent = "";
+  const label = refs.loginSubmit.textContent;
+  refs.loginSubmit.disabled = true;
+  refs.loginSubmit.textContent = "Signing in…";
   try {
-    await login(refs.loginUser.value, refs.loginPass.value);
+    await login(refs.loginUser.value.trim(), refs.loginPass.value);
     show(refs.login, false);
+    show(refs.app, true);
     socket?.close?.();
     connect();
   } catch (err) {
-    refs.loginError.textContent = err.message;
+    refs.loginError.textContent = err.message || "Sign-in failed";
+    refs.loginPass.select?.();
+  } finally {
+    refs.loginSubmit.disabled = false;
+    refs.loginSubmit.textContent = label;
   }
 });
 
@@ -1366,8 +1451,84 @@ refs.csClose.addEventListener("click", () => {
   const runner = state.bound;
   if (runner) killRunner(runner, { confirm: true });
 });
-refs.contextChip.addEventListener("click", async () => {
-  if (refs.contextChip.disabled) return;
+refs.contextChip.addEventListener("click", (e) => {
+  e.stopPropagation();
+  if (ctxPop.open) return closeContextPopover();
+  openContextPopover();
+});
+document.addEventListener("click", (e) => {
+  if (ctxPop.open && !ctxPop.node?.contains(e.target) && e.target !== refs.contextChip) closeContextPopover();
+});
+document.addEventListener("keydown", (e) => {
+  if (ctxPop.open && e.key === "Escape") closeContextPopover();
+});
+window.addEventListener("resize", () => ctxPop.open && closeContextPopover());
+
+/* ── context usage popover ───────────────────────────────────────────── */
+function fmtTokens(n) {
+  if (n == null || !Number.isFinite(n)) return "?";
+  const trim = (v) => v.toFixed(1).replace(/\.0$/, "");
+  if (n >= 1e6) return `${trim(n / 1e6)}m`;
+  if (n >= 1000) return `${trim(n / 1000)}k`;
+  return String(Math.round(n));
+}
+
+async function openContextPopover() {
+  ctxPop.open = true;
+  refs.contextChip.setAttribute("aria-expanded", "true");
+  renderContextPopover();
+  // Refresh, so a stale chip cannot show stale numbers.
+  commandRequest({ type: "get_session_stats" }, 15000)
+    .then((r) => applyStats(r.data))
+    .catch(() => {});
+}
+
+function closeContextPopover() {
+  ctxPop.open = false;
+  refs.contextChip?.setAttribute("aria-expanded", "false");
+  ctxPop.node?.remove();
+  ctxPop.node = null;
+}
+
+function renderContextPopover() {
+  if (!ctxPop.open) return;
+  const usage = state.contextUsage || {};
+  const pct = Math.max(0, Math.min(100, Number(usage.percent ?? 0)));
+  const known = usage.tokens != null && usage.contextWindow != null;
+  const left = known ? Math.max(0, usage.contextWindow - usage.tokens) : null;
+  const canCompact = pct >= 90 && state.view === "session" && !!state.bound
+    && state.bound.state !== "dead" && !state.streaming && !state.compacting && !state.binding;
+
+  if (!ctxPop.node) {
+    ctxPop.node = el("div", { class: "ctx-pop", id: "ctx-pop", role: "dialog", "aria-label": "Context usage" });
+    document.body.append(ctxPop.node);
+  }
+  ctxPop.node.replaceChildren(
+    el("div", { class: "ctx-head" },
+      el("span", { class: "ctx-title", text: "Context" }),
+      el("span", { class: "ctx-pct", text: `${pct < 1 ? "<1" : Math.round(pct)}%` }),
+    ),
+    el("div", { class: "ctx-bar", role: "img", "aria-label": `Context ${Math.round(pct)}% used` },
+      el("span", { class: `ctx-fill${pct >= 90 ? " danger" : pct >= 70 ? " warn" : ""}`, style: `width:${Math.max(pct, 1.5)}%` }),
+    ),
+    el("div", { class: "ctx-rows" },
+      el("div", { class: "ctx-row" }, el("span", { text: "Used" }), el("b", { text: known ? fmtTokens(usage.tokens) : "unknown" })),
+      el("div", { class: "ctx-row" }, el("span", { text: "Limit" }), el("b", { text: known ? fmtTokens(usage.contextWindow) : "?" })),
+      el("div", { class: "ctx-row ctx-left" }, el("span", { text: "Left" }), el("b", { text: left != null ? fmtTokens(left) : "?" })),
+    ),
+    ...(canCompact
+      ? [el("button", { class: "btn small primary ctx-compact", type: "button", text: "Compact now", onclick: compactFromPopover })]
+      : []),
+  );
+
+  // Anchor above the chip, right-aligned with it.
+  const r = refs.contextChip.getBoundingClientRect();
+  ctxPop.node.style.bottom = `${Math.round(window.innerHeight - r.top + 8)}px`;
+  ctxPop.node.style.right = `${Math.round(window.innerWidth - r.right)}px`;
+}
+
+async function compactFromPopover() {
+  closeContextPopover();
   const ok = await dialogs.confirm("Compact context", "Summarize the transcript to free context? The full history stays on disk.");
   if (!ok) return;
   try {
@@ -1375,7 +1536,7 @@ refs.contextChip.addEventListener("click", async () => {
   } catch (e) {
     toast(e.message, { kind: "error" });
   }
-});
+}
 refs.settingsBtn.addEventListener("click", () => settings.open());
 refs.filesBtn.addEventListener("click", () => files.toggle(state.bound?.cwd || state.meta?.cwd, { dirName: state.historyDir, file: state.historyFile }));
 refs.reloadBtn.addEventListener("click", () => location.reload());
@@ -1436,9 +1597,10 @@ async function boot() {
     await refreshSessions();
     set({ booted: true });
   } catch (e) {
-    if (e.status === 401) return; // overlay was raised by onUnauthorized
+    if (e.status === 401) return; // sign-in card over a shell that never painted
     toast(`sessions: ${e.message}`, { kind: "error" });
   }
+  show(refs.app, true);
   connect();
 }
 boot();

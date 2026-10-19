@@ -164,6 +164,7 @@ export async function startHub({ port, env = {}, sessionDir, llmUrl } = {}) {
     PI_HUB_PORT: String(port),
     PI_HUB_HOST: "127.0.0.1",
     PI_HUB_DIR: dir,
+    PI_HUB_ADVERT_FILE: path.join(dir, "hub.json"),
     PI_HUB_LOG_FILE: path.join(dir, "hub.log"),
     PI_HUB_STATIC_DIR: path.join(PKG_ROOT, "public"),
     PI_HUB_PI_BIN: piBin,
@@ -196,6 +197,8 @@ export async function startHub({ port, env = {}, sessionDir, llmUrl } = {}) {
     url,
     port,
     dir,
+    agentDir: fullEnv.PI_CODING_AGENT_DIR,
+    advertPath: path.join(dir, "hub.json"),
     proc,
     log: () => fs.readFileSync(path.join(dir, "hub.log"), "utf8"),
     stdout: () => stdout,
@@ -206,7 +209,7 @@ export async function startHub({ port, env = {}, sessionDir, llmUrl } = {}) {
   };
 }
 
-export async function startMirror({ sock, cwd, sessionDir, llmUrl } = {}) {
+export async function startMirror({ sock, cwd, sessionDir, llmUrl, env: extraEnv } = {}) {
   const piBin = findPi();
   if (!piBin) throw Object.assign(new Error("pi binary not found"), { skip: true });
   const env = cleanEnv({ llmUrl: llmUrl ?? process.env.PI_HUB_TEST_LLM_URL });
@@ -215,6 +218,7 @@ export async function startMirror({ sock, cwd, sessionDir, llmUrl } = {}) {
   env.PI_HUB_DIR = path.dirname(sock);
   env.PI_HUB_LOG_FILE = path.join(path.dirname(sock), "mirror.log");
   if (sessionDir) env.PI_CODING_AGENT_SESSION_DIR = sessionDir;
+  if (extraEnv) Object.assign(env, extraEnv);
   const proc = spawn(piBin, ["-e", PKG_ROOT, "--mode", "rpc"], { cwd: cwd || os.tmpdir(), env, stdio: ["pipe", "pipe", "pipe"] });
   proc.stdin.on("error", () => {});
   proc.stdin.write("\n");

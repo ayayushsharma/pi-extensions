@@ -13,7 +13,7 @@ Playwright + Firefox test gate.
 
 | Capability | How it works |
 |---|---|
-| **Preview & drive a live TUI** (C1) | TUIs dial `~/.pi/pi-hub/hub.sock`; the hub lists them, the browser previews read-only history with a banner, then **Attach & Drive** relays prompts into the terminal. Detach freezes the view; a dead TUI offers *continue headless* on the same file. One driver at a time — a second browser gets `driver_busy` and an explicit takeover. |
+| **Preview & drive a live TUI** (C1) | Any interactive pi with the package loaded dials the hub socket and appears under **Live terminals**; the browser previews read-only history with a banner, then **Drive** relays prompts into the terminal. Detach freezes the view; a dead TUI offers *continue headless* on the same file. One driver at a time — a second browser gets `driver_busy` and an explicit takeover. A TUI finds the hub by its own `PI_HUB_SOCK`/`piHub.sock` if set, else via the hub's advert file `~/.pi/agent/pi-hub/hub.json` (so a dev hub with a custom `PI_HUB_DIR` still works). |
 | **Resume a historical session** (C2) | The picker lists the on-disk store; `bind` resumes with exactly one `switch_session`. Rejoining the loaded file is a **no-op** (pi cancels runs on re-switch), and windowed history paints before the stream attaches. Fork copies the transcript byte-for-byte. |
 | **New session anywhere** (C3) | Browse the server filesystem (or type a path), validate the cwd, spawn a `pi --mode rpc` child; the bind ack resolves only when the child is ready, so a bad cwd or bad binary is an honest error, never a zombie binding. |
 | **View & add to running headless** (C4) | Running children are pushed to every browser with pid/model/working state; opening one binds the **same child** (no respawn), and steering/queueing/abort works from any viewer. Pool cap (`PI_HUB_MAX_HEADLESS`) evicts idle sessions only. |
@@ -38,7 +38,9 @@ UX while fixing known rough edges:
   attachments, model + thinking menus, abort, optional Web Speech input, and a
   statusline with cwd, tokens, cost and context %.
 - **Server surfaces**: preview/drive banner, file panel jailed to the session
-  cwd (up-button disables at the boundary), settings (themes, display prefs,
+  cwd (up-button disables at the boundary), settings (side-rail sheet: twelve
+  light/dark themes with palette previews, chat prefs as switches, server +
+  process list,
   server info, process list with kill), extension-UI dialogs, toasts, login
   overlay, and a mobile drawer that closes on session pick.
 
@@ -61,6 +63,10 @@ PI_HUB_PORT=8292 PI_HUB_HOST=127.0.0.1 PI_HUB_PI_BIN="$(command -v pi)" \
 
 # any interactive pi process with the package loaded becomes a live mirror:
 pi -e .
+# ...in another terminal, run your normal work session the same way; it shows
+# up under "Live terminals" (preview -> Drive). It needs no hub path: the hub
+# publishes its socket in ~/.pi/agent/pi-hub/hub.json and the mirror falls back
+# to it when its configured socket is absent.
 ```
 
 `.ts` changes need a jiti cache clear + `/reload`; `public/` changes are a
@@ -73,6 +79,19 @@ Auth: set `PI_HUB_USER` / `PI_HUB_PASS` (or `piHub.user/pass` in
 render; `/api/*` and `/ws` require the HttpOnly `pi_hub_auth` cookie.
 `PI_HUB_ALLOWED_HOSTS` pins tunnel hostnames; Host/Origin are checked on
 every request.
+
+## Brand mark
+
+`public/js/core/icons.js` defines five π marks (`pi`, `knockout`, `badge`,
+`nodes`, `node`) in one place; the default is chosen by the `LOGO_MARK`
+constant and every logo call site (`logo(size)`) follows it.
+The badge body is `--accent` and the ink `--on-accent`, so the mark always
+renders as an accent app icon (terracotta, slate, forest… per theme) and never
+disappears against the page.
+
+The default is `pi`: the plain π glyph — a bar and two legs — knocked out of an
+accent badge. Nothing else in the mark, so it stays a π at 16px in the titlebar
+and at 64px on the sign-in card.
 
 ## Config (`PI_HUB_*` env, then the `piHub` settings block)
 

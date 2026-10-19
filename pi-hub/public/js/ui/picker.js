@@ -137,7 +137,7 @@ export function createPicker(refs, actions) {
     refs.favs.append(el("div", { class: "section-label" }, "★ Favourites"));
     for (const { s, p } of favs) {
       const row = sessionRow(s, p);
-      row.prepend(el("span", { class: "icon-btn", title: "Remove favourite", html: icon("star", 13).innerHTML, onclick: (e) => { e.stopPropagation(); actions.toggleFavourite(favKey(s, p)); renderFavourites(); } }));
+      row.prepend(el("span", { class: "icon-btn", title: "Remove favourite", onclick: (e) => { e.stopPropagation(); actions.toggleFavourite(favKey(s, p)); renderFavourites(); } }, icon("starFill", 13)));
       refs.favs.append(row);
     }
     show(refs.favs, true);

@@ -2,7 +2,7 @@
  * files — the server file panel and read-only viewer. The only way content
  * leaves the panel is "Add to prompt" (an @path reference) — never an edit.
  */
-import { fileContent, listDir, listProjects, previewUrl, downloadUrl } from "../core/api.js";
+import { fileContent, listDir, previewUrl, downloadUrl } from "../core/api.js";
 import { el, show, copyText, toast, basename } from "../core/dom.js";
 import { icon } from "../core/icons.js";
 
@@ -11,9 +11,8 @@ const IMAGE_EXT = /\.(png|jpe?g|gif|webp|bmp|svg|avif)$/i;
 
 export function createFiles(refs, actions) {
   let currentPath = "";
-  let root = "";
+  let root = ""; // the session project root — the panel's "up" boundary
   let session = null;
-  let roots = [];
 
   refs.close.append(icon("x", 15));
   refs.up.append(icon("chevron-left", 15));
@@ -26,12 +25,6 @@ export function createFiles(refs, actions) {
       const out = await listDir(path);
       currentPath = out.path;
       if (!root) root = out.path;
-      if (!roots.length) {
-        listProjects().then((p) => {
-          roots = (p.roots || []).map((r) => r.replace(/\/$/, ""));
-          updateUpButton();
-        }).catch(() => {});
-      }
       updateUpButton();
       refs.path.textContent = out.path;
       refs.panelTitle.textContent = basename(out.path) || out.path;
@@ -62,9 +55,8 @@ export function createFiles(refs, actions) {
             class: "icon-btn file-add",
             title: "Add to prompt",
             "aria-label": `Add ${entry.name} to prompt`,
-            html: icon("plus", 12).innerHTML,
             onclick: (e) => { e.stopPropagation(); actions.addToPrompt(`${out.path}/${entry.name}`); },
-          }),
+          }, icon("plus", 12)),
         );
         refs.list.append(row);
       }
@@ -106,14 +98,19 @@ export function createFiles(refs, actions) {
     parts.pop();
     return parts.length ? `/${parts.join("/")}` : "/";
   }
-  function atRootBoundary() {
-    if (!currentPath) return true;
-    return roots.some((r) => r === currentPath && !roots.some((other) => other !== r && other.startsWith(currentPath + "/")));
+  /* "Up" is disabled exactly at the session project root. It used to consult
+     the server's jail roots (HOME + every session cwd) fetched asynchronously
+     after the first listing: until that reply landed the button was enabled,
+     and a root with no nested roots disabled it — so the same directory could
+     flip state on its own. A plain comparison with the root this panel opened
+     at is deterministic and matches what the panel is for. */
+  function atProjectRoot() {
+    return !currentPath || !root || currentPath === root;
   }
   function updateUpButton() {
-    const disabled = atRootBoundary();
+    const disabled = atProjectRoot();
     refs.up.disabled = disabled;
-    refs.up.title = disabled ? "Already at a top-level allowed directory" : "Parent directory";
+    refs.up.title = disabled ? "Already at the project root" : "Parent directory";
   }
 
   refs.close.addEventListener("click", () => show(refs.panel, false));

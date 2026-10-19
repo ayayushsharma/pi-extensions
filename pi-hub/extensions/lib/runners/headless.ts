@@ -73,7 +73,7 @@ export class RpcSession extends EventEmitter {
     this.proc.on("error", (err) => this.finish(null, err));
     this.proc.on("close", (code) => this.finish(code, null));
     this.proc.on("exit", (code) => this.finish(code, null));
-    hubLog(`child spawn pid=${this.proc.pid} bin=${opts.bin} cwd=${opts.cwd}`);
+    hubLog(`child spawn pid=${this.proc.pid} bin=${opts.bin} cwd=${opts.cwd} args=${JSON.stringify(opts.args || ["--mode", "rpc"])}`);
   }
 
   get pid(): number | undefined {

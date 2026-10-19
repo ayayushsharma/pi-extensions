@@ -7,7 +7,7 @@
 import { clear, el, toast } from "../core/dom.js";
 import { icon } from "../core/icons.js";
 
-export function createDialogs(container, sendResponse) {
+export function createDialogs(container, sendResponse, actions = {}) {
   const seen = new Set();
 
   const close = () => clear(container);
@@ -92,7 +92,9 @@ export function createDialogs(container, sendResponse) {
   function handleEvent(event) {
     if (event?.type !== "extension_ui_request") return false;
     if (event.method === "notify") {
-      toast(event.message || "", { kind: event.notifyType === "error" ? "error" : "info" });
+      const kind = event.notifyType === "error" ? "error" : event.notifyType === "warning" ? "warning" : "info";
+      if (actions?.notify) actions.notify(event.message || "", kind);
+      else toast(event.message || "", { kind });
       return true;
     }
     if (["select", "confirm", "input", "editor"].includes(event.method)) {

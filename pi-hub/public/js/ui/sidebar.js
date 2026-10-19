@@ -32,8 +32,8 @@ export function createSidebar(refs, actions) {
     }, 220);
   });
 
-  refs.newBtn.append(icon("plus", 15));
-  refs.collapseBtn.append(icon("back", 15));
+  refs.newBtn.append(icon("plus", 16));
+  refs.collapseBtn.append(icon("back", 16));
   refs.csClose.append(icon("x", 13));
 
   /* ── current session card ─────────────────────────────────────────── */
@@ -117,7 +117,7 @@ export function createSidebar(refs, actions) {
       el(
         "span",
         { class: "row-actions" },
-        inTab ? null : el("span", { class: "icon-btn", title: "Close runner", html: icon("x", 12).innerHTML, onclick: (e) => { e.stopPropagation(); actions.closeRunner(info); } }),
+        inTab ? null : el("span", { class: "icon-btn", title: "Close runner", onclick: (e) => { e.stopPropagation(); actions.closeRunner(info); } }, icon("x", 13)),
       ),
     );
     return row;
@@ -139,7 +139,9 @@ export function createSidebar(refs, actions) {
         onclick: () => actions.openSession(session, project),
         oncontextmenu: (e) => openMenu(e, session, project),
       },
-      el("span", { class: "row-title" }, fav ? icon("star", 12) : null, el("span", { class: "grow", style: "overflow:hidden;text-overflow:ellipsis", text: session.title || session.file }), liveOwned ? el("span", { class: "chip live", text: "live" }) : null),
+      // No separate star in the title: the (now filled, always-visible) action
+      // star already marks favourites, and two stars per row was just noise.
+      el("span", { class: "row-title" }, el("span", { class: "grow", style: "overflow:hidden;text-overflow:ellipsis", text: session.title || session.file }), liveOwned ? el("span", { class: "chip live", text: "live" }) : null),
       el(
         "span",
         { class: "row-sub" },
@@ -153,10 +155,9 @@ export function createSidebar(refs, actions) {
           class: "icon-btn fav-btn", title: fav ? "Unfavourite" : "Favourite",
           "aria-label": fav ? "Unfavourite" : "Favourite", "aria-pressed": String(fav),
           dataset: { fav: fav ? "1" : "0" },
-          html: icon(fav ? "star" : "star-outline", 14).innerHTML,
           onclick: (e) => { e.stopPropagation(); actions.toggleFavourite(key); },
-        }),
-        el("span", { class: "icon-btn", title: "Actions", html: icon("dots", 14).innerHTML, onclick: (e) => { e.stopPropagation(); openMenu(e, session, project); } }),
+        }, icon(fav ? "starFill" : "star-outline", 13)),
+        el("span", { class: "icon-btn", title: "Actions", onclick: (e) => { e.stopPropagation(); openMenu(e, session, project); } }, icon("dots", 13)),
       ),
     );
     return row;
@@ -180,7 +181,7 @@ export function createSidebar(refs, actions) {
     menuNode = el(
       "div",
       { class: "ctx-menu", onclick: (ev) => ev.stopPropagation() },
-      el("button", { type: "button", onclick: () => { closeMenu(); actions.toggleFavourite(favKey(session, project)); } }, icon(fav ? "star-outline" : "star", 14), fav ? "Unfavourite" : "Favourite"),
+      el("button", { type: "button", onclick: () => { closeMenu(); actions.toggleFavourite(favKey(session, project)); } }, icon(fav ? "starFill" : "star-outline", 14), fav ? "Unfavourite" : "Favourite"),
       el("button", { type: "button", onclick: () => { closeMenu(); startRename(session, project); } }, icon("pencil", 14), "Rename"),
       el("button", { type: "button", onclick: () => { closeMenu(); actions.forkSession(session, project); } }, icon("branch", 14), "Fork as new"),
       el("button", { type: "button", onclick: () => { closeMenu(); actions.exportSession(session, project); } }, icon("download", 14), "Export HTML"),
@@ -246,7 +247,7 @@ export function createSidebar(refs, actions) {
       const openTabs = state.tabs.filter((t) => t.runnerId || t.file);
       if (openTabs.length) {
         refs.vtabs.append(
-          el("div", { class: "section-label tabs-label" }, icon("tabs", 11), "Currently running tabs",
+          el("div", { class: "section-label tabs-label" }, icon("tabs", 12), "Currently running tabs",
             el("span", { class: "grow" }), el("span", { class: "count", text: String(openTabs.length) })),
         );
         for (const tab of openTabs) {
@@ -275,7 +276,7 @@ export function createSidebar(refs, actions) {
               el(
                 "span",
                 { class: "row-actions" },
-                el("span", { class: "icon-btn", title: "Close tab", html: icon("x", 12).innerHTML, onclick: (e) => { e.stopPropagation(); actions.closeTab(tab.key); } }),
+                el("span", { class: "icon-btn", title: "Close tab", onclick: (e) => { e.stopPropagation(); actions.closeTab(tab.key); } }, icon("x", 13)),
               ),
             ),
           );
@@ -291,7 +292,7 @@ export function createSidebar(refs, actions) {
       const live = [...state.runners.values()].filter((r) => r.kind === "live");
       const headless = [...state.runners.values()].filter((r) => r.kind === "headless" && !tabRunnerIds.has(r.id) && r.state !== "dead");
       if (live.length) {
-        refs.live.append(el("div", { class: "section-label live-label" }, icon("terminal", 11), "Live terminals", el("span", { class: "grow" }), el("span", { class: "count", text: String(live.length) })));
+        refs.live.append(el("div", { class: "section-label live-label" }, icon("terminal", 12), "Live terminals", el("span", { class: "grow" }), el("span", { class: "count", text: String(live.length) })));
         for (const info of live) refs.live.append(runnerRow(state, info, { inTab: false }));
       }
       if (headless.length) {
@@ -342,7 +343,7 @@ export function createSidebar(refs, actions) {
               actions.rerender();
             },
           },
-          el("span", { class: "caret", html: icon("chevron-down", 11).innerHTML }),
+          el("span", { class: "caret" }, icon("chevron-down", 12)),
           el("span", { class: "grow", text: basename(project.cwd || project.dirName) || project.dirName }),
           el("span", { class: "count", text: String(sessions.length) }),
         );
@@ -355,6 +356,15 @@ export function createSidebar(refs, actions) {
       // Favourited sessions render once, in the Favourites block — not again
       // inside their project group (R-6). Searching still shows everything.
       const favPaths = new Set(favs.map((f) => favKey(f.session, f.project)));
+      // The block must render even when favourites are the *only* sessions:
+      // it used to be emitted from inside the project loop, so favouriting the
+      // last visible session reduced the filter to zero rows and the whole
+      // list (favourites included) vanished.
+      if (!q && favs.length) {
+        refs.list.append(el("div", { class: "section-label" }, "Favourites"));
+        for (const f of favs.filter((f) => matches(f.session, ""))) refs.list.append(sessionRow(state, f.session, f.project));
+        anyProject = true;
+      }
       for (const project of state.projects) {
         const sessions = (project.sessions || [])
           .filter((s) => matches(s, q))
@@ -362,10 +372,6 @@ export function createSidebar(refs, actions) {
           .sort((a, b) => (b.mtime || 0) - (a.mtime || 0));
         if (!sessions.length) continue;
         anyProject = true;
-        if (!q && favs.length && !shown) {
-          refs.list.append(el("div", { class: "section-label" }, "Favourites"));
-          for (const f of favs.filter((f) => matches(f.session, ""))) refs.list.append(sessionRow(state, f.session, f.project));
-        }
         renderProject(project, sessions);
         shown += sessions.length;
         if (shown > 300) break;

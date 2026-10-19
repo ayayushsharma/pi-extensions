@@ -84,6 +84,15 @@ async function bootCore({ log } = {}) {
   page.on("console", (m) => {
     if (m.type() === "error" && !/favicon/.test(m.text())) pageErrors.push(`console: ${m.text().slice(0, 200)}`);
   });
+  // The fixture cwd is not a git repo; answer the branch probe so the
+  // statusline has something deterministic to render.
+  await page.route("**/api/git*", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ branch: "feature/hub-branch", root: "/tmp/pihub-fixtures", detached: false }),
+    }),
+  );
   await page.goto(`${hub.url}/hub/`, { waitUntil: "domcontentloaded" });
   await ready(page);
   const close = async () => {
@@ -117,6 +126,29 @@ async function coreGroup({ check, log }) {
     await page.waitForTimeout(200);
     const transcript = (await page.textContent("#messages")) || "";
     check("E2 resume renders the fixture transcript", transcript.includes("FIXTURE-USER-29"), transcript.replace(/\s+/g, " ").slice(0, 80));
+    // No speaker labels above bubbles ("You" / "Pi"): alignment and markdown
+    // carry the roles, so the labels were pure noise.
+    const roleLabels = await page.evaluate(() =>
+      [...document.querySelectorAll("#messages .role, #messages .msg-label")].map((n) => n.textContent.trim()));
+    check("E2b2 transcript has no You/Pi role labels", roleLabels.length === 0, JSON.stringify(roleLabels));
+    // ── E2b3 statusline shows the cwd's git branch ──────────────────────
+    // The directory alone made it impossible to tell which branch a session
+    // was started on; the branch now sits beside the path.
+    await page.waitForFunction(() => (document.querySelector(".cwd-branch-name")?.textContent || "").length > 0, null, { timeout: 10000 });
+    const branchUi = await page.evaluate(() => {
+      const path = document.querySelector(".cwd-text");
+      const b = document.querySelector(".cwd-branch");
+      const name = document.querySelector(".cwd-branch-name");
+      return {
+        name: (name?.textContent || "").trim(),
+        hasIcon: !!b?.querySelector("svg"),
+        afterPath: !!path && !!b && b.compareDocumentPosition(path) & Node.DOCUMENT_POSITION_PRECEDING,
+        title: b?.getAttribute("title") || "",
+      };
+    });
+    check("E2b3 statusline shows the git branch beside the cwd",
+      branchUi.name === "feature/hub-branch" && branchUi.hasIcon && branchUi.afterPath && /branch/i.test(branchUi.title),
+      JSON.stringify(branchUi));
     // ── E2e resume opens at the newest message ──────────────────────────
     // The transcript scrolls inside #view, not #messages; the old code scrolled
     // the wrong element, so every resume started at the top of the file. Layout
@@ -139,6 +171,24 @@ async function coreGroup({ check, log }) {
     check("E2c composer shows the session model", /deepseek|muse|model/i.test(modelLabel) && modelLabel.length > 0, modelLabel);
     const loadEarlier = page.locator(".load-earlier-wrap button");
     if (await loadEarlier.count()) {
+      // The recall control is centred in the transcript column, not pinned left.
+      const loadBox = await page.evaluate(() => {
+        const wrap = document.querySelector(".load-earlier-wrap");
+        const wr = wrap.getBoundingClientRect();
+        const cs = getComputedStyle(wrap);
+        // Button on its own line, count caption under it, both centred.
+        const kids = [...wrap.children].map((n) => {
+          const r = n.getBoundingClientRect();
+          return { tag: n.tagName, top: Math.round(r.top), left: Math.round(r.left - wr.left), right: Math.round(wr.right - r.right) };
+        });
+        return { dir: cs.flexDirection, alignItems: cs.alignItems, kids };
+      });
+      check("E2d1 load-earlier stacks and centres",
+        loadBox.dir === "column" && loadBox.alignItems === "center"
+        && loadBox.kids.length === 2 && loadBox.kids[0].tag === "BUTTON"
+        && loadBox.kids[1].top > loadBox.kids[0].top
+        && loadBox.kids.every((k) => Math.abs(k.left - k.right) <= 2),
+        JSON.stringify(loadBox));
       const before = await page.locator("#messages .msg").count();
       await loadEarlier.click();
       await page.waitForFunction((n) => document.querySelectorAll("#messages .msg").length > n, before, { timeout: 15000 });
@@ -153,8 +203,70 @@ async function coreGroup({ check, log }) {
     await page.waitForSelector("#slash:not(.hidden)", { timeout: 20000 });
     const slashItems = await page.locator("#slash .item").count();
     check("E3 slash palette lists commands", slashItems > 0, `items=${slashItems}`);
+    check("E3a slash palette rows carry a source chip",
+      (await page.locator("#slash .item .cmd-source").count()) === slashItems);
     await page.keyboard.press("Escape");
     await page.fill("#input", "");
+
+    // ── E3b the commands button opens commands + skills ─────────────────
+    // It used to open the session picker; it must list everything pi reports
+    // from get_commands — extension commands, prompt templates and skills —
+    // with a source chip each, filtered from a sticky footer.
+    await page.click("#command-btn");
+    await page.waitForFunction(() => document.querySelectorAll("#command-menu .cmd-item").length > 0, null, { timeout: 20000 });
+    const pal3 = await page.evaluate(() => {
+      const menu = document.querySelector("#command-menu");
+      const items = [...menu.querySelectorAll(".cmd-item")];
+      const sources = items.map((i) => (i.querySelector(".cmd-source")?.textContent || "").toLowerCase());
+      return {
+        pickerHidden: document.querySelector("#picker").classList.contains("hidden"),
+        count: items.length,
+        sources: [...new Set(sources)],
+        allChipped: sources.every(Boolean),
+        footLast: menu.lastElementChild === menu.querySelector(".menu-foot") && !!menu.querySelector(".menu-search"),
+        probeSkill: items.some((i) => (i.querySelector(".cmd-name")?.textContent || "") === "/skill:hub-probe-skill"),
+        probePrompt: items.some((i) => (i.querySelector(".cmd-name")?.textContent || "") === "/hub-probe"),
+      };
+    });
+    check("E3b commands button opens the commands + skills palette",
+      pal3.pickerHidden && pal3.count > 0 && pal3.allChipped && pal3.footLast && pal3.probeSkill && pal3.probePrompt &&
+        ["skill", "prompt", "command"].every((src) => pal3.sources.includes(src)),
+      JSON.stringify(pal3));
+    await page.fill("#command-menu .menu-search", "hub-probe-skill");
+    await page.waitForFunction(() => document.querySelectorAll("#command-menu .cmd-item").length === 1, null, { timeout: 5000 }).catch(() => {});
+    await page.press("#command-menu .menu-search", "Enter");
+    await page.waitForFunction(() => document.querySelector("#command-menu").classList.contains("hidden"), null, { timeout: 5000 });
+    const picked3 = await page.inputValue("#input");
+    check("E3c picking a skill prefills the invocation", picked3 === "/skill:hub-probe-skill ", JSON.stringify(picked3));
+    await page.fill("#input", "");
+
+    // ── E3d composer rests two lines tall, controls at the bottom ───────
+    // A one-line field read like a search box and left the mic/send floating
+    // at the top of a tall box.
+    const rest3 = await page.evaluate(() => {
+      const input = document.querySelector("#input");
+      const ir = input.getBoundingClientRect();
+      const sr = document.querySelector("#send-btn").getBoundingClientRect();
+      const cr = document.querySelector("#composer").getBoundingClientRect();
+      return {
+        h: Math.round(ir.height),
+        line: parseFloat(getComputedStyle(input).lineHeight),
+        sendGap: Math.round(ir.bottom - sr.bottom),
+        sendRight: Math.round(cr.right - sr.right),
+      };
+    });
+    check("E3d composer rests two lines tall", rest3.h >= rest3.line * 2 && rest3.h <= rest3.line * 3,
+      `h=${rest3.h} line=${Math.round(rest3.line)}`);
+    check("E3e send controls sit at the bottom-right of the field",
+      Math.abs(rest3.sendGap) <= 10 && rest3.sendRight <= 16, JSON.stringify(rest3));
+    await page.fill("#input", "one\ntwo\nthree");
+    await page.waitForTimeout(120);
+    const grown3 = await page.evaluate(() => Math.round(document.querySelector("#input").getBoundingClientRect().height));
+    check("E3f composer grows past its resting height", grown3 > rest3.h + 10, `rest=${rest3.h} grown=${grown3}`);
+    await page.fill("#input", "");
+    await page.waitForTimeout(120);
+    const back3 = await page.evaluate(() => Math.round(document.querySelector("#input").getBoundingClientRect().height));
+    check("E3g clearing returns to the resting height, never below", back3 === rest3.h, `rest=${rest3.h} back=${back3}`);
 
     // ── E4 picker: new session anywhere with a working starter (C3) ─────
     await page.click("#new-session-btn");
@@ -196,8 +308,38 @@ async function coreGroup({ check, log }) {
     await page.click("#send-btn");
     await page.waitForSelector("#dialog-container .dialog-card", { timeout: 30000 });
     await page.getByRole("button", { name: "beta" }).first().click();
-    await page.waitForFunction(() => (document.body.textContent || "").includes("DIALOG-beta"), null, { timeout: 30000 });
-    check("E6 select answer relayed to the child", true);
+    // E4's starter prompt was itself `/ask`, so a DIALOG-YES notice may already
+    // be in this transcript — wait for this command's own answer.
+    const betaNotice = () => [...document.querySelectorAll("#messages .msg.system.notice")].some((n) => n.textContent.includes("DIALOG-beta"));
+    await page.waitForFunction(betaNotice, null, { timeout: 30000 });
+    const notice6 = await page.evaluate(() => {
+      const node = [...document.querySelectorAll("#messages .msg.system.notice")].find((n) => n.textContent.includes("DIALOG-beta"));
+      const bubble = node?.querySelector(".bubble");
+      return {
+        texts: [...document.querySelectorAll("#messages .msg.system.notice")].map((n) => n.textContent.trim()),
+        toastText: document.querySelector("#toast")?.textContent || "",
+        toastHidden: document.querySelector("#toast").classList.contains("hidden"),
+        // Command/skill output is content, not a dismissible capsule.
+        radius: bubble ? parseFloat(getComputedStyle(bubble).borderRadius) : -1,
+      };
+    });
+    check("E6 select answer relayed to the child", notice6.texts.includes("DIALOG-beta"), JSON.stringify(notice6.texts));
+    // Extension/skill notifications belong to the session: inline chip, not a
+    // toast that vanishes after 2.6s.
+    check("E6b extension notices render inline, not as a toast",
+      notice6.toastHidden && !notice6.toastText.includes("DIALOG-beta"), JSON.stringify(notice6));
+    check("E6b2 notice corners stay modest (no capsule)", notice6.radius > 0 && notice6.radius <= 8, `radius=${notice6.radius}px`);
+    await page.waitForTimeout(3200); // longer than a toast's lifetime
+    check("E6c the notice is still on screen after a toast would be gone",
+      await page.evaluate(betaNotice));
+
+    // …and it goes away when the session is resumed (history re-render).
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await ready(page);
+    await openFixture(page);
+    await page.waitForFunction(() => document.querySelectorAll("#messages .msg").length >= 5, null, { timeout: 30000 });
+    check("E6d resuming the session drops old notices",
+      (await page.locator("#messages .msg.system.notice").count()) === 0);
 
     // ── E7 prompt round-trip through the sandbox's fake model ───────────
     // The "model" is a local HTTP stub (tests/fixtures/fake-llm.mjs), so this
@@ -339,15 +481,129 @@ async function panelsGroup({ check, log }) {
     await page.waitForTimeout(200);
     const upDisabled = await page.locator("#file-up").isDisabled();
     check("E12 files panel opens jailed to the session root", upDisabled, `up disabled=${upDisabled}`);
+
+    // ── E12d up is disabled at the project root, and only there ─────────
+    // It used to consult the server's jail roots (fetched after the first
+    // listing), so the same folder could go enabled -> disabled on its own,
+    // and any root without nested roots (e.g. the session cwd itself) read as
+    // "no way up" even though the server allows it.
+    const probeDir = `up-probe-${Date.now().toString(36)}`;
+    fs.mkdirSync(`/tmp/pihub-fixtures/${probeDir}`, { recursive: true });
+    await page.click("#file-close");
+    await page.click("#files-btn");
+    await page.waitForSelector("#file-panel:not(.hidden)", { timeout: 10000 });
+    const probeRow = page.locator("#file-list .file-row.dir", { hasText: probeDir }).first();
+    await probeRow.waitFor({ timeout: 10000 });
+    await probeRow.click();
+    await page.waitForFunction((d) => (document.querySelector("#file-path")?.textContent || "").endsWith(d), probeDir, { timeout: 10000 });
+    const deepState = await page.evaluate(() => ({
+      disabled: document.querySelector("#file-up").disabled,
+      title: document.querySelector("#file-up").title,
+    }));
+    check("E12d up is enabled inside the project tree", deepState.disabled === false && /parent/i.test(deepState.title), JSON.stringify(deepState));
+    await page.click("#file-up");
+    await page.waitForFunction(() => (document.querySelector("#file-path")?.textContent || "") === "/tmp/pihub-fixtures", null, { timeout: 10000 });
+    const backState = await page.evaluate(() => ({
+      disabled: document.querySelector("#file-up").disabled,
+      title: document.querySelector("#file-up").title,
+    }));
+    await page.waitForTimeout(400); // no late flip once the listing has settled
+    const settled = await page.locator("#file-up").isDisabled();
+    check("E12e up disables again at the root and stays put",
+      backState.disabled === true && settled === true && /project root/i.test(backState.title),
+      JSON.stringify({ ...backState, settled }));
+    fs.rmSync(`/tmp/pihub-fixtures/${probeDir}`, { recursive: true, force: true });
     await page.click("#file-close");
     await page.click("#settings-btn");
     await page.waitForSelector("#settings:not(.hidden)", { timeout: 10000 });
     const swatches = await page.locator("#theme-grid .theme-swatch").count();
-    check("E12b settings exposes themes", swatches >= 4, `swatches=${swatches}`);
+    check("E12b settings exposes themes", swatches === 12, `swatches=${swatches}`);
+    const themeGroups = await page.evaluate(() => [...document.querySelectorAll(".theme-group")].map((g) => [g.dataset.scheme, g.querySelectorAll(".theme-swatch").length]));
+    check("E12b1 themes are grouped light and dark", JSON.stringify(themeGroups) === JSON.stringify([["light", 6], ["dark", 6]]), JSON.stringify(themeGroups));
+    check("E12b2 every theme tile previews its palette",
+      (await page.locator(".theme-swatch .theme-preview").count()) === swatches
+      && (await page.locator(".theme-swatch .theme-scheme").count()) === swatches);
+    // Every tile must map to a real palette: apply it and read the accent.
+    const applied = [];
+    for (const id of await page.locator(".theme-swatch").evaluateAll((ns) => ns.map((n) => n.dataset.theme))) {
+      await page.locator(`.theme-swatch[data-theme="${id}"]`).click();
+      applied.push(await page.evaluate(() => ({
+        id: document.documentElement.dataset.theme,
+        accent: getComputedStyle(document.documentElement).getPropertyValue("--accent").trim(),
+        scheme: getComputedStyle(document.documentElement).colorScheme,
+      })));
+    }
+    check("E12b3 all 12 themes apply distinct palettes",
+      applied.every((a, i) => a.id === applied[i].id && !!a.accent) && new Set(applied.map((a) => a.accent)).size === 12,
+      JSON.stringify(applied.map((a) => `${a.id}:${a.accent}`)));
+    check("E12b4 themes declare their color scheme",
+      applied.filter((a) => a.scheme === "light").length === 6 && applied.filter((a) => a.scheme === "dark").length === 6,
+      JSON.stringify(applied.map((a) => a.scheme)));
+    // theme-boot (head script, runs before the app) decides the pre-CSS
+    // color-scheme from its own list; it must match what tokens.css declares.
+    const schemeAgreement = await page.evaluate(async () => {
+      const ids = [...document.querySelectorAll(".theme-swatch")].map((n) => n.dataset.theme);
+      const out = [];
+      for (const id of ids) {
+        document.documentElement.dataset.theme = id;
+        out.push({
+          id,
+          css: getComputedStyle(document.documentElement).colorScheme,
+          boot: window.__piHubIsDark?.(id) ? "dark" : "light",
+        });
+      }
+      return out;
+    });
+    check("E12b6 theme-boot's dark list matches tokens.css",
+      schemeAgreement.every((t) => t.css === t.boot),
+      JSON.stringify(schemeAgreement.filter((t) => t.css !== t.boot)));
+    const selectedCount = await page.locator('.theme-swatch[aria-selected="true"]').count();
+    check("E12b5 exactly one theme reads as selected", selectedCount === 1, `selected=${selectedCount}`);
+    await page.locator('.theme-swatch[data-theme="terracotta"]').click();
+    // ── E12c settings rails + switches ────────────────────────────────
+    const rail = await page.evaluate(() => {
+      const nav = document.querySelector(".settings-tabs");
+      const cs = getComputedStyle(nav);
+      const card = document.querySelector(".settings-card").getBoundingClientRect();
+      return { dir: cs.flexDirection, cardW: Math.round(card.width), navW: Math.round(nav.getBoundingClientRect().width) };
+    });
+    check("E12c1 settings uses a side rail on desktop", rail.dir === "column" && rail.navW < rail.cardW / 3, JSON.stringify(rail));
+    await page.locator('.settings-tabs .tab-btn[data-tab="chat"]').click();
+    await page.waitForTimeout(150);
+    const switchState = await page.evaluate(() => {
+      const sw = document.querySelector("#toggle-thinking");
+      const cs = getComputedStyle(sw);
+      return { checked: sw.checked, appearance: cs.appearance, radius: parseFloat(cs.borderRadius), tag: sw.tagName };
+    });
+    check("E12c2 prefs are restyled native switches",
+      switchState.tag === "INPUT" && switchState.appearance === "none" && switchState.radius > 8,
+      JSON.stringify(switchState));
+    await page.locator(".field-row", { hasText: "Wrap long lines" }).click();
+    await page.waitForFunction(() => document.documentElement.dataset.wrapCode === "1", null, { timeout: 5000 });
+    check("E12c3 clicking the row toggles its switch", await page.locator("#toggle-wrap").isChecked());
     await page.locator('.settings-tabs .tab-btn[data-tab="server"]').click();
     await page.waitForFunction(() => (document.querySelector("#server-info")?.textContent || "").includes("pi-hub"), null, { timeout: 10000 });
     check("E12c server info renders", true);
     await page.click("#settings-close");
+    // ── E12h favouriting the only session keeps it in the list ──────────
+    // The Favourites block used to render from inside the project loop: once
+    // the sole session was filtered out of its project group the loop skipped
+    // it and the star made the whole sidebar list disappear.
+    const soleRow = page.locator("#session-list .sb-row").first();
+    await soleRow.hover();
+    await soleRow.locator(".fav-btn").click();
+    await page.waitForTimeout(350);
+    const sole = await page.evaluate(() => ({
+      rows: document.querySelectorAll("#session-list .sb-row").length,
+      labels: [...document.querySelectorAll("#session-list .section-label")].map((s) => s.textContent.trim()),
+      pressed: document.querySelector("#session-list .fav-btn")?.getAttribute("aria-pressed"),
+      filled: document.querySelector("#session-list .fav-btn svg path")?.getAttribute("fill"),
+    }));
+    check("E12h a starred sole session stays visible under Favourites",
+      sole.rows === 1 && sole.labels[0] === "Favourites" && sole.pressed === "true" && sole.filled === "currentColor",
+      JSON.stringify(sole));
+    await page.locator("#session-list .fav-btn").click();
+    await page.waitForTimeout(250);
     await page.screenshot({ path: path.join(hub.dir, "e2e-desktop.png") });
 
     // ── E13 phone viewport ──────────────────────────────────────────────
@@ -358,12 +614,64 @@ async function panelsGroup({ check, log }) {
     await phone.waitForTimeout(200);
     const overflow = await phone.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
     check("E13 phone has no horizontal overflow", overflow === 0, `${overflow}px`);
+    // ── E13a the scroll area itself has no sideways overflow ────────────
+    // `#view` scrolls the transcript; the home screen's recent rows used to
+    // paint 29px past its right edge (a detail line reclaiming action space
+    // on rows that have no actions), which showed up as a mystery scrollbar.
+    const viewX = await phone.evaluate(() => {
+      const v = document.querySelector("#view");
+      return { over: v.scrollWidth - v.clientWidth, top: v.scrollTop, msgs: document.querySelectorAll("#messages .msg").length };
+    });
+    check("E13a home has no sideways scroll inside #view", viewX.over === 0, JSON.stringify(viewX));
     await phone.click("#sidebar-toggle");
     await phone.waitForFunction(() => document.body.classList.contains("sidebar-open"), null, { timeout: 5000 });
     await phone.locator('#session-list .sb-row[data-session-file$="fixture.jsonl"]').first().click();
     await phone.waitForFunction(() => !document.body.classList.contains("sidebar-open") && document.body.dataset.view === "session", null, { timeout: 45000 });
     check("E13b drawer closes on session pick", true);
     await phone.screenshot({ path: path.join(hub.dir, "e2e-phone.png") });
+    // ── E13b2 a short viewport keeps the welcome at its top ─────────────
+    // The transcript's "empty, stick to bottom" render used to scroll the
+    // shared pane, so the logo and title were scrolled away on small screens.
+    const short = await browser.newPage({ viewport: { width: 320, height: 568 }, hasTouch: true });
+    short.on("pageerror", (e) => pageErrors.push(`short: ${e.message}`));
+    await short.goto(`${hub.url}/hub/`, { waitUntil: "domcontentloaded" });
+    await ready(short);
+    await short.waitForTimeout(400);
+    const shortView = await short.evaluate(() => {
+      const v = document.querySelector("#view");
+      const de = document.documentElement;
+      const logo = document.querySelector("#welcome-logo")?.getBoundingClientRect();
+      return {
+        over: v.scrollWidth - v.clientWidth,
+        docOver: de.scrollWidth - de.clientWidth,
+        top: v.scrollTop,
+        logoTop: logo ? Math.round(logo.top) : -1,
+        msgs: document.querySelectorAll("#messages .msg").length,
+      };
+    });
+    check("E13b2 short screens keep the welcome at the top, with no overflow",
+      shortView.over === 0 && shortView.docOver === 0 && shortView.top === 0 && shortView.logoTop > 46 && shortView.msgs === 0,
+      JSON.stringify(shortView));
+    await short.close();
+    // ── E13c settings on a phone: a sheet with a horizontal tab strip ────
+    await phone.click("#settings-btn");
+    await phone.waitForSelector("#settings:not(.hidden)", { timeout: 10000 });
+    const phoneSettings = await phone.evaluate(() => {
+      const nav = document.querySelector(".settings-tabs");
+      const card = document.querySelector(".settings-card").getBoundingClientRect();
+      return {
+        dir: getComputedStyle(nav).flexDirection,
+        cardH: Math.round(card.height),
+        vh: window.innerHeight,
+        cardW: Math.round(card.width),
+        vw: window.innerWidth,
+        overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      };
+    });
+    check("E13c settings is a full-height sheet on a phone",
+      phoneSettings.dir === "row" && phoneSettings.cardH === phoneSettings.vh
+      && phoneSettings.cardW === phoneSettings.vw && phoneSettings.overflow === 0,
+      JSON.stringify(phoneSettings));
     await phone.close();
 
   } finally {
@@ -531,6 +839,56 @@ async function modelsGroup({ check, log }) {
     const modelCount = await page.locator("#model-menu .item").count();
     const modelSearch = await page.locator("#model-menu input").count();
     check("E19 model menu lists models", modelCount > 0, `items=${modelCount} search=${modelSearch}`);
+    // The filter box is the last thing in the menu: it opens upward from the
+    // composer, so that is the spot a phone thumb can reach once the keyboard
+    // is up (and it must stay last after re-filtering — see E21c).
+    const footer19 = await page.evaluate(() => {
+      const menu = document.querySelector("#model-menu");
+      const foot = menu.querySelector(".menu-foot");
+      const search = menu.querySelector(".menu-search");
+      const items = [...menu.querySelectorAll(".item")];
+      return {
+        isLast: menu.lastElementChild === foot && !!search,
+        sticky: getComputedStyle(foot).position,
+        afterItems: items.length ? Math.round(search.getBoundingClientRect().top - items[items.length - 1].getBoundingClientRect().bottom) : null,
+        menuBottom: Math.round(menu.getBoundingClientRect().bottom - search.getBoundingClientRect().bottom),
+      };
+    });
+    check("E19c model filter sits at the bottom of the list",
+      footer19.isLast && footer19.sticky === "sticky" && footer19.afterItems >= 0 && footer19.menuBottom <= 12,
+      JSON.stringify(footer19));
+
+    // ── E19d a long list must not bury the filter box ───────────────────
+    // It is sticky, so it stays on screen while the models scroll underneath
+    // (the plain last-child version scrolled out of sight with 40 models).
+    await page.evaluate(() => {
+      const menu = document.querySelector("#model-menu");
+      const foot = menu.querySelector(".menu-foot");
+      for (let i = 0; i < 40; i++) {
+        const b = document.createElement("button");
+        b.className = "item";
+        b.type = "button";
+        b.textContent = `Padding model ${i}`;
+        menu.insertBefore(b, foot);
+      }
+    });
+    const longList = await page.evaluate(async () => {
+      const menu = document.querySelector("#model-menu");
+      const search = menu.querySelector(".menu-search");
+      const inBox = () => {
+        const m = menu.getBoundingClientRect();
+        const s = search.getBoundingClientRect();
+        return s.top >= m.top - 1 && s.bottom <= m.bottom + 1;
+      };
+      const overflow = menu.scrollHeight > menu.clientHeight;
+      const atTop = inBox();
+      menu.scrollTop = menu.scrollHeight;
+      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const atBottom = inBox();
+      return { overflow, atTop, atBottom, footLast: menu.lastElementChild === menu.querySelector(".menu-foot") };
+    });
+    check("E19d filter box stays visible over a long model list",
+      longList.overflow && longList.atTop && longList.atBottom && longList.footLast, JSON.stringify(longList));
     await page.keyboard.press("Escape");
     await page.click("#thinking-btn");
     await page.waitForFunction(() => document.querySelectorAll("#thinking-menu .item").length > 0, null, { timeout: 10000 });
@@ -547,6 +905,12 @@ async function modelsGroup({ check, log }) {
     await page.waitForFunction(() => document.querySelectorAll("#model-menu .item").length === 1, null, { timeout: 5000 }).catch(() => {});
     const filtered = await page.locator("#model-menu .item").count();
     check("E21 model menu filters as you type", filtered > 0 && filtered < totalModels, `total=${totalModels} filtered=${filtered}`);
+    const stillLast21 = await page.evaluate(() => {
+      const menu = document.querySelector("#model-menu");
+      const foot = menu.lastElementChild;
+      return !!foot && foot.classList.contains("menu-foot") && !!foot.querySelector(".menu-search");
+    });
+    check("E21c re-filtering keeps the box at the bottom", stillLast21);
     await page.press("#model-menu .menu-search", "Enter");
     await page.waitForFunction(() => document.querySelector("#model-menu")?.classList.contains("hidden"), null, { timeout: 10000 });
     check("E21b Enter picks the top match", true);
@@ -653,16 +1017,23 @@ async function chromeGroup({ check, log }) {
         border: `${b.borderTopWidth} ${b.borderTopStyle}`,
         shadow: b.boxShadow,
         radius: parseFloat(b.borderRadius),
+        btnW: Math.round(btn.getBoundingClientRect().width),
+        glyph: Math.round(btn.querySelector("svg").getBoundingClientRect().width),
+        // the session card's close button is the reference for the language
+        closeW: Math.round(parseFloat(getComputedStyle(document.querySelector("#cs-close")).width)),
+        closeGlyph: 13,
         gap: Math.round(actions.getBoundingClientRect().left - title.getBoundingClientRect().right),
         // The detail line is not under the actions, so it must keep the width
         // the row reserves for them (it used to clip at "pid 175").
         subWider: row.querySelector(".row-sub").clientWidth > title.clientWidth,
       };
     });
-    check("E25b row actions are plain outlined buttons",
+    // Sidebar icons share one treatment: 22px quiet targets, 13px glyph, no
+    // painted background, same as #cs-close on the session card.
+    check("E25b row actions are quiet, border-free 22px controls",
       acts25.bgImage === "none" && acts25.bg === "rgba(0, 0, 0, 0)" && acts25.padRight >= 66 &&
-        acts25.border === "1px solid" && acts25.shadow === "none" && acts25.radius >= 4 && acts25.gap >= 0 &&
-        acts25.subWider,
+        acts25.border === "0px none" && acts25.shadow === "none" && acts25.radius >= 4 && acts25.gap >= 0 &&
+        acts25.subWider && acts25.btnW === acts25.closeW && acts25.glyph === acts25.closeGlyph,
       JSON.stringify(acts25));
 
     // ── E26 favourites render once, toggle by star (R-6) ─────────────
@@ -687,6 +1058,33 @@ async function chromeGroup({ check, log }) {
     await otherRow.first().hover();
     check("E26b favourite keys are per-session", (await otherRow.count()) === 1
       && ((await otherRow.first().locator(".fav-btn").getAttribute("aria-pressed")) === "false"));
+    // ── E26d a starred row shows a filled star ─────────────────────────
+    // Both states used the same stroke-only glyph, so a favourited row still
+    // looked un-starred and the "Unfavourite" action read as "add to favs".
+    const starState = await page.evaluate(() => {
+      const read = (file) => {
+        const row = document.querySelector(`#session-list .sb-row[data-session-file$="${file}"]`);
+        if (!row) return null;
+        const btn = row.querySelector(".fav-btn");
+        const path = btn?.querySelector("svg path");
+        return {
+          pressed: btn?.getAttribute("aria-pressed"),
+          fill: path?.getAttribute("fill") || "",
+          accent: /^rgb\(176, 106, 72\)$|^rgb\(/.test(getComputedStyle(btn).color),
+          // no duplicate star in the title line
+          titleStar: !!row.querySelector(".row-fav"),
+        };
+      };
+      return { fav: read("fixture.jsonl"), other: read(document.querySelector('#session-list .sb-row[data-fav="0"]')?.dataset.sessionFile || "__none__") };
+    });
+    const otherStar = await otherRow.first().evaluate((row) => {
+      const path = row.querySelector(".fav-btn svg path");
+      return { pressed: row.querySelector(".fav-btn").getAttribute("aria-pressed"), fill: path?.getAttribute("fill") || "" };
+    });
+    check("E26d a starred row shows one filled accent star",
+      starState.fav?.pressed === "true" && starState.fav.fill === "currentColor" && !starState.fav.titleStar
+      && otherStar.pressed === "false" && otherStar.fill === "none",
+      JSON.stringify({ fav: starState.fav, other: otherStar }));
     const onlyRow = page.locator('#session-list .sb-row[data-session-file$="fixture.jsonl"]').first();
     await onlyRow.hover();
     await onlyRow.locator(".fav-btn").click();
@@ -714,6 +1112,32 @@ async function chromeGroup({ check, log }) {
 async function detailGroup({ check, log }) {
   const { hub, browser, page, sessions, pageErrors, close } = await bootCore({ log });
   try {
+    // ── E29a "↓ Latest" stays opaque on hover ─────────────────────────
+    // It floats over the transcript; the shared .btn hover is a translucent
+    // wash, so hovering turned the pill see-through with text behind it.
+    // Force the pseudo-class via CDP: no actionability, no scroll dependency.
+    await page.evaluate(() => document.querySelector("#jump-latest").classList.remove("hidden"));
+    const cdp = await page.context().newCDPSession(page);
+    await cdp.send("DOM.enable");
+    await cdp.send("CSS.enable");
+    const doc = await cdp.send("DOM.getDocument");
+    const { nodeId } = await cdp.send("DOM.querySelector", { nodeId: doc.root.nodeId, selector: "#jump-latest" });
+    await cdp.send("CSS.forcePseudoState", { nodeId, forcedPseudoClasses: ["hover"] });
+    const jumpBg = await page.evaluate(() => {
+      const cs = getComputedStyle(document.querySelector("#jump-latest"));
+      const m = /rgba?\(([^)]+)\)/.exec(cs.backgroundColor);
+      const parts = m ? m[1].split(",").map((v) => parseFloat(v)) : [];
+      return {
+        alpha: parts.length > 3 ? parts[3] : 1,
+        tinted: /gradient/.test(cs.backgroundImage),
+        shadow: cs.boxShadow !== "none",
+      };
+    });
+    await cdp.send("CSS.forcePseudoState", { nodeId, forcedPseudoClasses: [] });
+    check("E29a jump-latest stays opaque on hover",
+      jumpBg.alpha === 1 && jumpBg.tinted && jumpBg.shadow, JSON.stringify(jumpBg));
+    await page.evaluate(() => document.querySelector("#jump-latest").classList.add("hidden"));
+
     // ── E29 code blocks carry lang + working Copy (R-9) ───────────────
     // Fresh context per group: bind the fixture before asserting on the
     // transcript (the old linear flow inherited a tab from earlier steps).
@@ -742,15 +1166,45 @@ async function detailGroup({ check, log }) {
     const copyToast = (await page.textContent("#toast")) || "";
     check("E29 code blocks carry lang + working Copy", codeLang === "js" && (clip.includes("const answer = 42") || copyToast.includes("Copied")), `lang=${codeLang} clip=${clip.slice(0, 30)} toast=${copyToast.slice(0, 20)}`);
 
-    // ── E30 over-budget pill offers compact; healthy pill stays inert ──
-    // The fixture sips context, so the pill must be a disabled readout:
-    // forcing a click still opens nothing (the handler guards too).
+    // ── E30 context chip opens a small usage card ─────────────────────
+    // It used to be a dead readout (enabled only past 90%). Now every state
+    // answers "how much of the window is left?" in one click, and the
+    // over-budget compact action lives inside the card.
     const ctxChip = page.locator("#context-chip");
     await ctxChip.waitFor({ timeout: 20000 });
-    check("E30 context pill inert at healthy usage", await ctxChip.isDisabled());
-    await ctxChip.click({ force: true });
-    await page.waitForTimeout(200);
-    check("E30b no compact dialog from an inert pill", (await page.locator("#dialog-container .dialog-card").count()) === 0);
+    await ctxChip.click();
+    await page.waitForSelector("#ctx-pop", { timeout: 5000 });
+    const ctx = await page.evaluate(() => {
+      const pop = document.querySelector("#ctx-pop");
+      const chip = document.querySelector("#context-chip");
+      const fill = pop.querySelector(".ctx-fill");
+      const pr = pop.getBoundingClientRect();
+      const cr = chip.getBoundingClientRect();
+      return {
+        pct: (pop.querySelector(".ctx-pct")?.textContent || "").trim(),
+        chipPct: (chip.textContent || "").trim(),
+        rows: [...pop.querySelectorAll(".ctx-row")].map((r) => [r.firstElementChild.textContent, r.lastElementChild.textContent]),
+        fillW: Math.round(fill.getBoundingClientRect().width),
+        barW: Math.round(fill.parentElement.getBoundingClientRect().width),
+        above: pr.bottom <= cr.top,
+        expanded: chip.getAttribute("aria-expanded"),
+        compact: !!pop.querySelector(".ctx-compact"),
+        dialog: document.querySelectorAll("#dialog-container .dialog-card").length,
+      };
+    });
+    check("E30 context chip opens a usage card",
+      /ctx/.test(ctx.chipPct) && /%/.test(ctx.pct) && ctx.above && ctx.expanded === "true", JSON.stringify(ctx));
+    check("E30b the card shows used, limit and left",
+      ctx.rows.length === 3 && ctx.rows[0][0] === "Used" && ctx.rows[1][0] === "Limit" && ctx.rows[2][0] === "Left"
+      && /[0-9]/.test(ctx.rows[1][1]) && ctx.rows.every(([, v]) => v !== "?"),
+      JSON.stringify(ctx.rows));
+    check("E30c the bar reflects the percentage",
+      ctx.fillW >= 1 && ctx.fillW <= ctx.barW && ctx.fillW / ctx.barW <= 1, `fill=${ctx.fillW}/${ctx.barW}`);
+    check("E30d healthy usage hides the compact action and pops no dialog",
+      !ctx.compact && ctx.dialog === 0, JSON.stringify({ compact: ctx.compact, dialog: ctx.dialog }));
+    await page.keyboard.press("Escape");
+    check("E30e Escape closes the card", (await page.locator("#ctx-pop").count()) === 0
+      && (await page.evaluate(() => document.querySelector("#context-chip").getAttribute("aria-expanded"))) === "false");
 
     // ── E31 tool hints shorten session paths ──────────────────────────
     await page.waitForSelector('#messages .tool[data-tool-name="edit"] .tool-hint', { timeout: 15000 });
@@ -882,6 +1336,9 @@ async function detailGroup({ check, log }) {
     await ui37.waitForTimeout(200);
     const iconCount = await ui37.evaluate(() => document.querySelectorAll("#sidebar-collapse .icon").length);
     check("E37 sidebar collapse renders one icon", iconCount === 1, `icons=${iconCount}`);
+    await ui37.locator('#session-list .sb-row[data-session-file$="fixture.jsonl"]').first().click();
+    await ui37.waitForFunction(() => document.body.dataset.view === "session", null, { timeout: 45000 });
+    await ui37.waitForSelector("#tab-strip .tab .tab-close", { timeout: 15000 });
     // The chevron sits *inside* the sidebar, so on desktop it must collapse the
     // column (it used to only clear the mobile drawer flag and did nothing).
     await ui37.click("#sidebar-collapse");
@@ -893,8 +1350,9 @@ async function detailGroup({ check, log }) {
     }));
     check("E37e desktop chevron collapses the sidebar", hidden37.display === "none", `display=${hidden37.display}`);
     check("E37f collapsed state is reflected on the toggle", hidden37.expanded === "false", `aria-expanded=${hidden37.expanded}`);
-    // The titlebar is visible exactly while the sidebar is collapsed; its text
-    // must sit on the bar's centre line (asymmetric padding used to push it low).
+    // The titlebar must sit on the bar's centre line (asymmetric padding used
+    // to push it low) — measured on a real open session, and it has to be
+    // visible, otherwise every rect is 0 and the check proves nothing.
     const tb37 = await ui37.evaluate(() => {
       const t = document.querySelector("#titlebar");
       const title = document.querySelector("#tb-title");
@@ -902,12 +1360,28 @@ async function detailGroup({ check, log }) {
       const tr = t.getBoundingClientRect();
       const rr = title.getBoundingClientRect();
       return {
+        shown: cs.display !== "none" && tr.height > 0 && (title.textContent || "").trim().length > 0,
         padTop: parseFloat(cs.paddingTop),
         padBottom: parseFloat(cs.paddingBottom),
         off: Math.abs(rr.top - tr.top + rr.height / 2 - tr.height / 2),
+        // One lean line: the bar must stay under the tab bar's 46px.
+        height: Math.round(tr.height),
+        borderBottom: cs.borderBottomWidth,
+        borderColor: cs.borderBottomColor,
+        // The bar belongs to the session column, not the whole app: as a
+        // full-width sibling it pushed the sidebar down and hid its title.
+        x: Math.round(tr.left),
+        mainX: Math.round(document.querySelector(".main").getBoundingClientRect().left),
+        sidebarW: Math.round(document.querySelector("#sidebar").getBoundingClientRect().width),
+        controls: Math.round(document.querySelector("#tb-close").getBoundingClientRect().height),
       };
     });
-    check("E37h titlebar text is vertically centred", tb37.padTop === tb37.padBottom && tb37.off <= 1, JSON.stringify(tb37));
+    check("E37h titlebar is a lean, centred band",
+      tb37.shown && tb37.padTop === tb37.padBottom && tb37.off <= 1 && tb37.height <= 34 && tb37.controls <= 26,
+      JSON.stringify(tb37));
+    check("E37h2 titlebar has a bottom hairline", tb37.borderBottom === "1px" && tb37.borderColor !== "", JSON.stringify({ w: tb37.borderBottom, c: tb37.borderColor }));
+    check("E37h3 titlebar lives inside the session column",
+      tb37.x === tb37.mainX && tb37.x >= tb37.sidebarW - 1, JSON.stringify({ x: tb37.x, mainX: tb37.mainX, sidebarW: tb37.sidebarW }));
     // ── E37i the settings button shows a gear, not the theme/sun glyph ──
     // The registry entry named `gear` used to be a sun with rays, so the
     // Settings control read as a theme/brightness toggle.
@@ -922,12 +1396,55 @@ async function detailGroup({ check, log }) {
       display: getComputedStyle(document.querySelector("#sidebar")).display,
       expanded: document.querySelector("#sidebar-toggle").getAttribute("aria-expanded"),
       title: document.querySelector("#sidebar-toggle").title,
+      // The title bar is about the open session, not about the sidebar: it
+      // must still be there once the sidebar is back.
+      titlebar: getComputedStyle(document.querySelector("#titlebar")).display,
+      titlebarText: (document.querySelector("#tb-title").textContent || "").trim(),
+      tabTitle: (document.querySelector("#tab-strip .tab.active .tab-title")?.textContent || "").trim(),
     }));
     check("E37g the toggle brings the sidebar back", back37.display !== "none" && back37.expanded === "true" && /hide/i.test(back37.title),
       JSON.stringify(back37));
-    await ui37.locator('#session-list .sb-row[data-session-file$="fixture.jsonl"]').first().click();
-    await ui37.waitForFunction(() => document.body.dataset.view === "session", null, { timeout: 45000 });
-    await ui37.waitForSelector("#tab-strip .tab .tab-close", { timeout: 15000 });
+    check("E37j title bar stays visible with the sidebar open",
+      back37.titlebar === "flex" && back37.titlebarText.length > 0 && back37.titlebarText === back37.tabTitle,
+      `bar="${back37.titlebarText.slice(0, 40)}" tab="${back37.tabTitle.slice(0, 40)}"`);
+
+    // ── E37k scrollbars are themed pills, not the OS bar ────────────────
+    // The thumb must take its colour from the theme tokens (so night themes
+    // follow) and the 10px gutter must actually be in effect; the standard
+    // scrollbar-width/color stay scoped to Firefox, otherwise Chromium drops
+    // the rounded pseudo-element styling entirely.
+    const sb37 = await ui37.evaluate(() => {
+      const found = [];
+      const visit = (rules, path) => {
+        for (const r of rules) {
+          if (r.selectorText && /^::(-webkit|moz)-scrollbar/.test(r.selectorText) || r.selectorText === "*") {
+            if (/scrollbar/.test(r.selectorText) || r.style.scrollbarWidth) {
+              found.push({ sel: r.selectorText, path, bg: r.style.backgroundColor || "", width: r.style.width || "", std: r.style.scrollbarWidth || "" });
+            }
+          }
+          if (r.cssRules && r.cssRules.length) visit(r.cssRules, path + "/" + r.constructor.name.replace(/^CSS|Rule$/g, ""));
+        }
+      };
+      for (const sheet of document.styleSheets) { try { visit(sheet.cssRules, ""); } catch {} }
+      const view = document.querySelector("#view");
+      const thumb = found.find((r) => r.sel === "::-webkit-scrollbar-thumb");
+      const hover = found.find((r) => r.sel === "::-webkit-scrollbar-thumb:hover");
+      const base = found.find((r) => r.sel === "::-webkit-scrollbar");
+      const std = found.filter((r) => r.std);
+      return {
+        thumb: thumb?.bg || "",
+        hover: hover?.bg || "",
+        width: base?.width || "",
+        stdOnlyInSupports: std.length > 0 && std.every((r) => /Supports/.test(r.path)),
+        stdCount: std.length,
+        gutter: view.offsetWidth - view.clientWidth,
+      };
+    });
+    check("E37k scrollbars are themed and thin",
+      /var\(--/.test(sb37.thumb) && /var\(--/.test(sb37.hover) && sb37.width === "10px" &&
+        sb37.stdOnlyInSupports && sb37.gutter === 10,
+      JSON.stringify(sb37));
+
     const closeBox = await ui37.evaluate(() => {
       const r = document.querySelector("#tab-strip .tab .tab-close").getBoundingClientRect();
       return { w: Math.round(r.width), h: Math.round(r.height) };
@@ -936,13 +1453,23 @@ async function detailGroup({ check, log }) {
     await ui37.waitForSelector(".load-earlier-wrap button", { timeout: 20000 });
     const align = await ui37.evaluate(() => {
       const wrap = document.querySelector(".load-earlier-wrap");
-      const btn = wrap.querySelector("button").getBoundingClientRect();
       const list = document.querySelector("#messages").getBoundingClientRect();
       const w = wrap.getBoundingClientRect();
-      return { wrapLeft: Math.round(w.left), listLeft: Math.round(list.left), btnOffset: Math.round(btn.left - w.left), paneLeft: Math.round(document.querySelector("#view").getBoundingClientRect().left) };
+      const padL = parseFloat(getComputedStyle(wrap).paddingLeft);
+      const padR = parseFloat(getComputedStyle(wrap).paddingRight);
+      const kids = [...wrap.children].map((n) => n.getBoundingClientRect());
+      return {
+        wrapLeft: Math.round(w.left), listLeft: Math.round(list.left),
+        leftGap: Math.round(Math.min(...kids.map((k) => k.left)) - (w.left + padL)),
+        rightGap: Math.round(w.right - padR - Math.max(...kids.map((k) => k.right))),
+        stacked: getComputedStyle(wrap).flexDirection === "column",
+        paneLeft: Math.round(document.querySelector("#view").getBoundingClientRect().left),
+      };
     });
-    check("E37c load-earlier aligns with the transcript column",
-      Math.abs(align.wrapLeft - align.listLeft) <= 2 && align.btnOffset <= 24, JSON.stringify(align));
+    // The recall control sits centred under the transcript column.
+    check("E37c load-earlier is a centred stack in the transcript column",
+      Math.abs(align.wrapLeft - align.listLeft) <= 2 && Math.abs(align.leftGap - align.rightGap) <= 2 && align.stacked,
+      JSON.stringify(align));
     await ui37.close();
 
     const phone37 = await browser.newPage({ viewport: { width: 390, height: 844 }, hasTouch: true });
@@ -1110,12 +1637,90 @@ async function authGroup({ check, log }) {
     await page.goto(`${secure.url}/hub/`, { waitUntil: "domcontentloaded" });
     await page.waitForSelector("#login:not(.hidden)", { timeout: 20000 });
     check("E14 login overlay appears on 401", true);
+    // ── E39c the shell never paints behind the sign-in card ─────────────
+    // `#app` used to be visible from first paint, so an authenticated hub
+    // flashed the whole (themed) shell for a beat before the card appeared.
+    const behindCard = await page.evaluate(() => ({
+      app: getComputedStyle(document.querySelector("#app")).display,
+      login: getComputedStyle(document.querySelector("#login")).display,
+    }));
+    check("E39c the app shell stays hidden while the sign-in card is up",
+      behindCard.app === "none" && behindCard.login !== "none", JSON.stringify(behindCard));
+    // ── E39d the theme is applied by the head script, not by app.js ─────
+    // Delay app.js and set a dark pref first: the document must already be
+    // theme "night" with color-scheme dark before any module has run.
+    const fastPage = await authBrowser.newPage({ viewport: { width: 900, height: 700 } });
+    await fastPage.route("**/js/app.js*", async (route) => {
+      await new Promise((r) => setTimeout(r, 1500));
+      await route.continue();
+    });
+    await fastPage.goto(`${secure.url}/hub/`, { waitUntil: "commit" });
+    await fastPage.evaluate(() => localStorage.setItem("pi-hub-prefs", JSON.stringify({ theme: "night" })));
+    await fastPage.reload({ waitUntil: "commit" });
+    await fastPage.waitForSelector("body", { timeout: 15000 });
+    await fastPage.waitForTimeout(400);
+    const early = await fastPage.evaluate(() => ({
+      theme: document.documentElement.dataset.theme,
+      scheme: document.querySelector('meta[name="color-scheme"]').content,
+      app: getComputedStyle(document.querySelector("#app")).display,
+      appLoaded: !!document.querySelector("#session-list .sb-row, #login:not(.hidden)"),
+    }));
+    check("E39d a reload paints the saved theme before the app module runs",
+      early.theme === "night" && early.scheme === "dark" && early.app === "none",
+      JSON.stringify(early));
+    await fastPage.close();
+    // ── E14e the card is a real sign-in form ────────────────────────────
+    const card = await page.evaluate(() => {
+      const c = document.querySelector(".login-card");
+      const mark = document.querySelector("#login-mark svg");
+      const cr = c.getBoundingClientRect();
+      const sub = document.querySelector("#login-sub");
+      return {
+        title: (document.querySelector("#login-title")?.textContent || "").trim(),
+        logo: !!mark && mark.getBoundingClientRect().width >= 40,
+        fields: document.querySelectorAll(".login-field").length,
+        labelled: [...document.querySelectorAll(".login-label")].map((n) => n.textContent.trim()),
+        sub: (sub?.textContent || "").trim(),
+        centered: Math.abs(cr.left + cr.width / 2 - window.innerWidth / 2) <= 2,
+        footGone: !document.querySelector("#login-foot"),
+        reveal: !!document.querySelector("#login-reveal svg"),
+        errorEmpty: !document.querySelector("#login-error")?.textContent,
+      };
+    });
+    check("E14e the sign-in card carries the logo and labelled fields",
+      card.title === "Pi Hub" && card.logo && card.fields === 2 && card.labelled.join() === "User,Password"
+      && card.centered && card.footGone && card.reveal && card.errorEmpty, JSON.stringify(card));
+    // reveal toggles the field type in both directions
+    await page.locator("#login-reveal").click();
+    const revealed = await page.evaluate(() => ({
+      type: document.querySelector("#login-pass").type,
+      pressed: document.querySelector("#login-reveal").getAttribute("aria-pressed"),
+    }));
+    await page.locator("#login-reveal").click();
+    const hidden = await page.evaluate(() => document.querySelector("#login-pass").type);
+    check("E14f the password reveal toggles the field",
+      revealed.type === "text" && revealed.pressed === "true" && hidden === "password", JSON.stringify({ revealed, hidden }));
+    // a rejected sign-in reports it inline, above the button
+    await page.fill("#login-user", "tau");
+    await page.fill("#login-pass", "wrong-pass");
+    await page.click("#login-form button[type=submit]");
+    await page.waitForFunction(() => (document.querySelector("#login-error")?.textContent || "").length > 0, null, { timeout: 15000 });
+    const rejection = await page.evaluate(() => ({
+      err: document.querySelector("#login-error").textContent,
+      stillOpen: !document.querySelector("#login").classList.contains("hidden"),
+      submit: document.querySelector("#login-submit").textContent,
+      disabled: document.querySelector("#login-submit").disabled,
+    }));
+    check("E14g a wrong password stays on the card with an inline error",
+      rejection.stillOpen && /auth/i.test(rejection.err) && rejection.submit === "Sign in" && !rejection.disabled,
+      JSON.stringify(rejection));
     await page.fill("#login-user", "tau");
     await page.fill("#login-pass", "tpass");
     await page.click("#login-form button[type=submit]");
     await ready(page);
     const rows = await page.locator("#session-list .sb-row").count();
-    check("E14b login reaches the app with sessions", rows >= 1, `rows=${rows}`);
+    const appShown = await page.evaluate(() => getComputedStyle(document.querySelector("#app")).display);
+    check("E14b login reaches the app with sessions", rows >= 1 && appShown === "flex", `rows=${rows} app=${appShown}`);
     await authBrowser.close();
   } finally {
     await secure.close();

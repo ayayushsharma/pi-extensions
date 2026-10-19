@@ -2,7 +2,9 @@
  * hub — the control plane: HTTP + WS, runner registry, hub.sock relay.
  * Started only in the `hub` role on session_start; stopped idempotently.
  */
+import * as fs from "node:fs";
 import * as http from "node:http";
+import * as path from "node:path";
 import type { HubConfig } from "../env.js";
 import { hubLog } from "../log.js";
 import { resolveSessionPath } from "../store/sessions.js";
@@ -118,11 +120,33 @@ export class Hub {
     this.heartbeat.unref?.();
     this.stopped = false;
     const url = `http://${this.config.host}:${port}`;
+    if (socketOk) this.advertise(port);
     hubLog(`hub listening on ${url} (socket=${socketOk ? this.config.sockPath : "off"})`);
     try {
       this.ctx?.ui?.setStatus?.("pi-hub", `Hub: ${this.config.host}:${port}`);
     } catch {}
     return { url, port, socket: socketOk };
+  }
+
+  /** Publish our socket in a stable file: a TUI started in another directory
+   *  (or against a dev hub with PI_HUB_DIR set) still finds the hub. */
+  private advertise(port: number): void {
+    try {
+      fs.mkdirSync(path.dirname(this.config.advertPath), { recursive: true });
+      fs.writeFileSync(
+        this.config.advertPath,
+        JSON.stringify({ sock: this.config.sockPath, port, host: this.config.host, pid: process.pid, startedAt: Date.now() }, null, 2),
+      );
+    } catch (e) {
+      hubLog(`advert file failed: ${(e as Error).message}`);
+    }
+  }
+
+  private unadvertise(): void {
+    try {
+      const raw = JSON.parse(fs.readFileSync(this.config.advertPath, "utf8"));
+      if (raw?.pid === process.pid) fs.rmSync(this.config.advertPath, { force: true });
+    } catch {}
   }
 
   private listen(port: number, attemptsLeft: number): Promise<number> {
@@ -167,6 +191,7 @@ export class Hub {
       this.server?.close();
       this.server = null;
     } catch {}
+    this.unadvertise();
     hubLog("hub stopped");
   }
 }

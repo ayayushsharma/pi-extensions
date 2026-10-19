@@ -17,13 +17,18 @@ export function createComposer(refs, actions) {
   refs.sendBtn.append(icon("arrow-up", 16));
   refs.abortBtn.append(icon("square", 14));
   refs.micBtn.append(icon("mic", 15));
-  refs.commandBtn.append(icon("plug", 15));
+  refs.commandBtn.append(icon("commands", 15));
+  refs.commandBtn.title = "Commands and skills (/)";
   refs.attachBtn.append(icon("image", 15));
 
   /* ── textarea ─────────────────────────────────────────────────────── */
   function autoGrow() {
     refs.input.style.height = "auto";
-    refs.input.style.height = `${Math.min(refs.input.scrollHeight, window.innerHeight * 0.38)}px`;
+    // Never shrink below the resting height the stylesheet asks for (two
+    // lines); below that the field reads like a one-line search box.
+    const min = parseFloat(getComputedStyle(refs.input).minHeight) || 0;
+    const max = window.innerHeight * 0.38;
+    refs.input.style.height = `${Math.min(Math.max(refs.input.scrollHeight, min), max)}px`;
   }
   refs.input.addEventListener("input", () => {
     autoGrow();
@@ -48,6 +53,147 @@ export function createComposer(refs, actions) {
   });
   refs.abortBtn.addEventListener("click", () => actions.abort());
 
+  /* ── commands + skills ────────────────────────────────────────────── */
+  /* pi reports three sources: `extension` (its own slash commands),
+     `prompt` templates and `skill:<name>` entries. The palette lists all of
+     them with a source chip, fuzzy-filtered, so skills are reachable without
+     knowing the `/skill:` prefix. */
+  const SOURCE_LABEL = { skill: "skill", prompt: "prompt", extension: "command" };
+  const SOURCE_RANK = { skill: 0, prompt: 1, extension: 2 };
+
+  let commandsLoading = null;
+  /** `force` refetches: pi's list changes when a skill/prompt/extension is
+   *  added, and the first answer can predate a freshly installed one. */
+  async function loadCommands(force = false) {
+    if (commands.length && !force) return commands;
+    if (commandsLoading) return commandsLoading;
+    commandsLoading = (async () => {
+      try {
+        commands = (await actions.listCommands()) || [];
+      } catch {
+        if (!commands.length) commands = [];
+      }
+      commands.sort((a, b) => (SOURCE_RANK[a.source] ?? 9) - (SOURCE_RANK[b.source] ?? 9) || a.name.localeCompare(b.name));
+      return commands;
+    })().finally(() => { commandsLoading = null; });
+    return commandsLoading;
+  }
+
+  /** Fuzzy match: query chars in order, prefix/word-boundary wins. -1 = no match. */
+  function fuzzyScore(query, text) {
+    const q = String(query || "").toLowerCase();
+    const t = String(text || "").toLowerCase();
+    if (!q) return 0;
+    let qi = 0;
+    let score = 0;
+    let last = -1;
+    for (let ti = 0; ti < t.length && qi < q.length; ti++) {
+      if (t[ti] === q[qi]) {
+        if (ti === 0 || t[ti - 1] === " " || t[ti - 1] === "/" || t[ti - 1] === "-" || t[ti - 1] === ":") score += 3;
+        else if (last === ti - 1) score += 2;
+        else score += 1;
+        last = ti;
+        qi++;
+      } else if (last !== -1) score -= 0.05;
+    }
+    return qi === q.length ? score : -1;
+  }
+
+  function matchCommands(query) {
+    const q = String(query || "").trim().replace(/^\//, "");
+    const scored = [];
+    for (const c of commands) {
+      const s = fuzzyScore(q, `${c.name} ${c.description || ""}`);
+      if (s >= 0) scored.push({ c, s });
+    }
+    scored.sort((a, b) => b.s - a.s || (SOURCE_RANK[a.c.source] ?? 9) - (SOURCE_RANK[b.c.source] ?? 9) || a.c.name.localeCompare(b.c.name));
+    return scored.map((x) => x.c);
+  }
+
+  function commandNode(c, { selected = false, onpick }) {
+    return el(
+      "button",
+      {
+        type: "button",
+        class: `item cmd-item${selected ? " sel" : ""}`,
+        role: "option",
+        "aria-selected": String(!!selected),
+        title: c.description || c.name,
+        onclick: onpick,
+      },
+      el(
+        "span",
+        { class: "cmd-head" },
+        el("span", { class: "cmd-name", text: `/${c.name}` }),
+        el("span", { class: `chip-mini cmd-source ${c.source || ""}`, text: SOURCE_LABEL[c.source] || c.source || "" }),
+      ),
+      c.description ? el("span", { class: "sub", text: c.description }) : null,
+    );
+  }
+
+  /* Deliberate "run something" palette, opened from the composer button.
+     Reuses the model menu's shell (.menu + sticky .menu-foot filter) so the
+     filter stays reachable on phones with a long skill list. */
+  const commandOpen = () => !refs.commandMenu.classList.contains("hidden");
+  let cmdSel = 0;
+  let cmdQuery = "";
+
+  function renderCommandMenu() {
+    const list = matchCommands(cmdQuery);
+    cmdSel = Math.min(cmdSel, Math.max(0, list.length - 1));
+    refs.commandMenu.querySelectorAll(".item,.meta,.cmd-empty").forEach((n) => n.remove());
+    const foot = refs.commandMenu.querySelector(".menu-foot");
+    const add = (node) => (foot ? refs.commandMenu.insertBefore(node, foot) : refs.commandMenu.append(node));
+    list.forEach((c, i) => {
+      add(commandNode(c, {
+        selected: i === cmdSel,
+        onpick: () => applyCommand(c),
+      }));
+    });
+    if (!list.length) {
+      add(el("div", {
+        class: "meta cmd-empty", style: "padding:8px 10px",
+        text: commands.length ? `No command matches “${cmdQuery.trim()}”` : commandsLoading ? "Loading commands…" : "No commands or skills available",
+      }));
+    }
+  }
+
+  function applyCommand(c) {
+    closeMenus();
+    refs.input.value = `/${c.name} `;
+    refs.input.focus();
+    autoGrow();
+  }
+
+  function openCommandMenu() {
+    // Paint at once (older list, or a "loading" line) and refresh from pi in
+    // the background: the list is one cheap RPC and it changes when a skill or
+    // command is installed mid-session.
+    refs.commandMenu.replaceChildren();
+    const search = el("input", {
+      class: "menu-search", type: "search", placeholder: "Filter commands and skills…",
+      "aria-label": "Filter commands and skills", autocomplete: "off",
+      onclick: (ev) => ev.stopPropagation(),
+    });
+    search.addEventListener("input", () => { cmdQuery = search.value; cmdSel = 0; renderCommandMenu(); });
+    search.addEventListener("keydown", (ev) => {
+      ev.stopPropagation();
+      if (ev.key === "ArrowDown") { ev.preventDefault(); cmdSel = Math.min(cmdSel + 1, Math.max(0, matchCommands(cmdQuery).length - 1)); renderCommandMenu(); }
+      else if (ev.key === "ArrowUp") { ev.preventDefault(); cmdSel = Math.max(0, cmdSel - 1); renderCommandMenu(); }
+      else if (ev.key === "Enter") { ev.preventDefault(); const c = matchCommands(cmdQuery)[cmdSel]; if (c) applyCommand(c); }
+      else if (ev.key === "Escape") closeMenus();
+    });
+    refs.commandMenu.append(el("div", { class: "menu-foot" }, search));
+    cmdQuery = "";
+    cmdSel = 0;
+    renderCommandMenu();
+    show(refs.commandMenu, true);
+    search.focus();
+    loadCommands(true).then(() => {
+      if (commandOpen()) renderCommandMenu();
+    });
+  }
+
   /* ── slash palette ────────────────────────────────────────────────── */
   const slashOpen = () => !refs.slashEl.classList.contains("hidden");
   const slashItems = () => {
@@ -57,8 +203,7 @@ export function createComposer(refs, actions) {
   function updateSlash() {
     if (!refs.input.value.startsWith("/") || refs.input.value.includes("\n")) return hideSlash();
     if (!commands.length) {
-      actions.listCommands().then((list) => {
-        commands = list || [];
+      loadCommands().then(() => {
         if (refs.input.value.startsWith("/")) updateSlash();
       }).catch(() => {});
     }
@@ -67,19 +212,7 @@ export function createComposer(refs, actions) {
     refs.slashEl.replaceChildren();
     list.forEach((c, i) => {
       refs.slashEl.append(
-        el(
-          "button",
-          {
-            type: "button",
-            class: `item${i === sel ? " sel" : ""}`,
-            role: "option",
-            "aria-selected": String(i === sel),
-            onmouseenter: () => { sel = i; updateSlash(); },
-            onclick: () => apply(),
-          },
-          el("span", { text: `/${c.name}` }),
-          c.description ? el("span", { class: "sub", text: c.description }) : null,
-        ),
+        commandNode(c, { selected: i === sel, onpick: () => { sel = i; apply(); } }),
       );
     });
     show(refs.slashEl, list.length > 0);
@@ -137,7 +270,7 @@ export function createComposer(refs, actions) {
           { class: "q-pill" },
           el("img", { src: `data:${img.mimeType};base64,${img.data}`, alt: img.name || "image", style: "width:22px;height:22px;border-radius:5px;object-fit:cover" }),
           el("span", { class: "txt", text: img.name || "image" }),
-          el("button", { class: "icon-btn", type: "button", style: "width:20px;height:20px", "aria-label": "Remove image", html: icon("x", 11).innerHTML, onclick: () => { images.splice(i, 1); renderImageChips(); } }),
+          el("button", { class: "icon-btn", type: "button", style: "width:20px;height:20px", "aria-label": "Remove image", onclick: () => { images.splice(i, 1); renderImageChips(); } }, icon("x", 11)),
         ),
       );
     }
@@ -159,7 +292,7 @@ export function createComposer(refs, actions) {
     }
     if (queue.length) {
       refs.queueEl.append(
-        el("button", { class: "icon-btn", type: "button", title: "Restore queued messages to the editor", "aria-label": "Restore queued messages to the editor", html: icon("back", 12).innerHTML, onclick: () => actions.restoreQueue() }),
+        el("button", { class: "icon-btn", type: "button", title: "Restore queued messages to the editor", "aria-label": "Restore queued messages to the editor", onclick: () => actions.restoreQueue() }, icon("back", 12)),
       );
     }
     show(refs.queueEl, queue.length > 0);
@@ -198,6 +331,7 @@ export function createComposer(refs, actions) {
   function closeMenus() {
     show(refs.modelMenu, false);
     show(refs.thinkingMenu, false);
+    show(refs.commandMenu, false);
     refs.modelBtn.setAttribute("aria-expanded", "false");
     refs.thinkingBtn.setAttribute("aria-expanded", "false");
   }
@@ -229,19 +363,26 @@ export function createComposer(refs, actions) {
       if (ev.key === "Enter") refs.modelMenu.querySelector(".item")?.click();
       if (ev.key === "Escape") closeMenus();
     });
-    refs.modelMenu.append(search);
     renderModelItems("");
+    // The filter box lives in a sticky footer: the menu opens upward from the
+    // composer, so the bottom of the list is the spot a phone thumb (and the
+    // on-screen keyboard) can reach — and it must stay there while a long
+    // model list scrolls underneath.
+    refs.modelMenu.append(el("div", { class: "menu-foot" }, search));
     show(refs.modelMenu, true);
     refs.modelBtn.setAttribute("aria-expanded", "true");
   });
 
   function renderModelItems(filter) {
     refs.modelMenu.querySelectorAll(".item,.meta").forEach((n) => n.remove());
+    // Items go above the sticky filter footer, which stays the last child.
+    const foot = refs.modelMenu.querySelector(".menu-foot");
+    const add = (node) => (foot ? refs.modelMenu.insertBefore(node, foot) : refs.modelMenu.append(node));
     const q = String(filter || "").trim().toLowerCase();
     const list = models.filter((m) => !q || `${m.name || ""} ${m.id || ""} ${m.provider || ""}`.toLowerCase().includes(q));
     for (const m of list) {
       const selected = currentModel && m.provider === currentModel.provider && m.id === currentModel.id;
-      refs.modelMenu.append(
+      add(
         el(
           "button",
           {
@@ -260,7 +401,7 @@ export function createComposer(refs, actions) {
       );
     }
     if (!list.length) {
-      refs.modelMenu.append(el("div", {
+      add(el("div", {
         class: "meta", style: "padding:8px 10px",
         text: models.length ? `No models match “${String(filter || "").trim()}”` : "No models available",
       }));
@@ -302,7 +443,12 @@ export function createComposer(refs, actions) {
     refs.thinkingBtn.setAttribute("aria-expanded", "true");
   });
 
-  refs.commandBtn.addEventListener("click", () => actions.openPicker());
+  refs.commandBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const wasOpen = commandOpen();
+    closeMenus();
+    if (!wasOpen) openCommandMenu();
+  });
 
   /* ── voice (optional) ─────────────────────────────────────────────── */
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;

@@ -18,7 +18,11 @@
  * The extension never calls `ctx.compact()`.
  *
  * The original window is remembered per `provider/id` and restored when the limit
- * is disabled or the session ends, so nothing is persisted.
+ * is disabled or the session ends. The /ctx-set session override itself IS
+ * persisted: it is appended to the session file as a `custom` entry (invisible
+ * to the model, ignored by history views) and restored on resume, so a resumed
+ * session — including a headless child that never saw --context-size — caps
+ * exactly like before. `/ctx-set clear` removes the override (tombstone entry).
  *
  * The extension is inert until a manual limit is configured. When none is set
  * anywhere, Pi's own behaviour governs the session untouched.
@@ -134,6 +138,58 @@ export default function (pi: ExtensionAPI) {
 	// Session-scoped override from /ctx-set. undefined = no override,
 	// null = disabled for this session, number = manual limit.
 	let sessionOverride: number | null | undefined;
+
+	/**
+	 * Session-file persistence for the override above.
+	 *
+	 * Pi's `custom` session entries are extension state that never reaches
+	 * the LLM (same mechanism pi itself uses for virtual-model router
+	 * state). /ctx-set appends one; on `session_start` the last entry on the
+	 * active branch (via `getBranch()`, so abandoned branches can't leak in)
+	 * restores the override — so a resumed session (including a headless
+	 * child that never saw --context-size) caps exactly like before.
+	 * Compaction never drops file entries, only summarizes them, so the cap
+	 * survives compactions without re-appending.
+	 */
+	const CUSTOM_TYPE = "ctx-limit";
+	interface CtxLimitFileData {
+		version: 1;
+		/** Manual limit; null = disabled for this session. */
+		limit?: number | null;
+		/** Tombstone for `/ctx-set clear`: fall back to config, ignore older entries. */
+		cleared?: boolean;
+	}
+
+	/** Latest ctx-limit entry on the active branch, if any. */
+	function readFileOverride(ctx: ExtensionContext): CtxLimitFileData | undefined {
+		try {
+			const branch = ctx.sessionManager?.getBranch?.();
+			if (!Array.isArray(branch)) return undefined;
+			let found: CtxLimitFileData | undefined;
+			for (const entry of branch) {
+				if ((entry as any)?.type !== "custom" || (entry as any)?.customType !== CUSTOM_TYPE) continue;
+				const data = (entry as any)?.data as CtxLimitFileData | undefined;
+				if (!data || typeof data !== "object" || (data as any).version !== 1) continue;
+				found = data; // branch is root→leaf: last match wins
+			}
+			return found;
+		} catch {
+			return undefined;
+		}
+	}
+
+	/** Persist a /ctx-set action to the session file (no-op when unchanged). */
+	function persistOverride(next: number | null | undefined): void {
+		if (sessionOverride === next) return;
+		sessionOverride = next;
+		try {
+			const data: CtxLimitFileData =
+				next === undefined ? { version: 1, cleared: true } : { version: 1, limit: next };
+			pi.appendEntry(CUSTOM_TYPE, data);
+		} catch {
+			/* e.g. no active session: in-memory override still applies */
+		}
+	}
 	/** Original context windows we replaced, keyed by "provider/id". */
 	const originalWindows = new Map<string, number>();
 
@@ -352,7 +408,7 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 			if (raw === "off" || raw === "clear" || raw === "0") {
-				sessionOverride = raw === "clear" ? undefined : null;
+				persistOverride(raw === "clear" ? undefined : null);
 				refresh(ctx);
 				ctx.ui.notify(
 					raw === "clear" ? "ctx-limit: session override cleared" : "ctx-limit: disabled for this session",
@@ -373,7 +429,7 @@ export default function (pi: ExtensionAPI) {
 				);
 				return;
 			}
-			sessionOverride = parsed;
+			persistOverride(parsed);
 			refresh(ctx);
 			ctx.ui.notify(`ctx-limit: session limit set to ${fmt(parsed)} tokens`, "info");
 		},
@@ -382,6 +438,29 @@ export default function (pi: ExtensionAPI) {
 	// ─── Lifecycle ───
 
 	pi.on("session_start", async (_event, ctx) => {
+		// Restore a /ctx-set override persisted in the session file (if any).
+		// An explicit clear tombstone falls back to config: undefined.
+		const saved = readFileOverride(ctx);
+		if (saved !== undefined) {
+			const next: number | null | undefined =
+				saved.cleared === true ? undefined
+				: saved.limit === null ? null
+				: typeof saved.limit === "number" ? saved.limit
+				: undefined;
+			if (next !== sessionOverride) {
+				sessionOverride = next;
+				// TUI-only: RPC restores stay silent so headless binds in tau-web
+				// don't pop a notification in the browser on every view.
+				if (ctx.mode === "tui" && next !== undefined) {
+					ctx.ui.notify(
+						next === null
+							? "ctx-limit: restored session override (disabled)"
+							: `ctx-limit: restored session limit ${fmt(next)} tokens`,
+						"info",
+					);
+				}
+			}
+		}
 		refresh(ctx);
 	});
 

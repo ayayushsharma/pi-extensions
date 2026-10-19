@@ -37,7 +37,7 @@ pi --extension ./ctx-limit/extensions/ctx-limit.ts --context-size 128000
 
 # inside Pi
 /ctx-status        # manual / model / effective / compacts-at / current usage
-/ctx-set 64000     # session-only override (does not edit config files)
+/ctx-set 64000     # session-only override (saved in the session file, restored on resume)
 /ctx-set off       # disable for this session
 /ctx-set clear     # drop the session override, back to config resolution
 ```
@@ -93,7 +93,7 @@ runtime across model switches instead of by hand.
 ## Notes
 
 - Cross-platform: pure Node `fs`/`path`/`os` — no shell, no `child_process`, no `__dirname`. Works on macOS, Linux, Windows, and Termux. `PI_CODING_AGENT_DIR` supports `~` and relative paths, and `settings.json` files are read with a leading UTF-8 BOM stripped (common on Windows).
-- The original window is remembered per `provider/id` and restored when the limit is disabled or the session ends — nothing is persisted, and switching models gives the old model its real window back.
+- The original window is remembered per `provider/id` and restored when the limit is disabled or the session ends, and switching models gives the old model its real window back. The `/ctx-set` override itself **is persisted**: it is appended to the session file as a `custom` entry (never sent to the model, ignored by history views) and restored on resume — including by headless children that never saw `--context-size`. `/ctx-set clear` drops it back to config resolution.
 - `keepRecentTokens`, the summary pipeline, and continuation are untouched — post-compact context is still summary + core's configured tail, and the run resumes the way stock Pi resumes it.
 - A limit that leaves no room after Pi's reserve is **not** applied (with a note in `/ctx-status`) instead of compacting every turn.
 - Re-asserted on `session_start`, `model_select`, and `before_agent_start` (the registry can swap the live model object without a `model_select`).

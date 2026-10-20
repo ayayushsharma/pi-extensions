@@ -233,7 +233,7 @@ this section is the short version for a fresh session.
   shared LineBuffer/protocol validation/prober, dead WS verb + methods +
   icons + marks + CSS + dialog/state cleanup; composer/transcript/sidebar
   reviewed and kept (below abstraction threshold).
-- **Working tree (this batch)**: H1/H4 accepted as deliberate trade-offs;
+- **Committed (`9dd44ba`)**: H1/H4 accepted as deliberate trade-offs;
   H2 bind serialization (shared in-flight spawn, unindex-on-close) and H5
   delivered-only `lastSeq` fixed, both pinned (integration H2/H2b/H2c/H2d,
   new `ws.test.ts`).

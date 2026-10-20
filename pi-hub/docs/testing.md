@@ -2,19 +2,23 @@
 
 Extensive, layered, Playwright-first. Every capability (C1–C4) and every
 ADR decision has named cases; every case has one owning spec file. This
-document is the contract; `tests/cases.json` is the machine-readable
-registry (added in P0) and a meta-test fails when a case is missing from a
-spec, silently skipped, or has no assertion.
+document is the contract. `tests/cases.json` **is not in place yet** (see
+`PLAN.md` status and `code-review.md` D2), so nothing machine-checks that a
+row below is implemented: the matrix is enforced by review plus the suites'
+printed case names, not by a meta-test. When in doubt, grep the case ID in
+`tests/` — a row without a hit is a documentation bug, not a passing gate.
 
-### As built (2026-10-18)
+### As built (2026-10-21)
 
-- Counts: **19 unit**, **54 integration**, **104 Playwright** (`--e2e`),
-  **178 total** including the Firefox smoke (`--all`).
+- Counts: **60 unit**, **90 integration**, **170 Playwright** (`--e2e`, 12
+groups: core, live, close, panels, tabs, models, chrome, detail, deadcwd,
+steer, auth, images). `--all` reports **320 checks** (319 pass, 1 documented
+skip — the Firefox CLI smoke when the host's Firefox cannot render headless).
 - **Parallelism is a knob**: `-j N` / `--jobs N` (or `--serial`), default
   `min(4, cpus)`. Groups are independent (own hub, own store copy, own page),
   so they run concurrently: `-j1` for deterministic logs, higher on a fast box.
   Measured on the dev phone: unit 0.3 s · integration 3.0 s at `-j4` ·
-  Playwright 13 s at `-j4` (11 groups) · `--all` ≈ 13 s wall.
+  Playwright 13 s at `-j4` (12 groups at the time of writing) · `--all` ≈ 13 s wall.
 - `--e2e` replaces integration, `--unit` alone is unit-only; reuse `--all` for a
   full gate. `--integration --jobs 1` is the debugging mode.
 - **Tiers** (and why): unit = pure contracts, sub-second, run constantly;
@@ -236,7 +240,7 @@ WS is filtered only in layer-A cases.
 
 | ID | Scenario | Assertion |
 |---|---|---|
-| X1 | Hostile image block in session file | No XSS; invalid mime/base64 dropped (S1/B1) |
+| X1 | Hostile image block in session file | No XSS; invalid mime/base64 dropped, legacy blocks (missing mime, `data:` URL) still render (S1/B1; E41) |
 | X2 | `%%CODEBLOCK_0%%` / `%%DMATH_0%%` text | Rendered literally; following block still renders (B2) |
 | X3 | Symlink/dangling/`dir.png` preview | 403/404; no file bytes served (S4) |
 | X4 | SVG attachment | Not rendered same-origin (sandbox or download) |
@@ -245,7 +249,7 @@ WS is filtered only in layer-A cases.
 | X7 | Security headers | CSP, nosniff, frame-ancestors on `/`, shell, health, 401s (S6/S11) |
 | X8 | Traversal | `..`, encoded, null byte, backslash in every path param → refused |
 | X9 | JS injection via tool/output fields | Rendered as text; no event-handler attributes |
-| X10 | WS oversized frame | `maxPayload` rejects cleanly; socket stays alive (S10) |
+| X10 | WS oversized frame | 2 MB `maxPayload` closes the socket (1009) and the hub stays healthy; clients must fit the budget — composer downscales attachments (E42, integration X10) |
 | X11 | Slow consumer | Backpressure drop, no unbounded hub memory (S10) |
 | X12 | Process kill | Fingerprint fail-closed; stale pid 404; self/pid≤1 refused (ADR-013) |
 | X13 | Dead frames | Unknown WS type ignored silently, no error spam (P2/D1) |
@@ -256,7 +260,7 @@ WS is filtered only in layer-A cases.
 | X18 | Command image validation | Hostile `images` on prompt/steer/follow_up rejected before execution (unit + D2b) |
 | X19 | Live drive enforcement (ADR-014) | Bound-but-not-attached socket: drive verb refused (`attach first`), preview reads acked (D8/D8b) |
 | X20 | Export jail end-to-end | WS `export_html` to `/etc` refused, nothing written; pathless forward acks |
-| X21 | Flood guards | WS sockets per IP → 429; headless spawns throttled; client-error beacon 429 (X6) |
+| X21 | Flood guards | WS sockets per IP → 429 (integration X21/X21b), client-error beacon 429 (X21c); headless spawn throttle is unpinned (would need 21 real children — manual) |
 | X22 | Drive confirm (opt-in) | `PI_HUB_DRIVE_CONFIRM=1`: attach pends native TUI confirm; deny/timeout fails closed (unit; manual against a real TUI) |
 
 ### R — rendering
@@ -271,7 +275,7 @@ WS is filtered only in layer-A cases.
 | R6 | Unicode/emoji-safe | U+2028/29, RTL, astral chars render; no JSON framing break |
 | R7 | Huge message | Windowed render stays responsive; no layout thrash |
 | R8 | Compaction | Pill + inline message → summary/abort/failure; failure surfaces |
-| R9 | Images | Sent and history images inline; invalid dropped |
+| R9 | Images | Sent and history images inline; invalid dropped; photos downscaled under the frame budget (E41–E43) |
 | R10 | Costs/tokens | Header follows viewed session (N3/H21); hide-costs hides both places |
 
 ### P — performance budgets (§5)

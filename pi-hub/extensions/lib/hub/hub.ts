@@ -62,6 +62,10 @@ export class Hub {
   }
 
   async start(): Promise<HubStartInfo> {
+    // A hub instance is single-use in practice, but a failed start after a
+    // stop() must still be able to release its advert claim (stop() returns
+    // early when this flag is stale).
+    this.stopped = false;
     // A8: a wildcard bind without credentials would expose every control
     // surface to the LAN. Refuse before claiming anything (a refused hub
     // must not block the advert scope).
@@ -122,6 +126,10 @@ export class Hub {
       routes,
       staticDir: this.config.staticDir,
     });
+    // Consent must be armed *before* the server can accept sockets: the
+    // confirmer closure resolves `this.relay` lazily, so setting it early is
+    // safe and closes the window where an attach could bypass it.
+    this.ws.setDriveConfirm(this.config.driveConfirm, (pid) => this.relay?.requestDriveConfirm(pid) ?? Promise.resolve(false));
     this.ws.attach(this.server);
 
     // Singleton (ADR-021): one hub per advert scope. Claim before binding so
@@ -146,7 +154,6 @@ export class Hub {
         await this.socket.start();
         this.relay = new Relay({ server: this.socket, registry: this.registry, dialogs });
         this.relay.start();
-        this.ws?.setDriveConfirm(this.config.driveConfirm, (pid) => this.relay?.requestDriveConfirm(pid) ?? Promise.resolve(false));
         socketOk = true;
       } catch (e) {
         const msg = (e as Error).message || "";

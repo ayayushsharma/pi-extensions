@@ -11,6 +11,7 @@ and no shared build — do not add one.
 pi-extensions/
 ├── AGENTS.md               # this file — repo conventions (you are here)
 ├── tau-web/                # tau-web — unified Pi web UI (mirror + headless + uplink)
+├── pi-hub/                 # pi-hub — runner-registry rewrite: hub + live mirrors + headless
 ├── ctx-limit/              # pi-ctx-limit — cap the effective context window
 ├── session-clear/          # pi-session-clear — true /clear session wipe
 └── extension-template/     # scaffold for a new package — copy it, don't edit it
@@ -33,6 +34,7 @@ my-package/
 | Dir | npm | What |
 |-----|-----|------|
 | `tau-web/` | `tau-web` | Unified Pi web UI: live TUI mirror + headless backends + uplink proxy + cookie auth. Supersedes the retired `tau` package (removed). See `tau-web/README.md`. |
+| `pi-hub/` | `pi-hub` | Hub control plane built as a parallel rewrite of tau-web (ADR-019): one Runner registry (headless child + relayed live TUI), push instead of poll, advert-scoped single hub per machine (ADR-021), Playwright + Firefox gate. See `pi-hub/README.md` and `pi-hub/docs/code-review.md`. |
 | `ctx-limit/` | `pi-ctx-limit` | Caps the model's effective context window at `min(manual, model)` so Pi's own auto-compaction triggers early and still continues the run, via `--context-size` / `ctxLimit` settings. See `ctx-limit/README.md`. |
 | `session-clear/` | `pi-session-clear` | `/clear` deletes the current session file and starts fresh — no history survives (`/new` leaves the old file resumable). See `session-clear/README.md`. |
 | `extension-template/` | n/a (not published) | Minimal working package. Starting point for every new extension. |

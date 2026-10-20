@@ -8,7 +8,7 @@ import http from "node:http";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { runGroups } from "./groups.mjs";
-import { PKG_ROOT, cleanEnv, connectWs, findPi, fixtureSessionDir, freePort, jsonFetch, startHub, startMirror, tmpDir, waitFor } from "./helpers.mjs";
+import { PKG_ROOT, cleanEnv, connectWs, findPi, fixtureSessionDir, freePort, jsonFetch, killTree, startHub, startMirror, tmpDir, waitFor } from "./helpers.mjs";
 
 export async function runIntegration({ log }) {
   return runGroups(
@@ -339,6 +339,62 @@ async function hubGroup({ check }) {
     const gitOutside = await fetch(`${base}/api/git?cwd=${encodeURIComponent("/etc")}`);
     check("G5 the probe stays inside the file jail", gitOutside.status === 403, `status=${gitOutside.status}`);
 
+    // ── X10 WS frame cap (S10) ──────────────────────────────────────────
+    // The transport closes the connection on an over-budget frame (1009).
+    // Clients must therefore fit the 2 MB budget themselves (the composer
+    // downscales attachments); the hub itself must stay healthy afterwards.
+    const wsBig = await connectWs(`ws://127.0.0.1:${port}/ws`);
+    await wsBig.wait((m) => m.type === "hello", 10000, "hello");
+    const bigClose = new Promise((resolve) => wsBig.ws.once("close", (code) => resolve(code)));
+    wsBig.send({ type: "command", id: "big", command: { type: "prompt", message: "x".repeat(3 * 1024 * 1024) } });
+    const closeCode = await Promise.race([bigClose, new Promise((r) => setTimeout(() => r("open"), 8000))]);
+    check("X10 oversized WS frame closes with 1009", closeCode === 1009, `code=${closeCode}`);
+    const stillHealthy = await (await fetch(`${base}/api/health`)).json();
+    check("X10b hub survives the oversized frame", stillHealthy.status === "ok");
+
+    // ── X21 WS-per-IP cap (S9) ─────────────────────────────────────────
+    // One browser holds 1–2 sockets; the 33rd from one peer is refused with
+    // 429 so a misbehaving client cannot exhaust the hub's connection pool.
+    const held = [];
+    let refused = null;
+    try {
+      for (let i = 0; i < 33; i++) {
+        try {
+          held.push(await connectWs(`ws://127.0.0.1:${port}/ws`));
+        } catch (e) {
+          refused = e;
+          break;
+        }
+      }
+      // Exact accounting is not the invariant (a socket closed moments ago
+      // may still be releasing its slot): the cap must refuse a new peer
+      // socket without ever exceeding 32.
+      check(
+        "X21 socket cap refuses one peer beyond the limit",
+        !!refused && held.length >= 30 && held.length <= 32,
+        `held=${held.length} err=${refused?.message || "none"}`,
+      );
+    } finally {
+      for (const c of held) {
+        try {
+          await c.close();
+        } catch {}
+      }
+    }
+    await new Promise((r) => setTimeout(r, 300));
+    const afterFlood = await connectWs(`ws://127.0.0.1:${port}/ws`);
+    await afterFlood.wait((m) => m.type === "hello", 10000, "hello after flood");
+    await afterFlood.close();
+    check("X21b closing sockets releases the count", true);
+
+    // ── X21c client-error beacon rate limit (S7) ───────────────────────
+    let toast429 = 0;
+    for (let i = 0; i < 22; i++) {
+      const r = await fetch(`${base}/api/client-error`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ message: `probe ${i}` }) });
+      if (r.status === 429) toast429++;
+    }
+    check("X21c beacon flood hits 429", toast429 >= 2, `429s=${toast429}`);
+
   } finally {
     await hub.close();
     // Graceful stops withdraw the file; a hard kill leaves it behind, so the
@@ -450,7 +506,7 @@ async function authGroup({ check }) {
         check("A9c refused hub claims no scope", !fs.existsSync(path.join(dir, "hub.json")));
       } finally {
         try {
-          proc.kill("SIGKILL");
+          killTree(proc);
         } catch {}
       }
     }

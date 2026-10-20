@@ -1,15 +1,18 @@
 # pi-hub — implementation plan
 
-Status: **implemented (P0–P6)** (2026-10-18 overnight).
-`node tests/run.mjs` = 45 integration checks green (`--unit` 6, `npm run test:unit`); `node tests/run.mjs --e2e`
-= 74 Playwright checks green (including one real model round-trip with
-`PI_HUB_E2E_PROMPT=1`); `--firefox` adds the zero-dependency CLI smoke
-(skips where system Firefox cannot render headless). As-built deltas from the
-original plan: `playwright-core` + a small node runner instead of
-`@playwright/test` (same Chromium/system Chrome, no test-runner dependency);
-the selenium/Firefox backend is scaffolded as the CLI smoke only; the
-`tests/cases.json` registry is not in place yet (results are printed by
-name). tau-web is still the live service — the flip (P7) is pending.
+Status: **implemented (P0–P6)** (2026-10-18 overnight; updated 2026-10-21).
+Current gate: **60 unit · 90 integration · 170 Playwright** checks green
+(including one real model round-trip with `PI_HUB_E2E_PROMPT=1`); `--firefox`
+adds the zero-dependency CLI smoke (skips where system Firefox cannot render
+headless). As-built deltas from the original plan: `playwright-core` + a small
+node runner instead of `@playwright/test` (same Chromium/system Chrome, no
+test-runner dependency); the selenium/Firefox backend is scaffolded as the CLI
+smoke only; the `tests/cases.json` registry is still not in place (results are
+printed by name — see `code-review.md` D2). Since P6: ADR-021 singleton
+enforcement, live-command parity + server-enforced single driver, the security
+hardening batch, and the review fixes R1–R5 — all logged with pins in
+`docs/code-review.md` §4/§7. tau-web is still the live service — the flip (P7)
+is pending.
 Companions: `docs/adr/019-pi-hub-parallel-rewrite.md` (decision),
 `docs/testing.md` (case matrix). Continues tau-web ADR-001–018; superseded
 ADR-012 (headless-only hub) is **not** implemented — the attach relay

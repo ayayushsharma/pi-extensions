@@ -198,6 +198,10 @@ export class Auth {
     return Math.min(500 * f.fails, 5000);
   }
 
+  /** Shared by the login route and Basic auth on purpose: both are guesses
+   *  at the same credentials, so one budget covers both (a client that
+   *  typos the login form must not get unlimited Basic attempts). Note the
+   *  key is the socket peer — behind a tunnel that is one shared bucket. */
   recordFailure(ip: string): number {
     const now = Date.now();
     const f = this.failures.get(ip) || { fails: 0, until: 0 };

@@ -17,20 +17,38 @@ function textOf(content) {
 /** History image allowlist — mirrors protocol.ts isValidMessageImage (the
  *  browser cannot import the .ts sources, so the check is duplicated here).
  *  <img> context is already scriptless, but invalid blocks still render as
- *  broken icons and hostile sizes bloat the DOM, so drop them silently. */
+ *  broken icons and hostile sizes bloat the DOM, so drop them silently.
+ *
+ *  Normalization matches tau-web's hardened renderer: legacy blocks may
+ *  omit mimeType (default png, as pi's own fallback) or carry a full
+ *  `data:` URL instead of raw base64. Rejecting those would hide images
+ *  from perfectly valid old sessions. */
 const VALID_IMAGE_MIMES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
 
-function isValidImage(b) {
-  if (!b || typeof b !== "object") return false;
-  if (!VALID_IMAGE_MIMES.has(String(b.mimeType || ""))) return false;
-  const data = typeof b.data === "string" ? b.data : "";
-  if (!data || data.length > 8 * 1024 * 1024) return false;
-  return /^[A-Za-z0-9+/]+={0,2}$/.test(data);
+function normalizeImage(block) {
+  if (!block || typeof block !== "object") return null;
+  let data = typeof block.data === "string" ? block.data : "";
+  let mimeType = String(block.mimeType || "").toLowerCase();
+  if (data.startsWith("data:")) {
+    const comma = data.indexOf(",");
+    if (comma < 0) return null;
+    const header = data.slice(0, comma);
+    if (!/;base64$/i.test(header)) return null;
+    const m = /^data:([^;,]+)/i.exec(header);
+    if (!m) return null;
+    mimeType = (m[1] || "").toLowerCase();
+    data = data.slice(comma + 1);
+  }
+  if (!mimeType) mimeType = "image/png";
+  if (!VALID_IMAGE_MIMES.has(mimeType)) return null;
+  if (!data || data.length > 8 * 1024 * 1024) return null;
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(data)) return null;
+  return { mimeType, data };
 }
 
 function imageNodes(content) {
   if (!Array.isArray(content)) return null;
-  const images = content.filter((b) => b?.type === "image" && isValidImage(b));
+  const images = content.map((b) => (b?.type === "image" ? normalizeImage(b) : null)).filter(Boolean);
   if (!images.length) return null;
   const grid = el("div", { class: "image-grid" });
   for (const b of images) grid.append(el("img", { src: `data:${b.mimeType};base64,${b.data}`, alt: "image", loading: "lazy" }));

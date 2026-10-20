@@ -54,6 +54,7 @@ export async function runE2E({ log }) {
       { name: "deadcwd", run: deadCwdGroup },
       { name: "steer", run: steerGroup },
       { name: "auth", run: authGroup },
+      { name: "images", run: imagesGroup },
     ].filter((g) => !only.length || only.includes(g.name)),
       { log },
     );
@@ -1726,4 +1727,103 @@ async function authGroup({ check, log }) {
     await secure.close();
   }
 
+}
+
+/**
+ * Images (X1/R9 + the WS attachment budget): history blocks are normalized
+ * (missing mimeType and `data:` URLs are legacy-valid, SVG is not), and the
+ * composer downscales big photos so a send can never exceed the 2 MB frame
+ * cap that closes socket 1009.
+ */
+async function imagesGroup({ check, log }) {
+  const { hub, page, sessions, pageErrors, close } = await bootCore({ log });
+  try {
+    const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+    const project = "--tmp-pihub-fixtures--";
+    const file = "images-normalize.jsonl";
+    const lines = [
+      JSON.stringify({ type: "session", version: 3, id: "img-1", timestamp: new Date().toISOString(), cwd: "/tmp/pihub-fixtures" }),
+      JSON.stringify({
+        type: "message",
+        id: "im1",
+        parentId: null,
+        timestamp: new Date().toISOString(),
+        message: {
+          role: "user",
+          content: [
+            { type: "text", text: "four image blocks, three valid" },
+            { type: "image", mimeType: "image/png", data: PNG }, // explicit mime
+            { type: "image", data: PNG }, // legacy: no mimeType -> png
+            { type: "image", mimeType: "image/png", data: `data:image/png;base64,${PNG}` }, // data URL
+            { type: "image", mimeType: "image/svg+xml", data: PNG }, // rejected
+          ],
+        },
+      }),
+      "",
+    ].join("\n");
+    fs.mkdirSync(path.join(sessions, project), { recursive: true });
+    fs.writeFileSync(path.join(sessions, project, file), lines);
+
+    await page.goto(`${hub.url}/hub/#s=${project}/${file}`, { waitUntil: "domcontentloaded" });
+    await ready(page);
+    await page.waitForFunction(() => document.body.dataset.view === "session", null, { timeout: 45000 });
+    await page.waitForFunction(() => (document.querySelectorAll("#messages img").length || 0) >= 3, null, { timeout: 30000 });
+    const rendered = await page.evaluate(() => {
+      const imgs = [...document.querySelectorAll("#messages img")];
+      return { count: imgs.length, srcs: imgs.map((i) => (i.getAttribute("src") || "").slice(0, 22)) };
+    });
+    check("E41 history images render (explicit mime, missing mime, data URL)", rendered.count === 3, JSON.stringify(rendered.srcs));
+    check("E41b SVG history block is dropped", rendered.srcs.every((s) => !s.includes("svg")), JSON.stringify(rendered.srcs));
+
+    // Attachment budget: a noisy 2200×1600 image is far bigger than the
+    // per-image cap, so it must arrive downscaled (and webp/jpeg, not png).
+    const picked = await page.evaluate(async () => {
+      const canvas = document.createElement("canvas");
+      canvas.width = 2200;
+      canvas.height = 1600;
+      const ctx = canvas.getContext("2d");
+      const img = ctx.createImageData(canvas.width, canvas.height);
+      for (let i = 0; i < img.data.length; i += 4) {
+        img.data[i] = Math.random() * 255;
+        img.data[i + 1] = Math.random() * 255;
+        img.data[i + 2] = Math.random() * 255;
+        img.data[i + 3] = 255;
+      }
+      ctx.putImageData(img, 0, 0);
+      const blob = await new Promise((r) => canvas.toBlob(r, "image/png"));
+      const f = new File([blob], "noisy.png", { type: "image/png" });
+      const dt = new DataTransfer();
+      dt.items.add(f);
+      const input = document.getElementById("image-input");
+      input.files = dt.files;
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+      return { bytes: f.size };
+    });
+    await page.waitForFunction(() => [...document.querySelectorAll("img[src^='data:image/']")].some((i) => (i.getAttribute("src") || "").length > 1000), null, { timeout: 20000 });
+    const chip = await page.evaluate(() => {
+      const imgs = [...document.querySelectorAll("img[src^='data:image/']")].filter((i) => (i.getAttribute("src") || "").length > 1000);
+      const src = imgs[imgs.length - 1]?.getAttribute("src") || "";
+      return { len: src.length, mime: (/^data:([^;]+)/.exec(src) || [])[1] || "" };
+    });
+    check("E42 a 2200px photo is downscaled to fit the frame budget", picked.bytes > 640 * 1024 && chip.len <= 660 * 1024, `file=${picked.bytes} b64=${chip.len}`);
+    check("E42b downscaled attachments use a supported re-encoded mime", ["image/webp", "image/jpeg"].includes(chip.mime), chip.mime);
+
+    // Unsupported type is refused at pick time with a clear message.
+    const before = await page.locator("img[src^='data:image/']").count();
+    await page.evaluate(() => {
+      const f = new File([new Uint8Array([1, 2, 3])], "vector.svg", { type: "image/svg+xml" });
+      const dt = new DataTransfer();
+      dt.items.add(f);
+      const input = document.getElementById("image-input");
+      input.files = dt.files;
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await page.waitForFunction(() => /unsupported type/i.test(document.querySelector("#toast")?.textContent || ""), null, { timeout: 10000 });
+    const after = await page.locator("img[src^='data:image/']").count();
+    check("E43 unsupported image type refused at pick time", after === before, `${before} -> ${after}`);
+
+    check("E44 images group kept the client error-free", pageErrors.length === 0, JSON.stringify(pageErrors.slice(0, 2)));
+  } finally {
+    await close();
+  }
 }

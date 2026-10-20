@@ -133,9 +133,11 @@ node tests/run.mjs --all        # + Firefox CLI smoke (cross-platform, ADR-020)
 node tests/run.mjs --all -j1    # serial, deterministic logs/timings
 ```
 
-Current: **19 unit + 54 integration + 104 Playwright checks green**; the Firefox
+Current: **60 unit + 90 integration + 170 Playwright checks green**; the Firefox
 CLI smoke SKIPs on hosts whose system Firefox cannot render headless (it is the
 Termux/Android backend — Playwright's bundled Chromium cannot run there).
+Known unpinned items and open findings live in `docs/code-review.md` §4 — the
+matrix stays honest about what is automated and what is manual.
 
 ```bash
 npm test              # unit contracts only, sub-second (run constantly)
@@ -170,7 +172,11 @@ parent PID; every browser case fails on a page error or a non-empty
   no rename, no write.
 - Strict CSP, `nosniff`, frame denial; markdown/transcripts are built with
   DOM APIs (no `innerHTML`), images are mime/base64 validated on the wire
-  and in history rendering.
+  and in history rendering. Attachments are downscaled in the browser to
+  fit the 2 MB WS frame (per-image 640 KB, per-message 1.5 MB base64, max
+  four images; GIFs are never re-encoded), so a phone photo cannot close
+  the socket with 1009 — and a rejected send restores the attachments
+  instead of discarding them.
 - Live TUIs are driven only through the relay by the single attached driver
   (preview sockets read, drive verbs are refused); the hub never injects
   into a foreign process except through an explicit attach or the
@@ -181,8 +187,12 @@ parent PID; every browser case fails on a page error or a non-empty
 
 - `docs/PLAN.md` — architecture, budgets, phases.
 - `docs/testing.md` — case matrix, cross-platform drivers.
-- `docs/UX.md` — scripted user flows, the UX-1…14 bug log (each with its
+- `docs/code-review.md` — the review log: every finding (H/R/P IDs), its
+  status, its pinning case, verified-good tau-web regressions, and honest
+  gaps (unpinned/manual checks). **Read before changing behaviour.**
+- `docs/UX.md` — scripted user flows, the UX bug log (each with its
   pinning case), implemented recommendations R-1…R-12, and the handoff
-  section (semantics, ordered backlog, repro table). **Start here.**
-- `docs/adr/019` — parallel rewrite decision; `docs/adr/020` — browser
-  driver strategy.
+  section. **Start here for UX work.**
+- `docs/adr/019` — parallel rewrite decision (incl. live-keyed-by-pid
+  amendment); `docs/adr/020` — browser driver strategy; `docs/adr/021` —
+  one hub per machine (advert-scoped singleton).

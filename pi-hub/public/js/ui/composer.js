@@ -236,25 +236,113 @@ export function createComposer(refs, actions) {
   }
 
   /* ── images ───────────────────────────────────────────────────────── */
+  // The wire validates the same allowlist server-side, and the WS frame cap
+  // is 2 MB: a phone photo (3–8 MB) must be downscaled here or the socket
+  // dies with 1009. Budgets below are base64 characters, i.e. the thing
+  // that actually travels.
+  const SUPPORTED_IMAGE_MIMES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
+  const MAX_IMAGE_B64 = 640 * 1024; // ~480 KB binary per image
+  const MAX_TOTAL_B64 = 1_500_000; // whole message, keeps the frame under 2 MB
+  const MAX_IMAGES = 4;
+  const RAW_PASSTHROUGH_BYTES = 360 * 1024; // small files keep their exact bytes
+
   let images = [];
+  const totalB64 = () => images.reduce((n, i) => n + i.data.length, 0);
+
+  async function decodeImage(file) {
+    if (typeof createImageBitmap === "function") {
+      try {
+        return await createImageBitmap(file);
+      } catch {}
+    }
+    return await new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => {
+        URL.revokeObjectURL(url);
+        resolve(img);
+      };
+      img.onerror = () => {
+        URL.revokeObjectURL(url);
+        reject(new Error("cannot decode image"));
+      };
+      img.src = url;
+    });
+  }
+
+  function encodeImage(source, w, h, mime, quality) {
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(w));
+    canvas.height = Math.max(1, Math.round(h));
+    const ctx = canvas.getContext("2d");
+    ctx.drawImage(source, 0, 0, canvas.width, canvas.height);
+    const url = canvas.toDataURL(mime, quality);
+    const mimeType = (/^data:([^;,]+)/.exec(url) || [])[1] || mime;
+    return { data: url.slice(url.indexOf(",") + 1), mimeType };
+  }
+
+  function readBase64(file) {
+    return new Promise((resolve) => {
+      const fr = new FileReader();
+      fr.onload = () => resolve(String(fr.result).split(",")[1] || "");
+      fr.onerror = () => resolve("");
+      fr.readAsDataURL(file);
+    });
+  }
+
+  /** Small files pass through untouched; everything else is downscaled to
+   *  fit the per-image budget (animated GIFs are never re-encoded). */
+  async function prepareImage(file) {
+    const mimeType = String(file.type || "").toLowerCase();
+    if (!SUPPORTED_IMAGE_MIMES.includes(mimeType)) {
+      throw new Error(`${file.name}: unsupported type — use PNG, JPEG, GIF or WebP`);
+    }
+    if (file.size <= RAW_PASSTHROUGH_BYTES) {
+      const data = await readBase64(file);
+      if (data) return { type: "image", data, mimeType, name: file.name };
+      throw new Error(`${file.name}: could not read image`);
+    }
+    if (mimeType === "image/gif") {
+      throw new Error(`${file.name}: GIF too large (max 360 KB) — animated images are not re-encoded`);
+    }
+    const source = await decodeImage(file);
+    const w0 = source.width || source.naturalWidth;
+    const h0 = source.height || source.naturalHeight;
+    let scale = Math.min(1, 1600 / Math.max(w0, h0));
+    for (let attempt = 0; attempt < 7; attempt++) {
+      const quality = attempt < 2 ? 0.85 : 0.7;
+      // WebP keeps alpha and compresses well; a browser without it silently
+      // returns PNG, which the next attempt replaces with JPEG.
+      let out = encodeImage(source, w0 * scale, h0 * scale, "image/webp", quality);
+      if (out.mimeType !== "image/webp" && out.data.length > MAX_IMAGE_B64) {
+        out = encodeImage(source, w0 * scale, h0 * scale, "image/jpeg", quality);
+      }
+      if (out.data.length <= MAX_IMAGE_B64) {
+        return { type: "image", data: out.data, mimeType: out.mimeType, name: file.name };
+      }
+      scale *= 0.7;
+      if (Math.min(w0 * scale, h0 * scale) < 160) break;
+    }
+    throw new Error(`${file.name}: could not compress under ${Math.round(MAX_IMAGE_B64 / 1024)} KB`);
+  }
+
   refs.attachBtn.addEventListener("click", () => refs.imageInput.click());
   refs.imageInput.addEventListener("change", async () => {
     for (const file of refs.imageInput.files || []) {
-      if (!file.type.startsWith("image/")) {
-        toast(`${file.name}: only images are supported`, { kind: "error" });
-        continue;
+      try {
+        if (images.length >= MAX_IMAGES) {
+          toast(`Up to ${MAX_IMAGES} images per message`, { kind: "error" });
+          break;
+        }
+        const img = await prepareImage(file);
+        if (totalB64() + img.data.length > MAX_TOTAL_B64) {
+          toast(`${file.name}: message attachment budget reached — remove an image`, { kind: "error" });
+          continue;
+        }
+        images.push(img);
+      } catch (e) {
+        toast(e.message, { kind: "error" });
       }
-      if (file.size > 8 * 1024 * 1024) {
-        toast(`${file.name}: too large (max 8 MB)`, { kind: "error" });
-        continue;
-      }
-      const data = await new Promise((resolve) => {
-        const fr = new FileReader();
-        fr.onload = () => resolve(String(fr.result).split(",")[1] || "");
-        fr.onerror = () => resolve("");
-        fr.readAsDataURL(file);
-      });
-      if (data) images.push({ type: "image", data, mimeType: file.type, name: file.name });
     }
     refs.imageInput.value = "";
     renderImageChips();
@@ -323,6 +411,13 @@ export function createComposer(refs, actions) {
     } catch (e) {
       actions.toast(e.message, { kind: "error" });
       refs.input.value = text;
+      // Put the attachments back: a rejected send must never silently
+      // discard what the user picked (server-side validation errors, a
+      // dead runner, a dropped socket).
+      if (payloadImages.length) {
+        images = [...payloadImages, ...images];
+        renderImageChips();
+      }
       autoGrow();
     }
   }

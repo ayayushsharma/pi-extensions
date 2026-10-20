@@ -33,7 +33,7 @@ fallback when no system Chrome exists).
 | F-live-block | Mirror dials in → LIVE TERMINALS first in the sidebar (even when tabbed) + Drive card on home → preview → detach | E34a–E34e |
 | F-compact-nudge | Over-budget ctx pill turns into a confirm→compact button; healthy pill is inert | E30, E30b |
 
-## 2. Bugs found by driving (fixed, with tests)
+## 2. Bugs found in review or by driving (fixed, with tests)
 
 | ID | Finding | Fix | Test |
 |---|---|---|---|
@@ -63,6 +63,8 @@ fallback when no system Chrome exists).
 | UX-26 | The sign-in card was a bare form: plain `<h1>`, unlabelled-looking fields, a permanently reserved error line, no way to check what you typed, no feedback while the request ran, and no logo. | Rebuilt as a proper auth card: 64px logo tile (the pi-hub mark) + name + "Sign in to this hub", labelled fields with focus rings, a password reveal toggle (`aria-pressed`), inline error that takes no space when empty, a full-width submit that shows "Signing in…" while in flight, and a quiet privacy footer; user field is focused when the wall appears. | E14e–E14g |
 | UX-7 | Favourites were keyed on `session.filePath` — a field the server never sends in listings. Every session shared the key `undefined`: starring one session starred **all** of them, the `live` chip on owned sessions could never appear, and Copy-path fell back to a bare basename. Found because E26 showed two rows after starring. | New `favKey()` (`dirName/file`, matching search-hit pairs); `liveOwned` compares by path suffix; Copy-path falls back to `dirName/file`. Old stored keys silently stop matching (0.1.0, re-star once). | E26/E26b |
 | UX-5 | Activating a tab **duplicated** it. `activateTab` on a tab with a runner rebound via `bindRunner`, which always minted a runner-keyed tab (`r:…`, bare-filename title, empty dirName → hash `#s=/file`) instead of updating the file tab. Found because E15b showed the right session under the wrong title/hash after the UX-1 fix. | `bindRunner` takes the calling tab and `applyBound` reuses its key/title/dirName. | E15b/E15c |
+| UX-27 | **A rejected send silently ate the attachment.** The composer cleared `images` before calling the hub and only restored the text on failure, so any error (or an attachment type the server refuses) lost the picked file. It also accepted every `image/*` (AVIF/HEIC/BMP/SVG) while the wire only allows PNG/JPEG/GIF/WebP. | Allowlist enforced at pick time with a specific toast; attachments restored on a failed send; oversized photos downscaled in-browser (WebP, JPEG fallback) into per-image/per-message base64 budgets that fit the 2 MB WS frame (a 3 MB photo used to close the socket with 1009); animated GIFs refused rather than re-encoded. | E42/E42b/E43, integration X10 |
+| UX-28 | **Legacy history images disappeared.** The new history validator required `mimeType` and raw base64, so image blocks without a mime (pi's own fallback is `image/png`) or stored as `data:` URLs stopped rendering — cases tau-web's hardened renderer explicitly handled. | `normalizeImage()` defaults a missing mime to png and parses `data:` URL headers (validating the inner mime + base64), still rejecting SVG/unknown/oversized blocks. | E41/E41b |
 
 ## 3. Verified already-good (asked about, confirmed in code + UI)
 
@@ -70,7 +72,7 @@ fallback when no system Chrome exists).
 - **Favourites render first (ask #10).** The Favourites block is the first section inside `#session-list`, above all project groups (probed section order: `["Favourites", <project>]`). It only drops below the transient runner blocks (running tabs/terminals/backends) and only when those exist. See R-6 for the remaining nit.
 - **Kill-last-tab shows the homepage (ask #7, tab half).** `closeTab` on the final tab clears bound/transcript and sets `view: "welcome"`; pinned by E15c. The *backend*-kill path intentionally keeps the dead transcript with a "Session ended / Resume from disk" banner (transcript preservation beats a blank page; resume is one click) — E9/E9b. Decision, not a bug.
 
-## 4. Recommendations (not yet built — acceptance criteria double as future tests)
+## 4. Recommendations (status marked inline — acceptance criteria double as future tests)
 
 Priority order; each is a small, testable change.
 
@@ -78,14 +80,14 @@ Priority order; each is a small, testable change.
 |---|---|---|---|
 | R-1 | **Model menu: fuzzy search.** DONE — filter input atop `#model-menu` (`.menu-search`), live narrowing over name/id/provider, Enter picks top match, Esc closes. | Scales to 50+ models; matches existing palette UX. | E21/E21b |
 | R-2 | **Per-model thinking levels.** DONE — thinking menu queries `get_available_thinking_levels` for the bound model and renders exactly what the backend offers (probed: this pi returns `minimal…xhigh`, no `off`/`max`); static list survives as the fallback for unbound/failed queries. | Prevents setting a level the model ignores; "correct thinking level in place". | E19b (server shape), E22 (follows model switch) |
-| R-3 | **Suspected steer+queue double-send.** While streaming, `send()` both `steer`s the text (pi queues it internally) **and** `addQueue`s it locally — and `agent_end` pops the local queue into a fresh `prompt`. One user message likely reaches the model twice. Needs an E7-gated (real model) test to prove. | Duplicate model calls cost money and confuse. | E23 (gated): steer during a run → child receives exactly one post-turn message. Until then: pick one path (steer OR queue, not both). |
+| R-3 | **Suspected steer+queue double-send.** While streaming, `send()` both `steer`s the text (pi queues it internally) **and** `addQueue`s it locally — and `agent_end` pops the local queue into a fresh `prompt`. One user message likely reaches the model twice. | Duplicate model calls cost money and confuse. | **DONE (pi-hub)** — the local `addQueue` path does not exist; `send()` chooses steer *or* prompt and queue pills mirror pi's own `queue_update` events (E38 series, incl. E38h “aborted steering never reaches the model”). |
 | R-4 | **Live-terminal distinction (ask #1).** DONE — live rows get `.live-row` (accent edge) plus the shared `chip live` badge in Running-terminals, Currently-running-tabs, and session rows already had it. | At a glance: what is a terminal I can drive vs a headless I own. | E24 |
 | R-5 | **Backend row identity (ask #9).** DONE — rows resolve the session title from the on-disk store by `absFile` (same string as tab titles); sub-line shows full `cwd · basename`, truncation removed. | Rows currently unidentifiable when titles matter. | E25 |
 | R-6 | **Favourites: dedupe + affordance (ask #10 cont.).** DONE — favourited sessions are excluded from project groups while the Favourites block shows (search still shows everything), and every session row carries a one-click star (`.fav-btn`, `aria-pressed`) next to ⋯. | Halves long-list noise; starring becomes discoverable. | E26/E26b |
 | R-7 | **Icon/button placement + sizing pass (asks #2/#3).** PARTLY DONE — fixed this pass: `#sidebar-collapse` was rendering **two icons** (duplicate append, the « ‹ cluster), tab-close had an 11 px hit area (flex-shrink; now `flex: none` + 22 px), "Load earlier" now aligns with the transcript column instead of floating centred over the pane, `#sidebar-toggle` got a title, and the 390 px composer reserves 88 px for the action cluster with 36/32 px buttons and ellipsizing pills. Remaining nits: header icon affordances could carry visible labels in a wider layout; settings/viewer headers unify. | Death by a thousand cuts; each is cheap alone. | E37a–E37d |
 | R-8 | **Text-wrap option (ask #4).** DONE — `wrapCode` display pref (Settings → Chat, beside the other display toggles), applied via `html[data-wrap-code]` and persisted; boot applies all prefs before first paint. | Phones + narrow panes; accessibility. | E28/E28b |
 | R-9 | **Code-block copy parity.** DONE — fenced blocks render a header row (language + Copy, same pattern as tau-web) wired to the existing clipboard helper. `testing.md` R2's copy-button demand now holds for fences. | Copying code is a core chat-UI action. | E29 (lang + clipboard readback) |
-| R-10 | **Resume with a dead cwd refuses to open.** Deep-linking a session whose recorded cwd no longer exists fails closed (`invalid cwd…`) instead of falling back to the hub default cwd (C2 regression vs tau-web, found during the screenshot comparison). | Old sessions (the ones you most want to resume) die with moved/deleted directories. | E30: seed session with bogus cwd → opens, banner notes the fallback cwd. |
+| R-10 | **Resume with a dead cwd refuses to open.** Deep-linking a session whose recorded cwd no longer exists fails closed (`invalid cwd…`) instead of falling back to the hub default cwd (C2 regression vs tau-web, found during the screenshot comparison). | Old sessions (the ones you most want to resume) die with moved/deleted directories. | **DONE** — fallback is resume-only (a fresh bind with a bad cwd still fails honestly), the UI asks first and shows the fallback banner (E39a–e, integration H35). Relocate targets are jailed to browse roots + the hub cwd (X17). |
 | R-11 | **Dead code + small hygiene.** DONE — `renderImages()` stub and its call removed; the doubled `show(refs.vtabs, …)` collapsed to one call; the tab-strip fallback no longer prints a file name; the duplicate collapse icon (R-7) was the same class of bug. | Keeps the "one obvious path" codebase honest. | E37a |
 | R-12 | **Unify backend-row tabs with file tabs (residual of UX-5).** DONE — `runnerTabHint()` maps a runner that owns a session file onto that file's tab key, so the backend list, the session list and the tab strip converge on one tab; live/new runners keep their runner key. | One tab per session, always. | E36 |
 
@@ -97,8 +99,21 @@ Priority order; each is a small, testable change.
 4. Themes × (light/dark): status dot stays traffic-light, banners readable, code contrast.
 5. Fresh-seed run: delete all sessions → "No sessions on disk yet" + working New-session.
 6. Long-session: 10k-entry file → windowed history, Load-earlier anchor, no jank.
+7. Attachments: attach a phone photo (3–8 MB) → chip appears quickly, send
+   succeeds, no socket drop (the frame cap closes with 1009 otherwise).
+   Attach an SVG/AVIF → refused at pick time with the type in the toast.
+8. History images: open an old session with attachments → every image renders;
+   a session with an SVG block shows the text around it, never a broken icon.
+9. Drive consent (if `PI_HUB_DRIVE_CONFIRM=1`): Drive asks in the TUI; Deny
+   leaves the browser in preview with an error toast; no answer times out to
+   the same place. While the prompt is open, extension dialogs stay native.
 
-## 6. Handoff — session state, next steps (2026-10-18)
+## 6. Handoff — session state, next steps (2026-10-18, historical)
+
+> **Superseded by §7.** Kept as the record of the UX session that produced
+> UX-1…26, R-1…12. Its “uncommitted working tree” and test counts refer to
+> that day only. Current state and open work live in §7 and
+> `docs/code-review.md`.
 
 Written for a fresh session: everything below is current as of the last
 verified run.
@@ -184,3 +199,66 @@ was touched (tau-web is untouched).
 | Session reappears after reload | stale `#s=` hash on close | E9c |
 | Pills show the old model | no `model_select` over RPC | E22c |
 | Live TUI not visible | filtered out when tabbed | E34d |
+
+## 7. Current handoff (2026-10-21)
+
+Review/finding state is owned by `docs/code-review.md` (H/R/P IDs with pins);
+this section is the short version for a fresh session.
+
+### Verified green
+
+- Unit **60/60** (`node tests/run.mjs --unit`, ≈2 s with the singleton/probe tests)
+- Integration **90/90** (HTTP/WS against a real `pi`, fake model, sandboxed store)
+- E2E **170/170** in **12 groups** (core, live, close, panels, tabs, models,
+  chrome, detail, deadcwd, steer, auth, images)
+- Firefox CLI smoke SKIPs unless the system Firefox can render headless
+- jiti loads every touched extension module; `node --check` covers edited
+  frontend files
+
+### Where the work stands
+
+- **Committed (`26a0a7a`)**: ADR-021 singleton enforcement, live-command parity
+  + server-enforced single driver, the security-hardening batch, and the
+  caps (search/fence/export).
+- **Working tree (this review batch)**: R1–R5 — legacy history image
+  normalization, composer allowlist + downscale + attachment restore, consent
+  armed before accept, `forceNative` reset, `stopped` reset — with E41–E43,
+  integration X10/X21/X21c and the matrix rows to match.
+- **Docs**: `docs/code-review.md` is the single home for findings and their
+  status; README/PLAN/testing counts and claims were corrected to match.
+
+### Semantics decided (do not re-litigate silently)
+
+- Close = durable (tab + hash + backend); banners are for unexpected deaths.
+- Titles only — never a `.jsonl` name in tabs/cards/rows.
+- Live terminals own the top of the sidebar and a home-screen Drive card.
+- Assets are version-stamped from `public/` mtimes; never hardcode `?v=`.
+- `set_model`/`set_thinking_level` re-read `get_state` (RPC sends no
+  `model_select`); thinking levels come from the backend, static list only
+  as fallback.
+- One hub per machine, advert-scoped, exact port, no bump (ADR-021).
+- Resume-only cwd fallback; fresh binds with a bad cwd fail honestly.
+- Live runners keyed by pid (ADR-019 amendment); a plain bind to a
+  live-owned file refuses and points at attach.
+- Driving requires the attached driver; preview sockets read only. Opt-in
+  `PI_HUB_DRIVE_CONFIRM` asks the TUI user and fails closed.
+- Attachments are downscaled in-browser to fit the 2 MB WS frame; GIFs are
+  never re-encoded.
+
+### Ordered queue
+
+1. **H2** bind serialization (dying-runner reuse) — the X20 test currently
+   waits it out; real users can reopen a tab into a child mid-`SIGTERM`.
+2. **H1** cap over-eviction (mark closing, or evict one per bind).
+3. **H5** backpressure: do not advance `lastSeq` for a dropped frame.
+4. **H4** split text/thinking delta accumulators.
+5. **H6 decision**: per-IP keys collapse behind the tunnel (all clients are
+   `127.0.0.1`). Needs an ADR line — trusted `X-Forwarded-For` behind a flag,
+   or exempt loopback from the caps.
+6. **Test debt**: `tests/cases.json` + meta-test; spawn-throttle pin (needs
+   real children); drive-consent timeout leg (manual/unit only).
+7. **Tail-read history** (PLAN P3): `readWindow()` still reads whole files.
+8. **Stray session file per resumed bind**: spawn with `--session <abs>`
+   instead of `switch_session` after start.
+9. **Deployment/flip (P7)**: runit service, tunnel on :12045, remove tau-web
+   from settings.

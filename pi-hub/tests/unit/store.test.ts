@@ -130,13 +130,16 @@ test("validateExportPath keeps exports inside the session store (S3)", () => {
   assert.equal(store.validateExportPath(inside), path.resolve(inside));
   assert.throws(() => store.validateExportPath("/etc/evil.html"), /session store/);
   assert.throws(() => store.validateExportPath(path.join(ROOT, "..", "escape.html")), /session store/);
-  const linkDir = path.join(ROOT, PROJECT);
-  const link = path.join(linkDir, "sneaky");
-  try {
-    fs.symlinkSync(os.tmpdir(), link);
-    assert.throws(() => store.validateExportPath(path.join(link, "out.html")), /session store/, "symlinked parent cannot redirect outside");
-  } finally {
-    try { fs.unlinkSync(link); } catch {}
+  // Symlink creation needs a POSIX host (or Windows developer mode); the
+  // prefix jail above still holds everywhere.
+  if (process.platform !== "win32") {
+    const link = path.join(ROOT, PROJECT, "sneaky");
+    try {
+      fs.symlinkSync(os.tmpdir(), link);
+      assert.throws(() => store.validateExportPath(path.join(link, "out.html")), /session store/, "symlinked parent cannot redirect outside");
+    } finally {
+      try { fs.unlinkSync(link); } catch {}
+    }
   }
 });
 

@@ -136,7 +136,11 @@ export class Mirror {
         return;
       }
       this.forceNative = true;
-      Promise.resolve(ui.confirm("Browser drive request", "A browser wants to drive this TUI (send prompts, steer, abort). Allow?"))
+      // Defer the call into the promise chain: a synchronous throw from a
+      // custom UI implementation would otherwise escape and leave
+      // forceNative stuck on, disabling browser dialogs for the session.
+      Promise.resolve()
+        .then(() => ui.confirm("Browser drive request", "A browser wants to drive this TUI (send prompts, steer, abort). Allow?"))
         .then((ok) => {
           this.client?.send({ type: "drive_confirm_reply", pid: process.pid, id, confirmed: ok === true });
         })

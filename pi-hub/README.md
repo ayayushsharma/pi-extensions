@@ -82,16 +82,16 @@ every request.
 
 ## Brand mark
 
-`public/js/core/icons.js` defines five π marks (`pi`, `knockout`, `badge`,
-`nodes`, `node`) in one place; the default is chosen by the `LOGO_MARK`
+`public/js/core/icons.js` defines the π marks (`glyph`, `pi`, `knockout`,
+`badge`, `nodes`, `node`) in one place; the default is chosen by the `LOGO_MARK`
 constant and every logo call site (`logo(size)`) follows it.
-The badge body is `--accent` and the ink `--on-accent`, so the mark always
-renders as an accent app icon (terracotta, slate, forest… per theme) and never
-disappears against the page.
+Marks draw in `--accent`/`--on-accent`, so they recolour with the active theme
+(terracotta, slate, forest… per theme) and never disappear against the page.
 
-The default is `pi`: the plain π glyph — a bar and two legs — knocked out of an
-accent badge. Nothing else in the mark, so it stays a π at 16px in the titlebar
-and at 64px on the sign-in card.
+The default is `glyph`: a hand-drawn π (path data inlined from `pi.svg`,
+filled with `--accent`, no badge), so the mark is a bare lettermark everywhere —
+titlebar, welcome hero, sign-in card, favicon. It stays legible from 16px up to
+display sizes because it is outline art, not strokes.
 
 ## Config (`PI_HUB_*` env, then the `piHub` settings block)
 

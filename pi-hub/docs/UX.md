@@ -229,7 +229,7 @@ this section is the short version for a fresh session.
   unified session-store walker/fold, dropped dead routes (`/api/projects`,
   `/api/headless/status`) and dead client helpers; standing LoC rule recorded
   in PLAN §7 with the remaining-work register.
-- **Working tree (this batch)**: LoC reduction batch 2 (−236 product lines) —
+- **Committed (`2bd5c83`)**: LoC reduction batch 2 (−236 product lines) —
   shared LineBuffer/protocol validation/prober, dead WS verb + methods +
   icons + marks + CSS + dialog/state cleanup; composer/transcript/sidebar
   reviewed and kept (below abstraction threshold).

@@ -225,7 +225,7 @@ this section is the short version for a fresh session.
 - **Committed (`6fcff39`)**: R1–R5 review fixes with E41–E43, X10/X21/X21c.
 - **Committed (`432a389`)**: server-RAM fix (append-aware session index) and
   the Termux/Android process scan.
-- **Working tree (this batch)**: LoC reduction batch 1 (−103 product lines) —
+- **Committed (`8220f51`)**: LoC reduction batch 1 (−103 product lines) —
   unified session-store walker/fold, dropped dead routes (`/api/projects`,
   `/api/headless/status`) and dead client helpers; standing LoC rule recorded
   in PLAN §7 with the remaining-work register.

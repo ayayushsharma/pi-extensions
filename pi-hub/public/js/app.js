@@ -519,6 +519,9 @@ function render() {
   const sessionView = state.view === "session" && !!state.bound;
   show(refs.welcome, !sessionView);
   show(refs.messages, sessionView);
+  // No runner bound, no composer: the home screen is for picking or
+  // starting a session, and a prompt box there has nothing to send to.
+  show(refs.composerForm.closest(".composer-wrap"), sessionView);
   // The messages pane is hidden on the homepage — drop its stale nodes too
   // so a closed transcript frees its DOM instead of lingering hidden, and
   // take the "load earlier" control with it (it is a sibling of #messages).

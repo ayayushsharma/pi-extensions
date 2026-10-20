@@ -207,7 +207,7 @@ this section is the short version for a fresh session.
 
 ### Verified green
 
-- Unit **69 tests + ISO store check** (`node tests/run.mjs --unit` reports 70/70,
+- Unit **72 tests + ISO store check** (`node tests/run.mjs --unit` reports 73/73,
   ≈2 s; store index + Termux `/proc` pins included)
 - Integration **90/90** (HTTP/WS against a real `pi`, fake model, sandboxed store)
 - E2E **170/170** in **12 groups** (core, live, close, panels, tabs, models,
@@ -233,6 +233,10 @@ this section is the short version for a fresh session.
   shared LineBuffer/protocol validation/prober, dead WS verb + methods +
   icons + marks + CSS + dialog/state cleanup; composer/transcript/sidebar
   reviewed and kept (below abstraction threshold).
+- **Working tree (this batch)**: H1/H4 accepted as deliberate trade-offs;
+  H2 bind serialization (shared in-flight spawn, unindex-on-close) and H5
+  delivered-only `lastSeq` fixed, both pinned (integration H2/H2b/H2c/H2d,
+  new `ws.test.ts`).
 - **Docs**: `docs/code-review.md` is the single home for findings and their
   status (P2/P3/F1 fixed, P4 open); README/PLAN/testing counts and claims
   were corrected to match.

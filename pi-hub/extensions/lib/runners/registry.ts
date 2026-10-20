@@ -28,6 +28,7 @@ export class RunnerRegistry {
   private byFile = new Map<string, Runner>();
   private byPid = new Map<number, Runner>();
   private binding = new Map<unknown, string>();
+  private pendingBinds = new Map<string, Promise<Runner>>();
   private timers = new Map<string, NodeJS.Timeout>();
   private changeListeners = new Set<(c: RegistryChange) => void>();
   private frameListeners = new Set<(f: RunnerFrame) => void>();
@@ -114,6 +115,34 @@ export class RunnerRegistry {
     this.change({ type: "removed", runner });
   }
 
+  /** One spawn per session file, shared by concurrent binds (H2): the
+   *  first caller spawns; the rest await the same promise and bind the
+   *  same runner instead of starting a second child. */
+  private async spawnHeadless(cwd: string, abs: string | null, cwdFallback: { from: string; to: string } | null): Promise<HeadlessRunner> {
+    // Spawn throttle: children cost seconds and tens of MB each. Human
+    // flows (tabs, picker, reload storms) never approach 20 spawns/min;
+    // a looping client does. Thrown before the spawn, never after.
+    const now = Date.now();
+    this.spawnAt = this.spawnAt.filter((t) => now - t < 60_000);
+    if (this.spawnAt.length >= 20) {
+      throw new Error("spawn rate limit exceeded — close idle sessions first");
+    }
+    this.spawnAt.push(now);
+    // A fresh child in the same cwd with no identity yet is not reusable.
+    const runner = new HeadlessRunner({ cwd, absFile: abs, bin: this.opts.bin, env: this.opts.env });
+    runner.cwdFallback = cwdFallback;
+    this.add(runner);
+    this.enforceCap(runner.id);
+    try {
+      await runner.ready();
+      if (abs) await runner.resume(abs);
+    } catch (e) {
+      runner.close();
+      throw e;
+    }
+    return runner;
+  }
+
   /** Bind a browser to a headless child for a session (resuming when needed). */
   async bindHeadless(
     ws: unknown,
@@ -156,39 +185,30 @@ export class RunnerRegistry {
     }
 
     let runner = abs ? this.byFile.get(abs) : undefined;
-    if (!runner) {
-      // Spawn throttle: children cost seconds and tens of MB each. Human
-      // flows (tabs, picker, reload storms) never approach 20 spawns/min;
-      // a looping client does. Thrown before the spawn, never after.
-      const now = Date.now();
-      this.spawnAt = this.spawnAt.filter((t) => now - t < 60_000);
-      if (this.spawnAt.length >= 20) {
-        throw new Error("spawn rate limit exceeded — close idle sessions first");
-      }
-      this.spawnAt.push(now);
-    }
     if (runner && runner.kind !== "headless") {
       // A live TUI owns this file: never spawn a second writer behind it
       // (dual-write), and never hand its relay to a plain bind — driving a
       // live session requires attach (ADR-014 single driver, C1).
       throw new Error("session is owned by a live TUI — attach to it instead of binding");
     }
-    if (!runner) {
-      // A fresh child in the same cwd with no identity yet is not reusable.
-      runner = new HeadlessRunner({ cwd, absFile: abs, bin: this.opts.bin, env: this.opts.env });
-      runner.cwdFallback = cwdFallback;
-      this.add(runner);
-      this.enforceCap(runner.id);
-      try {
-        await (runner as HeadlessRunner).ready();
-        if (abs) await (runner as HeadlessRunner).resume(abs);
-      } catch (e) {
-        runner.close();
-        throw e;
+    if (abs && (!runner || runner.state === "dead")) {
+      // Serialized resume: concurrent binds for one file share the first
+      // caller's spawn (H2). A dead indexed runner is never reused — a
+      // retry landing mid-SIGTERM spawns fresh instead of binding a corpse.
+      let pending = this.pendingBinds.get(abs);
+      if (!pending) {
+        pending = this.spawnHeadless(cwd, abs, cwdFallback);
+        this.pendingBinds.set(abs, pending);
+        void pending.then(
+          () => { if (this.pendingBinds.get(abs) === pending) this.pendingBinds.delete(abs); },
+          () => { if (this.pendingBinds.get(abs) === pending) this.pendingBinds.delete(abs); },
+        );
       }
-    } else if (cwdFallback) {
-      runner.cwdFallback = cwdFallback;
+      runner = await pending;
+    } else if (!runner) {
+      runner = await this.spawnHeadless(cwd, null, null);
     }
+    if (cwdFallback) runner.cwdFallback = cwdFallback;
     this.bind(ws, runner);
     return runner;
   }
@@ -243,6 +263,7 @@ export class RunnerRegistry {
   closeById(id: string): boolean {
     const runner = this.runners.get(id);
     if (!runner) return false;
+    this.unindexFile(runner);
     runner.close();
     return true;
   }
@@ -250,8 +271,18 @@ export class RunnerRegistry {
   closeByPid(pid: number): boolean {
     const runner = this.byPid.get(pid);
     if (!runner) return false;
+    this.unindexFile(runner);
     runner.close();
     return true;
+  }
+
+  /** A closing runner stops owning its file at once: a retry binds fresh
+   *  instead of landing on a child mid-SIGTERM (H2). Exit still removes it
+   *  fully; the identity guard keeps a newer owner safe. */
+  private unindexFile(runner: Runner): void {
+    if (runner.absFile && this.byFile.get(resolve(runner.absFile)) === runner) {
+      this.byFile.delete(resolve(runner.absFile));
+    }
   }
 
   /** LRU cap: zero-viewer, idle runners first; a running agent is never killed. */
@@ -271,6 +302,7 @@ export class RunnerRegistry {
       candidates.sort((a, b) => a.viewers() - b.viewers() || a.lastActiveAt - b.lastActiveAt);
       const victim = candidates[0];
       hubLog(`pool cap ${max}: evicting ${victim.id}`);
+      this.unindexFile(victim);
       victim.close();
     }
   }
@@ -288,6 +320,7 @@ export class RunnerRegistry {
   }
 
   shutdownAll(): void {
+    this.pendingBinds.clear();
     for (const r of this.runners.values()) {
       try {
         r.close();

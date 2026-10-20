@@ -118,8 +118,38 @@ async function hubGroup({ check }) {
     await wsX.wait((m) => m.type === "closed", 10000, "closed after export").catch(() => {});
     await wsX.close();
     // The close ack precedes actual child exit; the next bind for this file
-    // must not reuse the dying runner (registry race, still open — H2).
+    // must not reuse the dying runner (H2: close unindexes up front).
     await waitFor(async () => (await (await fetch(`${base}/api/runners`)).json()).runners.length === 0, { timeoutMs: 15000, what: "export runner removed" });
+
+    // ── H2: concurrent binds for one file share one child ─────────────
+    // Both binds fire while no runner exists; serialization must yield one
+    // spawn, one runner id, one pid — never two children for one file.
+    const wsH2a = await connectWs(`ws://127.0.0.1:${port}/ws`);
+    await wsH2a.wait((m) => m.type === "hello", 10000, "hello (H2a)");
+    const wsH2b = await connectWs(`ws://127.0.0.1:${port}/ws`);
+    await wsH2b.wait((m) => m.type === "hello", 10000, "hello (H2b)");
+    wsH2a.send({ type: "bind", id: "h2a", dirName: "--tmp-pihub-fixtures--", file: "2026-01-01T00-00-00Z_fixture.jsonl", cwd: "/tmp/pihub-fixtures" });
+    wsH2b.send({ type: "bind", id: "h2b", dirName: "--tmp-pihub-fixtures--", file: "2026-01-01T00-00-00Z_fixture.jsonl", cwd: "/tmp/pihub-fixtures" });
+    const [h2a, h2b] = await Promise.all([
+      wsH2a.wait((m) => m.type === "bound" && m.id === "h2a", 30000, "H2a bound ack"),
+      wsH2b.wait((m) => m.type === "bound" && m.id === "h2b", 30000, "H2b bound ack"),
+    ]);
+    check("H2 concurrent binds share one runner", h2a.runner.id === h2b.runner.id, `${h2a.runner.id} vs ${h2b.runner.id}`);
+    const h2Runners = (await (await fetch(`${base}/api/runners`)).json()).runners.filter((r) => r.kind === "headless");
+    check("H2b one child spawned", new Set(h2Runners.map((r) => r.pid)).size === 1, `pids=${h2Runners.map((r) => r.pid)}`);
+    // H2c: a retry landing while the child is dying spawns fresh — it must
+    // never bind the corpse. Close, rebind at once (no removal wait), and
+    // require a live runner that answers get_state.
+    wsH2a.send({ type: "close", id: "h2c", runnerId: h2a.runner.id });
+    await wsH2a.wait((m) => m.type === "closed" && m.id === "h2c", 10000, "H2c closed ack");
+    wsH2b.send({ type: "bind", id: "h2d", dirName: "--tmp-pihub-fixtures--", file: "2026-01-01T00-00-00Z_fixture.jsonl", cwd: "/tmp/pihub-fixtures" });
+    const h2d = await wsH2b.wait((m) => m.type === "bound" && m.id === "h2d", 30000, "H2d rebind ack");
+    check("H2c retry after close binds a new runner", h2d.runner.id !== h2a.runner.id, `${h2d.runner.id} vs ${h2a.runner.id}`);
+    wsH2b.send({ type: "command", id: "h2e", command: { type: "get_state", id: "h2e" } });
+    const h2state = await wsH2b.wait((m) => m.type === "event" && m.event?.id === "h2e", 30000, "get_state on the rebound runner").catch(() => null);
+    check("H2d the rebound runner answers", !!h2state?.event?.success, h2state ? "ok" : "no response");
+    await wsH2a.close();
+    await wsH2b.close();
 
     // ── WS: bind, get_state, rejoin no-op, close ────────────────────────
     const ws = await connectWs(`ws://127.0.0.1:${port}/ws`);

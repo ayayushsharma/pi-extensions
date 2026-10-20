@@ -33,9 +33,12 @@ interface Client {
   ws: WebSocket;
   boundId: string | null;
   driverId: string | null;
+  /** highest DELIVERED seq: a backpressured drop must not advance it (H5),
+   *  or the gap is never replayed. Coalesced deltas commit theirs on flush. */
   lastSeq: number;
   deltaText: string;
   deltaThinking: string;
+  deltaSeq: number;
   deltaTpl: any;
   deltaTimer: NodeJS.Timeout | null;
 }
@@ -50,12 +53,14 @@ export interface WsDeps {
 }
 
 export class WsHub {
+  private deps: WsDeps;
   private wss: WebSocketServer | null = null;
   private clients = new Set<Client>();
   private driverByRunner = new Map<string, Client>();
   private nextId = 1;
 
-  constructor(private deps: WsDeps) {
+  constructor(deps: WsDeps) {
+    this.deps = deps;
     deps.registry.onFrame((frame) => this.fanOut(frame));
   }
 
@@ -139,15 +144,22 @@ export class WsHub {
     for (const c of this.clients) this.send(c, frame);
   }
 
-  private send(c: Client, frame: any): void {
-    if (c.ws.readyState !== WebSocket.OPEN) return;
-    if ((c.ws as any).bufferedAmount > MAX_BUFFERED) return;
+  /** false when the frame was dropped (slow consumer), so the caller can
+   *  leave lastSeq alone and let the next frame replay the gap (H5). */
+  private send(c: Client, frame: any): boolean {
+    if (c.ws.readyState !== WebSocket.OPEN) return false;
+    if ((c.ws as any).bufferedAmount > MAX_BUFFERED) return false;
     try {
       c.ws.send(JSON.stringify(frame));
-    } catch {}
+      return true;
+    } catch {
+      return false;
+    }
   }
 
-  /** Flush coalesced deltas before any non-delta frame so order is intact. */
+  /** Flush coalesced deltas before any non-delta frame so order is intact.
+   *  A dropped flush keeps lastSeq behind: the batch is discarded and the
+   *  ring replays it on the next frame (H5). */
   private flushDeltas(c: Client): void {
     if (c.deltaTimer) {
       clearTimeout(c.deltaTimer);
@@ -156,20 +168,27 @@ export class WsHub {
     if (c.deltaTpl && (c.deltaText || c.deltaThinking)) {
       const ev = JSON.parse(JSON.stringify(c.deltaTpl.event));
       ev.assistantMessageEvent.delta = c.deltaText || c.deltaThinking;
-      this.send(c, { type: "event", ...c.deltaTpl, event: ev });
+      if (this.send(c, { type: "event", ...c.deltaTpl, event: ev })) {
+        c.lastSeq = Math.max(c.lastSeq, c.deltaSeq);
+      }
     }
     c.deltaText = "";
     c.deltaThinking = "";
+    c.deltaSeq = 0;
     c.deltaTpl = null;
   }
 
   private deliver(c: Client, frame: any): void {
     const delta = streamDelta(frame);
     if (delta) {
-      if (!delta.delta) return;
+      if (!delta.delta) {
+        c.lastSeq = Math.max(c.lastSeq, frame.seq);
+        return;
+      }
       if (!c.deltaTpl) c.deltaTpl = frame;
       if (delta.kind === "text") c.deltaText += delta.delta;
       else c.deltaThinking += delta.delta;
+      c.deltaSeq = Math.max(c.deltaSeq, frame.seq);
       if (!c.deltaTimer) {
         c.deltaTimer = setTimeout(() => this.flushDeltas(c), 40);
         (c.deltaTimer as any).unref?.();
@@ -177,7 +196,7 @@ export class WsHub {
       return;
     }
     this.flushDeltas(c);
-    this.send(c, { type: "event", ...frame });
+    if (this.send(c, { type: "event", ...frame })) c.lastSeq = Math.max(c.lastSeq, frame.seq);
   }
 
   private fanOut(frame: any): void {
@@ -194,14 +213,15 @@ export class WsHub {
     }
     for (const c of this.clients) {
       if (c.boundId !== frame.runnerId) continue;
-      if (frame.seq > c.lastSeq + 1 && c.lastSeq > 0) {
+      if (frame.seq > c.lastSeq + 1) {
         // The triggering frame is already in the ring (emitEvent pushes
         // before notifying); replay only the gap, it is delivered below.
+        // No lastSeq>0 guard: binds start at the head, so seq 0 can only
+        // mean "nothing delivered yet" and the gap is real (H5).
         for (const missed of runner.replayFrom(c.lastSeq)) {
           if (missed.seq < frame.seq) this.deliver(c, missed);
         }
       }
-      c.lastSeq = frame.seq;
       hubDebug(`ws[${c.id}] <- ${frame.runnerId} seq=${frame.seq} ${frame.event?.type || "?"}`);
       this.deliver(c, frame);
     }
@@ -216,6 +236,7 @@ export class WsHub {
       lastSeq: 0,
       deltaText: "",
       deltaThinking: "",
+      deltaSeq: 0,
       deltaTpl: null,
       deltaTimer: null,
     };
@@ -311,9 +332,10 @@ export class WsHub {
     client.boundId = runner.id;
     // A rebinding client may resume from its last seen seq: the runner's
     // 200-event ring replays the gap on the next frame (never behind the
-    // runner's current head).
+    // runner's current head). A fresh bind starts AT the head (not 0), so a
+    // first frame lost to backpressure is still replayed (H5).
     const since = Number(msg.sinceSeq);
-    client.lastSeq = Number.isFinite(since) && since > 0 ? Math.min(since, runner.lastSeq()) : 0;
+    client.lastSeq = Number.isFinite(since) && since > 0 ? Math.min(since, runner.lastSeq()) : runner.lastSeq();
     this.ack(client, id, { type: "bound", runner: runner.info(), lastSeq: runner.lastSeq() });
   }
 

@@ -1,7 +1,7 @@
 # pi-hub — implementation plan
 
 Status: **implemented (P0–P6)** (2026-10-18 overnight; updated 2026-10-21).
-Current gate: **70 unit · 90 integration · 170 Playwright** checks green
+Current gate: **73 unit · 94 integration · 170 Playwright** checks green
 (including one real model round-trip with `PI_HUB_E2E_PROMPT=1`); `--firefox`
 adds the zero-dependency CLI smoke (skips where system Firefox cannot render
 headless). As-built deltas from the original plan: `playwright-core` + a small
@@ -361,10 +361,10 @@ shape that fits the LoC rule.
 
 | ID | What | Status | Cheapest shape |
 |---|---|---|---|
-| H1 | Cap over-eviction: `enforceCap` loops while `close()` is async, evicts every idle runner | **open** (High) | Mark closing / evict-one-per-bind in `registry.ts`; net-new lines ≈ 0 |
-| H2 | No bind serialization: concurrent binds for one file spawn two children | **open** (High) | Per-file bind promise memo; X20 workaround already waits it out |
-| H4 | Delta coalescer merges text+thinking under the first template's type | **open** (Med) | Split accumulators in `ws.ts` `flushDeltas`; small |
-| H5 | Backpressure drop still advances `lastSeq`, gap never replayed | **open** (Med) | Advance `lastSeq` only on deliver; small |
+| H1 | Cap over-eviction: `enforceCap` loops while `close()` is async, evicts every idle runner | **Closed — accepted** (deliberate: aggressive eviction protects phone RAM; idle-only, never a run) | — |
+| H2 | No bind serialization: concurrent binds for one file spawn two children | **Fixed** (this change: per-file in-flight spawn shared; close unindexes up front; dead never reused) | Integration H2/H2b/H2c/H2d |
+| H4 | Delta coalescer merges text+thinking under the first template's type | **Closed — accepted** (cosmetic mislabel on the single-driver path; splitting the hot path is not worth it) | — |
+| H5 | Backpressure drop still advances `lastSeq`, gap never replayed | **Fixed** (this change: delivered-only `lastSeq`, binds start at head) | `ws.test.ts` (3 cases) |
 | H6 | Per-IP keys collapse behind the tunnel (all clients `127.0.0.1`) | **decision** (Med) | ADR first (trusted-proxy flag or loopback exemption), then a branch |
 | P4 | Streaming re-renders full markdown per frame in the browser (≈0.5 s CPU on 20k chars) | **open** (Med) | Stream as text node, render markdown once on `message_end` (`transcript.js`) |
 | D1 | Spawn throttle (20/min) has no pin — needs 21 real children | **manual** | Document-only; do not build a 21-child test |

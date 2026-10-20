@@ -38,7 +38,6 @@ export const logout = () => api("/api/logout", { method: "POST" });
 
 /* ── sessions ────────────────────────────────────────────────────────── */
 export const listSessions = () => api("/api/sessions");
-export const listProjects = () => api("/api/projects");
 
 export function history(dirName, file, { limit = 50, before } = {}) {
   const q = new URLSearchParams({ limit: String(limit) });
@@ -52,7 +51,6 @@ export const renameSession = (dirName, file, name) =>
   api("/api/sessions/rename", { method: "POST", body: { dirName, file, name } });
 export const deleteSession = (dirName, file) =>
   api("/api/sessions/delete", { method: "POST", body: { dirName, file } });
-export const sessionFileExists = (path) => api(`/api/session-file-exists?path=${encodeURIComponent(path)}`);
 export const searchSessions = (q) => api(`/api/search?q=${encodeURIComponent(q)}`);
 
 /* ── files ───────────────────────────────────────────────────────────── */
@@ -73,12 +71,8 @@ export const gitBranch = (cwd) => api(`/api/git?cwd=${encodeURIComponent(cwd)}`)
 export const downloadUrl = (path) => `/api/file/download?path=${encodeURIComponent(path)}`;
 
 /* ── runners / processes ─────────────────────────────────────────────── */
-export const listRunners = () => api("/api/runners");
 export const closeRunner = (runnerId) => api("/api/runners/close", { method: "POST", body: { runnerId } });
-export const listInstances = () => api("/api/instances");
-export const headlessStatus = (file) => api(`/api/headless/status?file=${encodeURIComponent(file)}`);
 export const processes = () => api("/api/processes");
 export const killProcess = (pid) => api("/api/processes/kill", { method: "POST", body: { pid } });
 export const serverInfo = () => api("/api/server");
 export const relocateSession = (body) => api("/api/sessions/relocate", { method: "POST", body });
-export const clientError = (message) => api("/api/client-error", { method: "POST", body: { message } }).catch(() => {});

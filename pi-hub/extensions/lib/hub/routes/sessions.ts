@@ -57,20 +57,6 @@ export function sessionRoutes(deps: SessionDeps): Route[] {
     },
     {
       method: "GET",
-      path: "/api/projects",
-      auth: true,
-      handler: ({ res }) => {
-        const projects = listSessionDirs().map((p) => ({
-          dirName: p.dirName,
-          cwd: p.sessions.find((s) => s.cwd)?.cwd || null,
-          sessionCount: p.sessions.length,
-          lastActive: Math.max(...p.sessions.map((s) => s.mtime)),
-        }));
-        return sendJson(res, 200, { projects, roots: browseRoots(deps.config) });
-      },
-    },
-    {
-      method: "GET",
       path: "/api/sessions/:dirName/:file",
       auth: true,
       handler: ({ res, url, params }) => {

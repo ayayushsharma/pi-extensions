@@ -110,14 +110,6 @@ export function toast(message, opts = {}) {
   toastTimer = setTimeout(() => t.classList.add("hidden"), opts.ms || (opts.kind === "error" ? 5200 : 2600));
 }
 
-export function debounce(fn, ms = 120) {
-  let timer = null;
-  return (...args) => {
-    clearTimeout(timer);
-    timer = setTimeout(() => fn(...args), ms);
-  };
-}
-
 export function copyText(text) {
   try {
     if (navigator.clipboard?.writeText) {

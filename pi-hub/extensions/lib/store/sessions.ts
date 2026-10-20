@@ -58,22 +58,25 @@ const MAX_LINE_BYTES = 8 * 1024 * 1024;
 const INDEX_MAX = 200;
 const FP_BYTES = 4096;
 
-interface FileIndex {
-  ino: number;
-  /** bytes consumed through the last complete line */
-  size: number;
-  mtimeMs: number;
-  /** parsed entries (invalid JSON lines are skipped, as before) */
-  lines: number;
-  messageCount: number;
-  tokens: number;
-  cost: number;
+interface Agg {
   cwd: string | null;
   model: string | null;
   thinkingLevel: string | null;
   sessionName: string | null;
   /** prompt-derived or session_info title; null = still the file stem */
   title: string | null;
+  messageCount: number;
+  tokens: number;
+  cost: number;
+}
+
+interface FileIndex extends Agg {
+  ino: number;
+  /** bytes consumed through the last complete line */
+  size: number;
+  mtimeMs: number;
+  /** parsed entries (invalid JSON lines are skipped, as before) */
+  lines: number;
   /** byte offset of the last OFFSET_RING complete line starts */
   offsets: number[];
   headHash: string;
@@ -117,19 +120,14 @@ export function sessionsDir(): string {
 
 /** Reject anything that is not exactly under the sessions dir. */
 export function resolveSessionPath(dirName: string, file: string): string {
-  if (/[/\\]|\.\./.test(file)) {
-    throw new Error("invalid session path");
-  }
+  if (/[/\\]|\.\./.test(file)) throw new Error("invalid session path");
+  if (!isFlatDir(dirName) && /[/\\]|\.\./.test(dirName)) throw new Error("invalid session path");
   // A custom PI_CODING_AGENT_SESSION_DIR makes pi write sessions directly in
   // the root; real stores nest them in per-cwd `--…--` dirs. Accept both.
-  const rootName = path.basename(SESSIONS_DIR);
-  const flat = dirName === rootName || dirName === "." || dirName === "";
-  if (!flat && /[/\\]|\.\./.test(dirName)) throw new Error("invalid session path");
-  const abs = flat ? path.join(SESSIONS_DIR, file) : path.join(SESSIONS_DIR, dirName, file);
-  return realUnder(abs, SESSIONS_DIR);
+  return realUnder(sessionFilePath(dirName, file), SESSIONS_DIR);
 }
 
-export function realUnder(target: string, root: string): string {
+function realUnder(target: string, root: string): string {
   const real = fs.realpathSync(target);
   const base = fs.realpathSync(root);
   if (real !== base && !real.startsWith(base + path.sep)) throw new Error("path escapes root");
@@ -147,48 +145,62 @@ function textOf(content: unknown): string {
   return "";
 }
 
-function sessionFilePath(dirName: string, file: string): string {
+function isFlatDir(dirName: string): boolean {
   const rootName = path.basename(SESSIONS_DIR);
-  const flat = dirName === rootName || dirName === "." || dirName === "";
-  return flat ? path.join(SESSIONS_DIR, file) : path.join(SESSIONS_DIR, dirName, file);
+  return dirName === rootName || dirName === "." || dirName === "";
 }
 
-function applyLine(idx: FileIndex, line: Buffer): void {
-  if (line.length === 0) return;
-  let e: any;
+/** Project dirs: the store root (flat layout) plus every `--…--` dir. */
+function projectDirs(): string[] {
   try {
-    e = JSON.parse(line.toString("utf8"));
+    return [path.basename(SESSIONS_DIR), ...fs.readdirSync(SESSIONS_DIR).filter((d) => d.startsWith("--"))];
   } catch {
-    return;
+    return [];
   }
-  idx.lines++;
-  if (e.type === "session" && typeof e.cwd === "string") idx.cwd = e.cwd;
+}
+
+function sessionFilePath(dirName: string, file: string): string {
+  return isFlatDir(dirName) ? path.join(SESSIONS_DIR, file) : path.join(SESSIONS_DIR, dirName, file);
+}
+
+/** Fold one parsed entry into running aggregates. The file index and the
+ *  search scan share it, so listing titles and search titles agree. */
+function foldEntry(s: Agg, e: any): void {
+  if (e.type === "session" && typeof e.cwd === "string") s.cwd = e.cwd;
   if (e.type === "message") {
-    idx.messageCount++;
-    if (e.message?.role === "user" && idx.title === null) {
+    s.messageCount++;
+    if (e.message?.role === "user" && s.title === null) {
       const t = textOf(e.message.content);
-      if (t) idx.title = t.split("\n")[0].slice(0, 120);
+      if (t) s.title = t.split("\n")[0].slice(0, 120);
     }
     const usage = e.message?.usage;
     if (usage && typeof usage === "object") {
-      idx.tokens += Number(usage.totalTokens || 0);
-      idx.cost += Number(usage.cost?.total || 0);
+      s.tokens += Number(usage.totalTokens || 0);
+      s.cost += Number(usage.cost?.total || 0);
     }
   }
-  if (e.type === "model_change") idx.model = `${e.provider}/${e.modelId}`;
-  if (e.type === "thinking_level_change") idx.thinkingLevel = e.thinkingLevel;
+  if (e.type === "model_change") s.model = `${e.provider}/${e.modelId}`;
+  if (e.type === "thinking_level_change") s.thinkingLevel = e.thinkingLevel;
   if (e.type === "session_info" && e.name) {
-    idx.title = e.name;
-    idx.sessionName = e.name;
+    s.title = e.name;
+    s.sessionName = e.name;
   }
   if (e.type === "usage" && e.usage) {
-    idx.tokens += Number(e.usage.totalTokens || 0);
-    idx.cost += Number(e.usage.cost?.total || 0);
+    s.tokens += Number(e.usage.totalTokens || 0);
+    s.cost += Number(e.usage.cost?.total || 0);
   }
 }
 
-function pushOffset(idx: FileIndex, offset: number): void {
-  idx.offsets.push(offset);
+/** Parse one line into the index; every newline-terminated piece (even empty
+ *  or invalid) keeps its offset so windows and totals stay aligned. */
+function noteLine(idx: FileIndex, line: Buffer, start: number): void {
+  if (line.length) {
+    try {
+      foldEntry(idx, JSON.parse(line.toString("utf8")));
+      idx.lines++;
+    } catch {}
+  }
+  idx.offsets.push(start);
   if (idx.offsets.length > OFFSET_RING) idx.offsets.shift();
 }
 
@@ -213,14 +225,20 @@ function blankIndex(st: fs.Stats): FileIndex {
   };
 }
 
-/** Consume complete lines starting at `from`. Memory stays ~READ_CHUNK. */
-function consume(fd: number, idx: FileIndex, size: number, from: number): void {
+/** Walk the complete lines in [from, size) in bounded chunks. `visit` gets
+ *  each line and its start offset; returning false stops the walk. Lines over
+ *  MAX_LINE_BYTES are dropped whole (never yielded as a suffix) and a
+ *  trailing unterminated line is left for the next read, so a mid-write file
+ *  never yields half an entry. Returns the offset just past the last
+ *  newline — the bytes consumed through complete lines. */
+function eachLine(fd: number, from: number, size: number, visit: (line: Buffer, start: number) => boolean | void): number {
   let pos = from;
   let lineStart = from;
   let carry: Buffer[] = [];
   let carryLen = 0;
   let skipping = false;
-  while (pos < size) {
+  let stop = false;
+  while (pos < size && !stop) {
     const want = Math.min(READ_CHUNK, size - pos);
     const buf = Buffer.allocUnsafe(want);
     const n = fs.readSync(fd, buf, 0, want, pos);
@@ -230,21 +248,21 @@ function consume(fd: number, idx: FileIndex, size: number, from: number): void {
       if (buf[i] !== 0x0a) continue;
       const piece = buf.subarray(pieceStart, i);
       if (skipping) {
-        // Oversized line (> MAX_LINE_BYTES): drop it whole, never a suffix.
         skipping = false;
-        carry = [];
-        carryLen = 0;
       } else {
         const line = carryLen ? Buffer.concat([...carry, piece], carryLen + piece.length) : piece;
-        applyLine(idx, line);
-        pushOffset(idx, lineStart);
         carry = [];
         carryLen = 0;
+        if (visit(line, lineStart) === false) {
+          stop = true;
+          break;
+        }
       }
       lineStart = pos + i + 1;
       pieceStart = i + 1;
     }
-    if (pieceStart < n) {
+    if (stop) break;
+    if (pieceStart < n && !skipping) {
       const rest = Buffer.from(buf.subarray(pieceStart, n));
       carry.push(rest);
       carryLen += rest.length;
@@ -255,11 +273,16 @@ function consume(fd: number, idx: FileIndex, size: number, from: number): void {
       }
     }
     pos += n;
-    sessionStoreStats.incrementalBytes += n;
   }
-  // Only complete lines are consumed; a partial trailing line is re-read next
-  // time, so a mid-write file never yields half an entry.
-  idx.size = lineStart;
+  return lineStart;
+}
+
+/** Consume complete lines starting at `from`. Memory stays ~READ_CHUNK. */
+function consume(fd: number, idx: FileIndex, size: number, from: number): void {
+  sessionStoreStats.incrementalBytes += size - from;
+  idx.size = eachLine(fd, from, size, (line, start) => {
+    noteLine(idx, line, start);
+  });
   idx.mtimeMs = fs.fstatSync(fd).mtimeMs;
   idx.headHash = fingerprintHead(fd, idx.size);
   idx.tailHash = fingerprintTail(fd, idx.size);
@@ -281,12 +304,8 @@ function buildIndex(abs: string, st: fs.Stats): FileIndex {
 /** True when the bytes the index already consumed are still the same file. */
 function intact(fd: number, idx: FileIndex, size: number): boolean {
   if (size < idx.size) return false;
-  if (hashBuf(readAt(fd, 0, Math.min(FP_BYTES, idx.size))) !== idx.headHash) return false;
-  if (idx.size > 0) {
-    const len = Math.min(FP_BYTES, idx.size);
-    if (hashBuf(readAt(fd, idx.size - len, len)) !== idx.tailHash) return false;
-  }
-  return true;
+  if (fingerprintHead(fd, idx.size) !== idx.headHash) return false;
+  return idx.size === 0 || fingerprintTail(fd, idx.size) === idx.tailHash;
 }
 
 function getIndex(abs: string, st: fs.Stats): FileIndex {
@@ -361,7 +380,7 @@ function cachedSummary(dirName: string, file: string): SessionSummary | null {
   }
 }
 
-export function invalidateSession(abs: string): void {
+function invalidateSession(abs: string): void {
   indexCache.delete(abs);
 }
 
@@ -394,10 +413,8 @@ export function listSessionDirs(): Array<{ dirName: string; sessions: SessionSum
 
 export function listSessions(dirName: string): SessionSummary[] {
   let files: string[] = [];
-  const rootName = path.basename(SESSIONS_DIR);
-  const flat = dirName === rootName || dirName === "." || dirName === "";
   try {
-    files = fs.readdirSync(flat ? SESSIONS_DIR : path.join(SESSIONS_DIR, dirName)).filter((f) => f.endsWith(".jsonl"));
+    files = fs.readdirSync(isFlatDir(dirName) ? SESSIONS_DIR : path.join(SESSIONS_DIR, dirName)).filter((f) => f.endsWith(".jsonl"));
   } catch {
     return [];
   }
@@ -444,77 +461,38 @@ function quickId(fd: number, start: number, end: number): string | null {
   return m ? m[1] : null;
 }
 
-/** Stream a file line by line; `onLine` returning false stops the walk. */
-function forEachLineSync(abs: string, onLine: (line: string) => boolean): void {
-  let fd = -1;
-  try {
-    fd = fs.openSync(abs, "r");
-  } catch {
-    return;
-  }
-  try {
-    const size = fs.fstatSync(fd).size;
-    let pos = 0;
-    let carry: Buffer[] = [];
-    let carryLen = 0;
-    while (pos < size) {
-      const want = Math.min(READ_CHUNK, size - pos);
-      const buf = Buffer.allocUnsafe(want);
-      const n = fs.readSync(fd, buf, 0, want, pos);
-      if (n <= 0) break;
-      let pieceStart = 0;
-      let stop = false;
-      for (let i = 0; i < n; i++) {
-        if (buf[i] !== 0x0a) continue;
-        const piece = buf.subarray(pieceStart, i);
-        const line = carryLen ? Buffer.concat([...carry, piece], carryLen + piece.length) : piece;
-        carry = [];
-        carryLen = 0;
-        pieceStart = i + 1;
-        if (onLine(line.toString("utf8")) === false) {
-          stop = true;
-          break;
-        }
-      }
-      if (stop) return;
-      if (pieceStart < n) {
-        const rest = Buffer.from(buf.subarray(pieceStart, n));
-        carry.push(rest);
-        carryLen += rest.length;
-        if (carryLen > MAX_LINE_BYTES) {
-          carry = [];
-          carryLen = 0;
-        }
-      }
-      pos += n;
-    }
-  } finally {
-    try {
-      fs.closeSync(fd);
-    } catch {}
-  }
-}
-
 /** Deep paging beyond the offset ring: stream, keep the last `limit` entries. */
 function deepWindow(abs: string, limit: number, before: string): any[] {
   sessionStoreStats.fullScans++;
   const ring: any[] = [];
   let hit = false;
-  forEachLineSync(abs, (line) => {
-    let e: any;
-    try {
-      e = JSON.parse(line);
-    } catch {
+  let fd = -1;
+  try {
+    fd = fs.openSync(abs, "r");
+    eachLine(fd, 0, fs.fstatSync(fd).size, (line) => {
+      let e: any;
+      try {
+        e = JSON.parse(line.toString("utf8"));
+      } catch {
+        return true;
+      }
+      if (e.id === before) {
+        hit = true;
+        return false;
+      }
+      ring.push(e);
+      if (ring.length > limit) ring.shift();
       return true;
+    });
+  } catch {
+    return [];
+  } finally {
+    if (fd >= 0) {
+      try {
+        fs.closeSync(fd);
+      } catch {}
     }
-    if (e.id === before) {
-      hit = true;
-      return false;
-    }
-    ring.push(e);
-    if (ring.length > limit) ring.shift();
-    return true;
-  });
+  }
   return hit ? ring : [];
 }
 
@@ -608,14 +586,7 @@ export function titleForSessionFile(absFile: string): string | null {
 export function findSessionByBasename(file: string): { dirName: string; file: string; abs: string } | null {
   if (!file || /[/\\]|\.\./.test(file) || !file.endsWith(".jsonl")) return null;
   let best: { dirName: string; file: string; abs: string; mtime: number } | null = null;
-  let dirs: string[] = [];
-  const rootName = path.basename(SESSIONS_DIR);
-  try {
-    dirs = [rootName, ...fs.readdirSync(SESSIONS_DIR).filter((d) => d.startsWith("--"))];
-  } catch {
-    return null;
-  }
-  for (const dirName of dirs) {
+  for (const dirName of projectDirs()) {
     const abs = sessionFilePath(dirName, file);
     try {
       const st = fs.statSync(abs);
@@ -649,21 +620,14 @@ export interface SearchHit {
  * Per-IP throttling lives at the route (one scan is fast; a flood is not).
  */
 export const SEARCH_FILE_CAP = 8 * 1024 * 1024;
-export const SEARCH_BUDGET_BYTES = 64 * 1024 * 1024;
+const SEARCH_BUDGET_BYTES = 64 * 1024 * 1024;
 
 export function searchSessions(query: string, limit = 30): SearchHit[] {
   const q = String(query || "").trim().toLowerCase();
   if (q.length < 2) return [];
   const hits: SearchHit[] = [];
   let scanned = 0;
-  let dirs: string[] = [];
-  const rootName = path.basename(SESSIONS_DIR);
-  try {
-    dirs = [rootName, ...fs.readdirSync(SESSIONS_DIR).filter((d) => d.startsWith("--"))];
-  } catch {
-    return [];
-  }
-  outer: for (const dirName of dirs) {
+  outer: for (const dirName of projectDirs()) {
     let files: string[] = [];
     try {
       files = fs.readdirSync(sessionFilePath(dirName, "")).filter((f) => f.endsWith(".jsonl"));
@@ -687,8 +651,9 @@ export function searchSessions(query: string, limit = 30): SearchHit[] {
       } catch {
         continue;
       }
-      let cwd: string | null = null;
-      let title = "";
+      // Aggregates come from the shared fold (search titles match the list);
+      // this pass only hunts the query snippet.
+      const agg: Agg = { cwd: null, model: null, thinkingLevel: null, sessionName: null, title: null, messageCount: 0, tokens: 0, cost: 0 };
       let snippet = "";
       let hit = false;
       for (const line of raw.split("\n")) {
@@ -699,18 +664,18 @@ export function searchSessions(query: string, limit = 30): SearchHit[] {
         } catch {
           continue;
         }
-        if (e.type === "session" && typeof e.cwd === "string") cwd = e.cwd;
-        const text = e.type === "message" ? textOf(e.message?.content) : "";
+        foldEntry(agg, e);
+        if (e.type !== "message" || hit) continue;
+        const text = textOf(e.message?.content);
         if (!text) continue;
-        if (!title && e.message?.role === "user") title = text.split("\n")[0].slice(0, 120);
-        if (!hit && text.toLowerCase().includes(q)) {
+        if (text.toLowerCase().includes(q)) {
           const idx = text.toLowerCase().indexOf(q);
           snippet = text.slice(Math.max(0, idx - 60), idx + 140);
           hit = true;
         }
       }
       if (!hit) continue;
-      hits.push({ dirName, file, filePath: abs, cwd, title: title || file, snippet, timestamp: st?.mtimeMs || 0 });
+      hits.push({ dirName, file, filePath: abs, cwd: agg.cwd, title: agg.title || file, snippet, timestamp: st?.mtimeMs || 0 });
       if (hits.length >= limit) break outer;
     }
   }
@@ -739,24 +704,6 @@ export function validateExportPath(raw: string): string {
     // Parent missing: the child fails cleanly; the prefix jail above stands.
   }
   return abs;
-}
-
-/** Every entry in the file (no window) — used by the compat history shape.
- *  Unused by the hub; kept for callers that genuinely need the whole file, so
- *  it streams (constant memory) instead of `readFileSync`. */
-export function readAll(absPath: string): HistoryWindow {
-  const all: any[] = [];
-  forEachLineSync(absPath, (line) => {
-    try {
-      all.push(JSON.parse(line));
-    } catch {}
-    return true;
-  });
-  const tail = readWindow(absPath, 1, null);
-  return {
-    entries: all.map(trimEntry),
-    meta: { ...tail.meta, total: all.length, firstId: all.length ? all[0].id || null : null },
-  };
 }
 
 export function forkSession(dirName: string, file: string): { file: string } {

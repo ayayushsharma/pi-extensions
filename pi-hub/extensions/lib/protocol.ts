@@ -56,12 +56,6 @@ export function response(id: string | undefined, command: string, data?: unknown
   return r;
 }
 
-export function errorResponse(id: string | undefined, command: string, error: string): any {
-  const r: any = { type: "response", command, success: false, error };
-  if (id) r.id = id;
-  return r;
-}
-
 /** pi compaction events → the pair the UI renders. */
 export function normalizePiEvent(eventType: string, event: any): any {
   if (eventType === "session_before_compact") {

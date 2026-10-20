@@ -223,11 +223,12 @@ this section is the short version for a fresh session.
   + server-enforced single driver, the security-hardening batch, and the
   caps (search/fence/export).
 - **Committed (`6fcff39`)**: R1–R5 review fixes with E41–E43, X10/X21/X21c.
-- **Committed (`a0e25cc`)**: wire independence (ADR-022).
-- **Working tree (this batch)**: server-RAM fix (append-aware session index —
-  windows read tail lines, listings read appended bytes only; `renameSession`
-  no longer parses the whole file) and the Termux/Android process scan
-  (platform gate + argv/`exe` fingerprint), with unit pins for both.
+- **Committed (`432a389`)**: server-RAM fix (append-aware session index) and
+  the Termux/Android process scan.
+- **Working tree (this batch)**: LoC reduction batch 1 (−103 product lines) —
+  unified session-store walker/fold, dropped dead routes (`/api/projects`,
+  `/api/headless/status`) and dead client helpers; standing LoC rule recorded
+  in PLAN §7 with the remaining-work register.
 - **Docs**: `docs/code-review.md` is the single home for findings and their
   status (P2/P3/F1 fixed, P4 open); README/PLAN/testing counts and claims
   were corrected to match.

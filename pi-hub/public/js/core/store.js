@@ -154,13 +154,6 @@ export function removeTab(key) {
   return activeKey;
 }
 
-export function runnerList() {
-  return [...state.runners.values()].sort((a, b) => {
-    if (a.kind !== b.kind) return a.kind === "live" ? -1 : 1;
-    return (b.lastActiveAt || 0) - (a.lastActiveAt || 0);
-  });
-}
-
 export function allSessions() {
   const out = [];
   for (const project of state.projects) {

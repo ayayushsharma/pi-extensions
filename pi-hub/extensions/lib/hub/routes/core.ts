@@ -133,15 +133,6 @@ export function coreRoutes(deps: CoreDeps): Route[] {
         }),
     },
     {
-      method: "GET",
-      path: "/api/headless/status",
-      auth: true,
-      handler: ({ res }) =>
-        sendJson(res, 200, {
-          runners: registry.list().filter((r) => r.kind === "headless").map((r) => r.info()),
-        }),
-    },
-    {
       method: "POST",
       path: "/api/runners/close",
       auth: true,

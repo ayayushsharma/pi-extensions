@@ -338,29 +338,52 @@ Deployment (myserver / Termux, per its AGENTS.md):
 | P6 | Real-pi end-to-end, Termux Firefox smoke (ADR-020), perf budgets, docs, myserver service | full suite `--project=real`; CP3/CP4 on the phone; manual smoke |
 | P7 | Flip: service + settings + README | tau-web removable; rollback documented |
 
-LOC budget: server ≈ 1.9k, client JS ≈ 3.6k, CSS ≈ 1.8k, HTML ≈ 0.3k,
-tests ≈ 2.4k → **≈ 10k vs tau-web's ≈ 23.6k incl. tests**.
+LOC budget (2026-10-21 actuals, after LoC batch 1: server ≈ 5.3k, client JS
+≈ 4.9k, CSS ≈ 1.6k, HTML ≈ 0.3k, tests ≈ 4.5k → **≈ 16.5k vs tau-web's
+≈ 23.8k incl. tests**). The 1.9k server budget is blown, hence the
+standing rule below. The client is less than half of tau-web's; the **server
+(5.3k) still exceeds tau-web's server (4.9k)** — every hardening batch piled
+lines onto the hub. `sessions.ts` is down to ~0.8k and falling.
 
-## 7.1 Known gaps (next session)
+**Standing rule: product LoC goes down or stays flat.** Every remaining item
+below must pay for itself — implement it by deleting more than it adds
+(unify, privatize, drop dead code first; add code last). Tests are exempt:
+pins are load-bearing, never cut a pin to hit a number. Track the count per
+batch in the change log (`docs/code-review.md` §7):
+`wc -l` over `extensions/` + `public/` before and after.
 
-- History and listing are served from the incremental index above: a window
-  reads only its tail lines, and appends cost the appended bytes. The one
-  remaining cost is the first scan after start (≈0.3 s per 87 MB on the dev
-  box; constant RAM), which still blocks the event loop while it runs.
-- Streaming is still re-rendered as full markdown per frame in the browser
-  (≈0.5 s of CPU on a 20k-char message); that is a client concern, tracked as
-  P4 in `code-review.md` and not part of the server RAM fix.
-- Reconnect re-binds and refetches the window; per-runner sequence numbers are
-  now tracked client-side and sent as `sinceSeq`, so the 200-event ring
-  replays the gap on the next frame (H10b).
-- Fork/rename/export/delete all have UI affordances now (context menu); the
-  delete path closes a running owner first, then unlinks (ADR-018 amendment).
+## 7.1 Remaining work (what's left)
+
+Every open item in one register. Status words: **open** (do it),
+**manual** (human action, cannot be a test), **decision** (needs an ADR
+before code), **deferred** (only if wanted). Each row names the cheapest
+shape that fits the LoC rule.
+
+| ID | What | Status | Cheapest shape |
+|---|---|---|---|
+| H1 | Cap over-eviction: `enforceCap` loops while `close()` is async, evicts every idle runner | **open** (High) | Mark closing / evict-one-per-bind in `registry.ts`; net-new lines ≈ 0 |
+| H2 | No bind serialization: concurrent binds for one file spawn two children | **open** (High) | Per-file bind promise memo; X20 workaround already waits it out |
+| H4 | Delta coalescer merges text+thinking under the first template's type | **open** (Med) | Split accumulators in `ws.ts` `flushDeltas`; small |
+| H5 | Backpressure drop still advances `lastSeq`, gap never replayed | **open** (Med) | Advance `lastSeq` only on deliver; small |
+| H6 | Per-IP keys collapse behind the tunnel (all clients `127.0.0.1`) | **decision** (Med) | ADR first (trusted-proxy flag or loopback exemption), then a branch |
+| P4 | Streaming re-renders full markdown per frame in the browser (≈0.5 s CPU on 20k chars) | **open** (Med) | Stream as text node, render markdown once on `message_end` (`transcript.js`) |
+| D1 | Spawn throttle (20/min) has no pin — needs 21 real children | **manual** | Document-only; do not build a 21-child test |
+| D2 | `tests/cases.json` registry + meta-test absent; matrix enforced by review | **open** (Info) | Small JSON + one meta-test; pays by catching doc/test drift |
+| M1–M4 | Deferred tau-web features (KaTeX math, highlighting, TTS, PWA SW) | **deferred** | Only if wanted; each must fit the LoC rule or stay deferred |
+| P7 | Flip: runit service still runs old 0.1.0 build; tau-web is still live | **manual** | Deploy today's build, phone smoke (`testing.md` §5.4), then swap with rollback noted |
+| LoC | Server exceeds tau-web's server (5.3k vs 4.9k); `sessions.ts` ~0.8k | **open** (batch 1 done: −103 lines) | Keep unifying/dropping dead code; next candidates: `transcript.js`/`composer.js` overlap, CSS dedup; see §7 change log |
+
+Notes that used to live here and are now owned elsewhere:
+
+- First scan after start (~0.3 s per 87 MB, constant RAM) still blocks the
+  event loop — follows from the incremental index; async-ify only if the
+  phone feels it (no complaint yet, no work planned).
+- Reconnect re-binds and refetches the window; `sinceSeq` + the 200-event
+  ring replays the gap (H10b, done).
+- Fork/rename/export/delete all have UI affordances (context menu); delete
+  closes a running owner first, then unlinks (ADR-018 amendment, done).
 - The selenium/geckodriver backend is a CLI smoke only (interaction-heavy
-  browser cases still require Playwright).
-- `tests/cases.json` registry + meta-test not yet added (results print by
-  name and fail the run).
-- LRU eviction, TTL reaping and the pool cap have unit-level coverage only
-  (integration covers close/rejoin/reuse).
+  browser cases still require Playwright) — environmental, not work.
 
 ## 8. Open decisions (need sign-off)
 

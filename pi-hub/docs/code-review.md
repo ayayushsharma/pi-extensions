@@ -72,6 +72,11 @@ inside that shape, not another rewrite.
 | D1 | Info | Spawn throttle has no test (needs 21 real children) | **Open (manual)** | — |
 | D2 | Info | `tests/cases.json` registry + meta-test still absent, so the matrix is enforced by review, not by CI | **Open** | — |
 | D3 | Info | Firefox CLI smoke SKIPs on hosts whose system Firefox cannot render headless | **Environmental** | FC0 |
+| M1 | Deferred | Math rendering (KaTeX); raw LaTeX shows as text | **Deferred — ADR-022** | — |
+| M2 | Deferred | Syntax highlighting in code blocks + file viewer | **Deferred — ADR-022** | — |
+| M3 | Deferred | Read-aloud TTS (dictation *is* ported) | **Deferred — ADR-022** | — |
+| M4 | Deferred | PWA offline service worker (manifest exists, installs at `/`) | **Deferred — ADR-022** | — |
+| M5 | Closed | tau-web wire aliases / third-gate harness | **Dropped by decision — ADR-022** | ADR-022 |
 
 ## 5. Security posture (as built)
 
@@ -114,10 +119,21 @@ model; keep loopback bind and strong credentials off-loopback.
 | Batch | Commit | Scope |
 |---|---|---|
 | 1 | `26a0a7a` | Singleton (ADR-021); live parity + single-driver enforcement; security hardening (S2/S3/S4/S7/S9/S10/S12/S14 equivalents, A8/A9, cookies, floods, topology scrub, drive consent); caps (search/fence/export); ADR-019 amendment; matrix X17–X22, A2/A4–A9 corrected. |
-| 2 | _(working tree)_ | R1–R5 from this review: history image normalization, composer allowlist + downscale + budgets + restore, consent window, `forceNative` reset, `stopped` reset; X10 semantics corrected and pinned; X21/X21c flood pins; E41–E43; docs (this file, README/PLAN/testing/UX counts and rows). |
-| next | — | H1, H2, H4, H5; decide H6 (trusted proxy) in an ADR; `tests/cases.json` + meta-test. |
+| 2 | `6fcff39` | R1–R5 from this review: history image normalization, composer allowlist + downscale + budgets + restore, consent window, `forceNative` reset, `stopped` reset; X10 semantics corrected and pinned; X21/X21c flood pins; E41–E43; docs (this file, README/PLAN/testing/UX counts and rows). |
+| 3 | _(this change)_ | **Independence (ADR-022):** pi-hub owns its client/wire; tau-web aliases + third-gate harness dropped; deferred features M1–M4 recorded instead of implied; ADR-019 §4/§5 annotated; manifest `start_url` fixed to `/`; PLAN protocol table corrected to the real dialect (`subscribe`/`dialog_response` rows removed). |
+| next | — | H1, H2, H4, H5; decide H6 (trusted proxy) in an ADR; `tests/cases.json` + meta-test; pick up M1–M4 if wanted. |
 
-## 8. Reproducing
+## 8. Deferred scope & deliberate differences
+
+See **ADR-022**. Short version: pi-hub is independent at the wire level, so
+`start_session` / `rpc_event` / `tui_command` / route aliases do not exist and
+tau-web's harness is not a gate. Features tau-web had that pi-hub does not are
+tracked as M1–M5 above (math, highlighting, TTS, PWA SW, wire aliases) and are
+*not* regressions. Capabilities dropped for security/architecture reasons
+stay dropped: `/api/open`, `/api/rpc`, `set_auth`/`get_auth`, the instance
+registry, and the direct/hub-local channel.
+
+## 9. Reproducing
 
 ```bash
 cd pi-hub && npm install

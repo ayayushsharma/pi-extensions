@@ -244,6 +244,10 @@ this section is the short version for a fresh session.
   `PI_HUB_DRIVE_CONFIRM` asks the TUI user and fails closed.
 - Attachments are downscaled in-browser to fit the 2 MB WS frame; GIFs are
   never re-encoded.
+- pi-hub is wire-independent (ADR-022): its own client/dialect/routes are
+  canonical, there are no tau-web aliases, and tau-web's harness is not a
+  gate. Deferred tau-web features (math, highlighting, TTS, PWA SW) are
+  tracked, not owed.
 
 ### Ordered queue
 

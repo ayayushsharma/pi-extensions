@@ -1,7 +1,7 @@
 {
   "name": "Pi Hub",
   "short_name": "Pi Hub",
-  "start_url": "/hub/",
+  "start_url": "/",
   "display": "standalone",
   "background_color": "#f4f1ec",
   "theme_color": "#b06a48",

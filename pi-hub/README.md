@@ -5,9 +5,27 @@ a hub process (`pi -e pi-hub --mode rpc`) that serves a browser UI and
 drives sessions through a single **Runner** abstraction, while live TUIs
 dial in over a unix socket and are relayed, never dual-written.
 
-Built as a parallel package to `tau-web` (ADR-019): same job, one runner
-registry instead of three routing paths, push instead of polling, and a
-Playwright + Firefox test gate.
+Built as a parallel package to `tau-web` (ADR-019) and now **independent**
+of it (ADR-022): own client, own wire dialect, own suites. Same job — one
+runner registry instead of three routing paths, push instead of polling,
+and a Playwright + Firefox test gate.
+
+## Relationship to tau-web (ADR-022)
+
+pi-hub is a replacement at the **product** level, not at the wire level. It
+speaks its own WS dialect (`bind`/`command`/`event`) and its own route names;
+there is no `start_session`/`rpc_event`/`tui_command` compatibility layer and
+tau-web's browser harness is not a gate here. The two packages coexist on one
+machine only through namespacing (`PI_HUB_*`, own socket, own advert, own
+cookie, own port) — they cannot read each other's browser session. Rollback
+is a service swap (`sv down pi-hub; sv up tau-web`) plus a re-login; session
+files are shared.
+
+Deliberately **not** ported (deferred, not defects — see ADR-022 and
+`docs/code-review.md` M1–M5): math rendering (KaTeX), syntax highlighting,
+read-aloud TTS, and the PWA offline service worker. Dropped on purpose:
+`/api/open` (host process launch), `/api/rpc` (arbitrary HTTP RPC),
+`set_auth`/`get_auth`, and the instance registry / zombie reaping.
 
 ## The four capabilities
 
@@ -121,7 +139,8 @@ display sizes because it is outline art, not strokes.
 
 Deprecation-free coexistence with an installed `tau-web`: pi-hub only reads
 `PI_HUB_*`, uses its own socket and cookie, and spawns children with both
-`PI_HUB_DISABLED=1` and `TAU_DISABLED=1`.
+`PI_HUB_DISABLED=1` and `TAU_DISABLED=1`. Coexistence is **namespace-only** —
+the two hubs are not interchangeable and share no browser session (ADR-022).
 
 ## Tests
 
@@ -195,4 +214,5 @@ parent PID; every browser case fails on a page error or a non-empty
   section. **Start here for UX work.**
 - `docs/adr/019` — parallel rewrite decision (incl. live-keyed-by-pid
   amendment); `docs/adr/020` — browser driver strategy; `docs/adr/021` —
-  one hub per machine (advert-scoped singleton).
+  one hub per machine (advert-scoped singleton); `docs/adr/022` —
+  independence from tau-web, deferred features, deliberate drops.

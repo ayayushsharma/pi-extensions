@@ -11,10 +11,15 @@ smoke only; the `tests/cases.json` registry is still not in place (results are
 printed by name — see `code-review.md` D2). Since P6: ADR-021 singleton
 enforcement, live-command parity + server-enforced single driver, the security
 hardening batch, and the review fixes R1–R5 — all logged with pins in
-`docs/code-review.md` §4/§7. tau-web is still the live service — the flip (P7)
+`docs/code-review.md` §4/§7. **ADR-022 makes pi-hub independent:** its own
+client/wire is canonical, tau-web's wire aliases and third-gate harness are
+dropped by decision, and tau-web browser features that were never ported are
+tracked as deferred (M1–M4), not as parity debt. tau-web is still the live
+service — the flip (P7)
 is pending.
 Companions: `docs/adr/019-pi-hub-parallel-rewrite.md` (decision),
-`docs/testing.md` (case matrix). Continues tau-web ADR-001–018; superseded
+`docs/adr/022-pi-hub-independence.md` (wire independence + deferred
+features), `docs/testing.md` (case matrix). Continues tau-web ADR-001–018; superseded
 ADR-012 (headless-only hub) is **not** implemented — the attach relay
 (ADR-014) is.
 
@@ -190,19 +195,20 @@ Extensibility: a new backend kind = one `Runner` implementation + one
 
 | Direction | Frame | Notes |
 |---|---|---|
-| S→C | `hello {version, features}` | first frame; client knows capabilities immediately |
-| C→S | `bind {runnerId?\|file?\|cwd?\|new?}` | ack `bound {runner}` after ready |
-| C→S | `command {runnerId, command}` | id-correlated `ack`/`reject` (honest errors) |
-| C→S | `attach {runnerId, take?}` / `detach` | live TUI drive, `driver_busy` on conflict |
-| C→S | `subscribe {runnerId, lastSeq?}` | view a runner without driving |
-| S→C | `event {runnerId, seq, event}` | **one envelope for all runners** (ADR-004) |
-| S→C | `runner_added/status/removed` | list updates without polling |
-| S→C | `dialog {request}` / C→S `dialog_response` | ADR-007, single driver |
-| C→S | `ping` | heartbeat |
+| S→C | `hello {version, auth, features}`, `runners {list}` | first frames; capabilities + current runners |
+| C→S | `bind {runnerId}` \| `{dirName, file, cwd}` \| `{cwd}` | ack `bound {runner, lastSeq}` after readiness; binding **is** viewing |
+| C→S | `command {command}` (alias `rpc_command`) | id-correlated `ack` / `error`; images + export paths validated server-side |
+| C→S | `attach {runnerId, take?}` / `detach` | live TUI drive only; `driver_busy` on conflict, consent when enabled |
+| C→S | `unbind` / `close {runnerId}` | release the view / kill a headless child |
+| S→C | `event {runnerId, seq, event}` | **one envelope for all runners** (ADR-004), 200-frame replay |
+| S→C | `runner_added` / `runner_status` / `runner_removed` | list updates without polling |
+| S→C | `dialog {request}`, `dialog_cancelled` / C→S `extension_ui_response` | ADR-007, single driver |
+| both | `ping` / `pong` | heartbeat |
 
-Compatible with tau-web where the wire is already stable
-(`start_session` → alias for `bind`, `rpc_event` → alias for `event`,
-`tui_command`, `extension_ui_response`), so old tests/clients port cleanly.
+**Not wire-compatible with tau-web (ADR-022).** The dialect above is
+pi-hub's own; `start_session`, `rpc_event`, `tui_command` and route aliases
+were planned in ADR-019 §4 and deliberately dropped when pi-hub became
+independent. Product-level parity is what is maintained.
 
 ### 3.3 Client architecture
 
@@ -348,11 +354,13 @@ tests ≈ 2.4k → **≈ 10k vs tau-web's ≈ 23.6k incl. tests**.
    (system Chrome; cached chromium fallback). No downloaded browsers needed.
 2. **Drop the direct/hub-local channel**: the hub's own pi session is never
    a browser session (ADR-011); every session is headless or live.
-3. **Self-hosted highlight.js + lazy KaTeX** instead of CDN (CSP + snappy).
+3. ~~**Self-hosted highlight.js + lazy KaTeX** instead of CDN (CSP + snappy).~~
+   **Deferred (ADR-022 M1/M2):** pi-hub renders code as plain text today.
 4. **Serve the shell at `/`** (`/hub/` → 302 → `/`) instead of tau-web's
    `/` → `/hub/`.
-5. **Optional third gate**: parameterize tau-web's harness extension root
-   (test-only edit) to run its 31 H/X cases against pi-hub during P6.
+5. ~~**Optional third gate**: parameterize tau-web's harness extension root
+   (test-only edit) to run its 31 H/X cases against pi-hub during P6.~~
+   **Superseded (ADR-022):** pi-hub's own suites are the only gate.
 6. **Cross-platform browsers (ADR-020)**: `PI_HUB_E2E_DRIVER=auto` (default)
    prefers Playwright, falls back to system Firefox + geckodriver +
    selenium-webdriver on Termux, plus a zero-dep `cli` Firefox smoke. No

@@ -268,8 +268,8 @@ WS is filtered only in layer-A cases.
 | ID | Scenario | Assertion |
 |---|---|---|
 | R1 | Markdown | Headings/lists/tables/links render; raw HTML escaped |
-| R2 | Code blocks | Highlighted locally; huge block bounded; copy button |
-| R3 | Math | Lazy KaTeX only when `$` present; no CDN request |
+| R2 | Code blocks | Copy button + language label; fence capped at 64 KB with a truncation note. **Syntax highlighting deferred (ADR-022 M2)** — renders as plain text today |
+| R3 | Math | **Deferred (ADR-022 M1):** raw LaTeX renders as text; no CDN script is allowed by the CSP, so KaTeX must be vendored when picked up |
 | R4 | Tool cards | Live update → final; Edit diffs with gutters; no vertical trap on touch |
 | R5 | Thinking blocks | Toggle on/off; streaming and history identical |
 | R6 | Unicode/emoji-safe | U+2028/29, RTL, astral chars render; no JSON framing break |
@@ -306,7 +306,7 @@ WS is filtered only in layer-A cases.
 | U9 | Class-namespace guard | Variant classes have CSS rules; no global collision (H18) |
 | U10 | Themes | All themes render, contrast AA, status dot fixed traffic-light |
 | U11 | Tabs & home | Real anchors, Ctrl+click, restore, search home |
-| U12 | PWA | Manifest/SW installed; offline shell loads; version bump busts cache |
+| U12 | PWA | Manifest installs at `/` (start_url fixed); asset version bump busts cache. **Offline service worker deferred (ADR-022 M4)** — no SW today |
 | U13 | Tab close switches session | Closing the active tab binds the next tab (card/hash/transcript follow); closing the last shows the homepage (UX-1) |
 | U14 | Backend kill confirms | Sidebar row X confirms like the card X; Cancel keeps the child (UX-2) |
 | U15 | Quiet unbound kill | Killing an unbound backend shows no banner and no banner-hint toast (UX-3) |
@@ -363,5 +363,7 @@ WS is filtered only in layer-A cases.
 4. Manual phone smoke per myserver AGENTS.md (boot, tunnel, drive TUI,
    resume, new session, headless view) — logged in `docs/`; plus the
    automated `termux-smoke` profile (CP3/CP4) on the phone itself.
-5. tau-web harness (optional gate) run against pi-hub, or an ADR note
-   explaining the one behavioral difference.
+5. ~~tau-web harness (optional gate) run against pi-hub~~ — **superseded by
+   ADR-022**: pi-hub is wire-independent and its own suites are the gate.
+   Deferred tau-web browser features are tracked as M1–M5 in
+   `code-review.md`, not as parity obligations.

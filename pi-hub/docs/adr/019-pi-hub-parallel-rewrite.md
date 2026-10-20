@@ -61,10 +61,12 @@ one test gate.
    never a browser session (ADR-011); every browser session is a headless
    child or a relayed live TUI. This removes a whole routing branch from
    server and client.
-4. **Keep the browser wire compatible where stable** (`start_session`
+4. ~~**Keep the browser wire compatible where stable** (`start_session`
    aliases `bind`, `rpc_event` aliases `event`, `tui_command`,
    `extension_ui_response`, `/api/*` paths) so tau-web's 31 H/X cases and
-   clients port with minimal edits.
+   clients port with minimal edits.~~ **SUPERSEDED by ADR-022** — pi-hub is
+   wire-independent; no aliases exist and none will be added without a new
+   ADR.
 5. **Playwright is the acceptance gate, with a cross-platform fallback**
    (ADR-020). `@playwright/test` with system Chrome
    (`channel: "chrome"`, cached-chromium fallback), projects `stub`,
@@ -74,7 +76,9 @@ one test gate.
    with Playwright-only cases declared and skipped by reason.
    `docs/testing.md` defines C1–C4 plus A/X/R/P/U/CP/D case matrices; a
    case registry (`tests/cases.json`) plus a meta-test forbids
-   missing/silently-skipped cases.
+   missing/silently-skipped cases. **Partly superseded by ADR-022:** the
+   tau-web harness is no longer a gate; the cases.json meta-test is still an
+   open item of our own (code-review D2).
 6. **Security posture is ported and the review findings closed by
    construction:** child env credential scrubbing (S2), DOM-built
    rendering with validated image blocks (S1/B1), placeholder-safe
@@ -114,9 +118,8 @@ one test gate.
   lands once; `docs/testing.md` pins each capability with explicit
   failure semantics (no silent drops, no zombie binds, no blanked
   transcripts).
-- tau-web's 31 H/X cases can run against pi-hub as an optional third gate
-  by parameterizing the extension root (test-only edit); the Playwright
-  suite is the primary gate.
+- ~~tau-web's 31 H/X cases can run against pi-hub as an optional third
+  gate~~ **SUPERSEDED by ADR-022** — pi-hub's own suites are the only gate.
 - pi-hub owns a new ADR series from 019; ADR-001–018 remain the lineage
   and must not be re-litigated by the rewrite (e.g. ADR-015's no-re-switch
   is a registry invariant with a counter test).
@@ -124,5 +127,6 @@ one test gate.
   `~/.pi/agent/settings.json`; both packages may load in one process
   meanwhile because every namespace and socket path differs.
 - Open sub-decisions recorded for review: self-hosted highlight.js +
-  lazy KaTeX (adopted above for CSP/snappiness), `@playwright/test`
-  devDependency, and the optional tau-web-harness third gate.
+  lazy KaTeX (**deferred, ADR-022 M2/M1**), `@playwright/test`
+  devDependency (rejected in practice: playwright-core + node runner), and
+  the tau-web-harness third gate (**superseded, ADR-022**).

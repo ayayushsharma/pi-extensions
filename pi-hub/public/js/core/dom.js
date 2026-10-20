@@ -59,13 +59,19 @@ export function timeAgo(ts) {
   }
 }
 
-export function shortCwd(cwd) {
-  if (!cwd) return "";
-  const home = cwd
+/** Collapse a home dir to `~` on every platform we run (Termux, macOS,
+ *  Linux, Windows); shared by shortCwd and shortenPath. */
+function collapseHome(s) {
+  return String(s || "")
     .replace(/^\/data\/data\/com\.termux\/files\/home/, "~")
     .replace(/^\/Users\/[^/]+/, "~")
     .replace(/^\/home\/[^/]+/, "~")
     .replace(/^[A-Z]:\\Users\\[^\\]+/i, "~");
+}
+
+export function shortCwd(cwd) {
+  if (!cwd) return "";
+  const home = collapseHome(cwd);
   const parts = home.split(/[\\/]/).filter(Boolean);
   return parts.length <= 3 ? home || "/" : `…/${parts.slice(-2).join("/")}`;
 }
@@ -84,10 +90,7 @@ export function shortenPath(p, cwd) {
   if (root && (s === root || s.startsWith(`${root}/`))) {
     return s.slice(root.length + 1) || s;
   }
-  return s
-    .replace(/^\/data\/data\/com\.termux\/files\/home/, "~")
-    .replace(/^\/Users\/[^/]+/, "~")
-    .replace(/^\/home\/[^/]+/, "~");
+  return collapseHome(s);
 }
 
 export function usageText(meta) {

@@ -10,7 +10,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { statSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { hubLog, hubDebug } from "../log.js";
-import { randId } from "../protocol.js";
+import { LineBuffer, randId } from "../protocol.js";
 import { Runner, type RunnerKind } from "./runner.js";
 
 /**
@@ -63,9 +63,9 @@ interface Pending {
 }
 
 /** One LF-JSONL child process with id-correlated requests. */
-export class RpcSession extends EventEmitter {
+class RpcSession extends EventEmitter {
   readonly proc: ChildProcessWithoutNullStreams;
-  private buffer = "";
+  private lines = new LineBuffer();
   private pending = new Map<string, Pending>();
   private killed = false;
   private settled = false;
@@ -102,14 +102,7 @@ export class RpcSession extends EventEmitter {
   }
 
   private onData(chunk: string): void {
-    this.buffer += chunk;
-    let idx = this.buffer.indexOf("\n");
-    while (idx >= 0) {
-      const line = this.buffer.slice(0, idx).replace(/\r$/, "").trim();
-      this.buffer = this.buffer.slice(idx + 1);
-      if (line) this.onLine(line);
-      idx = this.buffer.indexOf("\n");
-    }
+    for (const line of this.lines.push(chunk)) this.onLine(line);
   }
 
   private onLine(line: string): void {
@@ -139,16 +132,11 @@ export class RpcSession extends EventEmitter {
       p.reject(err || new Error(`child exited (code ${code})`));
       this.pending.delete(id);
     }
-    for (const cb of this.listeners("exit")) {
+    for (const cb of this.rawListeners("exit")) {
       try {
-        (cb as any)(code, err);
+        (cb as (...a: any[]) => void)(code, err);
       } catch {}
     }
-    this.emit("settled");
-  }
-
-  private listeners(name: string): Array<(...a: any[]) => void> {
-    return this.rawListeners(name) as any;
   }
 
   send(cmd: any): void {
@@ -263,10 +251,6 @@ export class HeadlessRunner extends Runner {
     if (this.dead) return;
     hubDebug(`child[${this.pid}] <- ${cmd?.type}${cmd?.id ? " id=" + cmd.id : ""}`);
     this.rpc.send(cmd);
-  }
-
-  request(cmd: any, timeoutMs?: number): Promise<any> {
-    return this.rpc.request(cmd, timeoutMs);
   }
 
   close(): void {

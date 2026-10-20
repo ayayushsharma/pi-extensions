@@ -41,6 +41,11 @@ function within(target: string, root: string): boolean {
   return target === root || target.startsWith(root + path.sep);
 }
 
+/** File routes read either under one session's cwd or under every root. */
+function rootsFor(cfg: HubConfig, sessionAbs?: string | null): string[] {
+  return sessionAbs ? [sessionCwd(sessionAbs) || HOME] : browseRoots(cfg);
+}
+
 /** Resolve + realpath. Throws when the path escapes every allowed root. */
 export function jailPath(rawPath: string, roots: string[]): string {
   if (!rawPath || typeof rawPath !== "string" || rawPath.includes("\0")) {
@@ -137,10 +142,7 @@ export interface FileContent {
 const TEXT_CAP = 256 * 1024;
 
 export function readContent(rawPath: string, cfg: HubConfig, sessionAbs?: string | null): FileContent {
-  const roots = sessionAbs
-    ? [sessionCwd(sessionAbs) || HOME]
-    : browseRoots(cfg);
-  const real = jailPath(rawPath, roots);
+  const real = jailPath(rawPath, rootsFor(cfg, sessionAbs));
   const st = fs.statSync(real);
   if (!st.isFile()) throw new Error("not a file");
   const mime = contentTypeFor(real);
@@ -170,8 +172,7 @@ export function readPreview(
   cfg: HubConfig,
   sessionAbs?: string | null,
 ): { path: string; mime: string; buffer: Buffer } {
-  const roots = sessionAbs ? [sessionCwd(sessionAbs) || HOME] : browseRoots(cfg);
-  const real = jailPath(rawPath, roots);
+  const real = jailPath(rawPath, rootsFor(cfg, sessionAbs));
   const st = fs.statSync(real);
   if (!st.isFile()) throw new Error("not a file");
   const ext = path.extname(real).toLowerCase();

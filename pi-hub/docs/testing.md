@@ -10,9 +10,9 @@ printed case names, not by a meta-test. When in doubt, grep the case ID in
 
 ### As built (2026-10-21)
 
-- Counts: **69 unit**, **90 integration**, **170 Playwright** (`--e2e`, 12
+- Counts: **70 unit**, **90 integration**, **170 Playwright** (`--e2e`, 12
 groups: core, live, close, panels, tabs, models, chrome, detail, deadcwd,
-steer, auth, images). `--all` reports **328 checks** (327 pass, 1 documented
+steer, auth, images). `--all` reports **329 checks** (328 pass, 1 documented
 skip — the Firefox CLI smoke when the host's Firefox cannot render headless).
 - **Parallelism is a knob**: `-j N` / `--jobs N` (or `--serial`), default
   `min(4, cpus)`. Groups are independent (own hub, own store copy, own page),

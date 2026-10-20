@@ -39,6 +39,13 @@ function sessionAbs(dirName: string, file: string): string {
   return resolveSessionPath(dirName, file);
 }
 
+/** The `?session=dir/file` anchor both file routes resolve the same way. */
+function sessionAnchor(session: string | null): string | null {
+  if (!session || !session.includes("/")) return null;
+  const [dirName, file] = session.split("/");
+  return sessionAbs(dirName, file);
+}
+
 export function sessionRoutes(deps: SessionDeps): Route[] {
   return [
     {
@@ -228,13 +235,7 @@ export function sessionRoutes(deps: SessionDeps): Route[] {
       handler: ({ res, url }) => {
         const p = url.searchParams.get("path");
         if (!p) return sendError(res, 400, "path required");
-        const session = url.searchParams.get("session");
-        let abs: string | null = null;
-        if (session && session.includes("/")) {
-          const [dirName, file] = session.split("/");
-          abs = sessionAbs(dirName, file);
-        }
-        const content = readContent(p, deps.config, abs);
+        const content = readContent(p, deps.config, sessionAnchor(url.searchParams.get("session")));
         return sendJson(res, 200, content);
       },
     },
@@ -245,12 +246,7 @@ export function sessionRoutes(deps: SessionDeps): Route[] {
       handler: ({ res, url }) => {
         const p = url.searchParams.get("path");
         if (!p) return sendError(res, 400, "path required");
-        const session = url.searchParams.get("session");
-        let abs: string | null = null;
-        if (session && session.includes("/")) {
-          const [dirName, file] = session.split("/");
-          abs = sessionAbs(dirName, file);
-        }
+        const abs = sessionAnchor(url.searchParams.get("session"));
         try {
           const out = readPreview(p, deps.config, abs);
           res.writeHead(200, { "Content-Type": out.mime, "Cache-Control": "private, max-age=60" });

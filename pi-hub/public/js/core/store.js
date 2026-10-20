@@ -65,13 +65,10 @@ export const state = {
   contextUsage: null,
 
   /* composer */
-  commands: [],
   cwdFallback: null, // {from,to} when a session's folder was gone (R-10)
   serverCwd: null, // the hub's own working directory (R-10 fallback target)
   queue: [],
   pendingFiles: [],
-  images: [],
-  voice: false,
 
   prefs: Object.assign(
     { theme: null, showThinking: true, showCosts: true, expandTools: false, wrapCode: false },

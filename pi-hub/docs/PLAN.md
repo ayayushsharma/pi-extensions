@@ -1,7 +1,7 @@
 # pi-hub — implementation plan
 
 Status: **implemented (P0–P6)** (2026-10-18 overnight; updated 2026-10-21).
-Current gate: **69 unit · 90 integration · 170 Playwright** checks green
+Current gate: **70 unit · 90 integration · 170 Playwright** checks green
 (including one real model round-trip with `PI_HUB_E2E_PROMPT=1`); `--firefox`
 adds the zero-dependency CLI smoke (skips where system Firefox cannot render
 headless). As-built deltas from the original plan: `playwright-core` + a small
@@ -338,12 +338,12 @@ Deployment (myserver / Termux, per its AGENTS.md):
 | P6 | Real-pi end-to-end, Termux Firefox smoke (ADR-020), perf budgets, docs, myserver service | full suite `--project=real`; CP3/CP4 on the phone; manual smoke |
 | P7 | Flip: service + settings + README | tau-web removable; rollback documented |
 
-LOC budget (2026-10-21 actuals, after LoC batch 1: server ≈ 5.3k, client JS
-≈ 4.9k, CSS ≈ 1.6k, HTML ≈ 0.3k, tests ≈ 4.5k → **≈ 16.5k vs tau-web's
+LOC budget (2026-10-21 actuals, after LoC batch 2: server ≈ 5.2k, client JS
+≈ 4.8k, CSS ≈ 1.5k, HTML ≈ 0.3k, tests ≈ 4.5k → **≈ 16.3k vs tau-web's
 ≈ 23.8k incl. tests**). The 1.9k server budget is blown, hence the
 standing rule below. The client is less than half of tau-web's; the **server
-(5.3k) still exceeds tau-web's server (4.9k)** — every hardening batch piled
-lines onto the hub. `sessions.ts` is down to ~0.8k and falling.
+(5.2k) still exceeds tau-web's server (4.9k)** but the gap is closing
+(+430 → +239). `sessions.ts` is down to ~0.8k and falling.
 
 **Standing rule: product LoC goes down or stays flat.** Every remaining item
 below must pay for itself — implement it by deleting more than it adds
@@ -371,7 +371,7 @@ shape that fits the LoC rule.
 | D2 | `tests/cases.json` registry + meta-test absent; matrix enforced by review | **open** (Info) | Small JSON + one meta-test; pays by catching doc/test drift |
 | M1–M4 | Deferred tau-web features (KaTeX math, highlighting, TTS, PWA SW) | **deferred** | Only if wanted; each must fit the LoC rule or stay deferred |
 | P7 | Flip: runit service still runs old 0.1.0 build; tau-web is still live | **manual** | Deploy today's build, phone smoke (`testing.md` §5.4), then swap with rollback noted |
-| LoC | Server exceeds tau-web's server (5.3k vs 4.9k); `sessions.ts` ~0.8k | **open** (batch 1 done: −103 lines) | Keep unifying/dropping dead code; next candidates: `transcript.js`/`composer.js` overlap, CSS dedup; see §7 change log |
+| LoC | Server exceeds tau-web's server (5.2k vs 4.9k) | **open** (batches 1–2 done: −339 lines) | Keep unifying/dropping dead code; next candidates: app.js sections, CSS tokens; see §7 change log |
 
 Notes that used to live here and are now owned elsewhere:
 

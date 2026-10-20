@@ -47,12 +47,8 @@ export class Auth {
     this.ttlMs = ttlMs;
   }
 
-  get configured(): boolean {
-    return !!(this.user && this.pass);
-  }
-
   get enabled(): boolean {
-    return this.configured && this.enabledFlag;
+    return !!(this.user && this.pass) && this.enabledFlag;
   }
 
   /** Length-hiding compare: equal-length digests, so credential length does
@@ -147,11 +143,7 @@ export class Auth {
   }
 
   private ipOf(req: http.IncomingMessage): string {
-    try {
-      return req.socket.remoteAddress || "unknown";
-    } catch {
-      return "unknown";
-    }
+    return req.socket?.remoteAddress || "unknown";
   }
 
   private basicBackoffMs(fails: number): number {

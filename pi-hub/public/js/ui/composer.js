@@ -519,7 +519,6 @@ export function createComposer(refs, actions) {
       if (offered.length) levels = offered;
     } catch {}
     const current = state_.meta?.thinkingLevel || state_.bound?.thinkingLevel || "off";
-    refs.thinkingMenu.replaceChildren();
     for (const level of levels) {
       refs.thinkingMenu.append(
         el("button", {

@@ -99,10 +99,6 @@ export class Relay {
     }
   }
 
-  sendDrive(pid: number, command: any): boolean {
-    return this.deps.server.sendToPid(pid, { type: "drive", command });
-  }
-
   /**
    * Opt-in drive consent (PI_HUB_DRIVE_CONFIRM): ask the TUI user to confirm
    * a browser attach. Resolves false on deny, timeout, disconnect, or an old

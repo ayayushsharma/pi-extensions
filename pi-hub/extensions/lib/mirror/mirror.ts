@@ -7,7 +7,7 @@
 import * as fs from "node:fs";
 import { HubSocketClient } from "./socket.js";
 import { hubLog } from "../log.js";
-import { VALID_IMAGE_MIMES, randId } from "../protocol.js";
+import { isValidMessageImage, randId } from "../protocol.js";
 import type { HubConfig } from "../env.js";
 
 export class Mirror {
@@ -72,7 +72,6 @@ export class Mirror {
   }
 
   stop(): void {
-    const ctx = this.getCtx();
     try {
       this.client?.send({ type: "bye", pid: process.pid });
     } catch {}
@@ -80,7 +79,6 @@ export class Mirror {
     this.client = null;
     for (const [, resolve] of this.pendingDialogs) resolve({ cancelled: true });
     this.pendingDialogs.clear();
-    void ctx;
   }
 
   private sendHello(): void {
@@ -161,7 +159,9 @@ export class Mirror {
     }
   }
 
-  /** Browser owns dialogs while connected; otherwise native (single driver). */
+  /** Browser owns dialogs while connected; otherwise native (single driver).
+   *  The four methods share one shape — ask the browser, fall back to
+   *  native, map the answer — so they share one wrapper. */
   wrapDialogs(ctx: any): void {
     const ui = ctx?.ui;
     if (!ui || this.wrapped.has(ui)) return;
@@ -178,40 +178,31 @@ export class Mirror {
       } catch {}
       return promise;
     };
-    if (ui.select) {
-      const orig = ui.select.bind(ui);
-      ui.select = async (title: string, options: string[], opts?: any) => {
-        const p = ask("select", { title, options, timeout: opts?.timeout });
-        if (!p) return orig(title, options, opts);
-        const r = await p;
-        return r?.cancelled ? undefined : r?.value;
-      };
-    }
-    if (ui.confirm) {
-      const orig = ui.confirm.bind(ui);
-      ui.confirm = async (title: string, message: string, opts?: any) => {
-        const p = ask("confirm", { title, message, timeout: opts?.timeout });
-        if (!p) return orig(title, message, opts);
-        const r = await p;
-        return r?.cancelled ? false : !!r?.confirmed;
-      };
-    }
-    if (ui.input) {
-      const orig = ui.input.bind(ui);
-      ui.input = async (title: string, placeholder?: string, opts?: any) => {
-        const p = ask("input", { title, placeholder, timeout: opts?.timeout });
-        if (!p) return orig(title, placeholder, opts);
-        const r = await p;
-        return r?.cancelled ? undefined : r?.value;
-      };
-    }
-    if (ui.editor) {
-      const orig = ui.editor.bind(ui);
-      ui.editor = async (title: string, prefill?: string, opts?: any) => {
-        const p = ask("editor", { title, prefill, timeout: opts?.timeout });
-        if (!p) return orig(title, prefill, opts);
-        const r = await p;
-        return r?.cancelled ? undefined : r?.value;
+    const defs: Record<string, { fields: (a: any[]) => any; done: (r: any) => any }> = {
+      select: {
+        fields: ([title, options, opts]) => ({ title, options, timeout: opts?.timeout }),
+        done: (r) => (r?.cancelled ? undefined : r?.value),
+      },
+      confirm: {
+        fields: ([title, message, opts]) => ({ title, message, timeout: opts?.timeout }),
+        done: (r) => (r?.cancelled ? false : !!r?.confirmed),
+      },
+      input: {
+        fields: ([title, placeholder, opts]) => ({ title, placeholder, timeout: opts?.timeout }),
+        done: (r) => (r?.cancelled ? undefined : r?.value),
+      },
+      editor: {
+        fields: ([title, prefill, opts]) => ({ title, prefill, timeout: opts?.timeout }),
+        done: (r) => (r?.cancelled ? undefined : r?.value),
+      },
+    };
+    for (const [method, { fields, done }] of Object.entries(defs)) {
+      if (typeof ui[method] !== "function") continue;
+      const orig = ui[method].bind(ui);
+      ui[method] = async (...args: any[]) => {
+        const p = ask(method, fields(args));
+        if (!p) return orig(...args);
+        return done(await p);
       };
     }
   }
@@ -238,16 +229,11 @@ export class Mirror {
       { type: "text", text: message || "(see attached image)" },
     ];
     for (const img of images) {
-      if (!img || typeof img !== "object" || !VALID_IMAGE_MIMES.has(String(img.mimeType || ""))) {
-        hubLog(`mirror: dropping image with bad mimeType ${String(img?.mimeType)}`);
+      if (!isValidMessageImage(img)) {
+        hubLog(`mirror: dropping invalid image (mimeType ${String(img?.mimeType)})`);
         continue;
       }
-      const data = typeof img.data === "string" ? img.data : "";
-      if (!data || data.length > 8 * 1024 * 1024 || !/^[A-Za-z0-9+/]+={0,2}$/.test(data)) {
-        hubLog("mirror: dropping image with bad data");
-        continue;
-      }
-      content.push({ type: "image", data, mimeType: String(img.mimeType) });
+      content.push({ type: "image", data: img.data, mimeType: String(img.mimeType) });
     }
     return content.length > 1 ? content : message;
   }
@@ -255,6 +241,7 @@ export class Mirror {
   private execute(command: any): void {
     const ctx = this.getCtx();
     const pi = this.pi;
+    const fail = (e: any) => this.reply(command, undefined, e?.message || String(e));
     try {
       switch (command?.type) {
         case "prompt": {
@@ -294,13 +281,13 @@ export class Mirror {
         case "get_available_models":
           Promise.resolve(ctx?.modelRegistry?.getAvailable?.() ?? [])
             .then((models: any[]) => this.reply(command, { models }))
-            .catch((e: any) => this.reply(command, undefined, e?.message || String(e)));
+            .catch(fail);
           break;
         case "get_commands":
           try {
             this.reply(command, { commands: pi.getCommands?.() || [] });
           } catch (e: any) {
-            this.reply(command, undefined, e?.message || String(e));
+            fail(e);
           }
           break;
         case "get_messages": {
@@ -308,7 +295,7 @@ export class Mirror {
           try {
             this.reply(command, { entries: ctx.sessionManager?.getEntries?.() || [] });
           } catch (e: any) {
-            this.reply(command, undefined, e?.message || String(e));
+            fail(e);
           }
           break;
         }
@@ -336,7 +323,7 @@ export class Mirror {
               tokens: usage ? { input: usage.tokens, total: usage.tokens } : null,
             });
           } catch (e: any) {
-            this.reply(command, undefined, e?.message || String(e));
+            fail(e);
           }
           break;
         }
@@ -349,7 +336,7 @@ export class Mirror {
             if (Array.isArray(levels) && levels.length) return this.reply(command, { levels });
             return this.reply(command, undefined, "thinking levels unavailable for this session");
           } catch (e: any) {
-            return this.reply(command, undefined, e?.message || String(e));
+            return fail(e);
           }
         }
         case "clear_queue":
@@ -367,7 +354,7 @@ export class Mirror {
               if (!ok) return this.reply(command, undefined, "no API key for this model");
               this.reply(command, model);
             })
-            .catch((e: any) => this.reply(command, undefined, e?.message || String(e)));
+            .catch(fail);
           break;
         }
         case "set_thinking_level":
@@ -394,7 +381,7 @@ export class Mirror {
           this.reply(command, undefined, `unsupported command: ${command?.type}`);
       }
     } catch (e: any) {
-      this.reply(command, undefined, e?.message || String(e));
+      fail(e);
     }
   }
 }

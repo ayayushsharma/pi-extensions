@@ -20,8 +20,8 @@ suite cannot cheaply cover (singleton refusal, drive consent, frame caps).
 Suites are re-run after each batch; claims in this document are test-backed
 unless marked manual.
 
-Last verified: **69 unit · 90 integration · 170 Playwright** green (`--all`:
-328 checks: 327 pass, 1 Firefox SKIP), jiti load of every touched module (see §6).
+Last verified: **70 unit · 90 integration · 170 Playwright** green (`--all`:
+329 checks: 328 pass, 1 Firefox SKIP), jiti load of every touched module (see §6).
 
 ## 2. Verdict
 
@@ -133,7 +133,8 @@ model; keep loopback bind and strong credentials off-loopback.
 | 2 | `6fcff39` | R1–R5 from this review: history image normalization, composer allowlist + downscale + budgets + restore, consent window, `forceNative` reset, `stopped` reset; X10 semantics corrected and pinned; X21/X21c flood pins; E41–E43; docs (this file, README/PLAN/testing/UX counts and rows). |
 | 3 | `a0e25cc` | **Independence (ADR-022):** pi-hub owns its client/wire; tau-web aliases + third-gate harness dropped; deferred features M1–M4 recorded instead of implied; ADR-019 §4/§5 annotated; manifest `start_url` fixed to `/`; PLAN protocol table corrected to the real dialect (`subscribe`/`dialog_response` rows removed). |
 | 4 | `432a389` | **Server RAM + Termux:** append-aware session index (window reads 0.8 MB of a 31 MB file instead of all of it; cold 87 MB store +13 MB RSS instead of +200 MB; append listing reads only the 12 KB delta); history meta still exact (tokens/cost/title) from the index; Android process scan fixed (platform gate + argv fingerprint; `/proc` works in Termux); unit pins for both; docs. |
-| 5 | _(this change)_ | **LoC reduction, batch 1 (−103 product lines, 12,155 → 12,052):** `sessions.ts` 846 → 793 — one chunked line walker (`eachLine`) replaces `consume` + `forEachLineSync`, one shared `foldEntry` for index + search (titles now agree), `intact` reuses the fingerprint helpers, `isFlatDir`/`projectDirs` deduped, dead `readAll` + privatized internals; dropped dead routes `GET /api/projects` (superset: `/api/sessions`) and `GET /api/headless/status` (superset: `/api/runners`) — both zero callers, unpinned, absent from ADR-022's canonical list; dropped dead client helpers (`listProjects`, `sessionFileExists`, `listRunners`, `listInstances`, `headlessStatus`, `clientError`) + `debounce` + `runnerList` + `errorResponse`. Pinned routes (`/api/runners`, `/api/instances`, `/api/client-error` limiter, `/api/session-file-exists` canonical) untouched. Full gate green. |
+| 5 | `8220f51` | **LoC reduction, batch 1 (−103 product lines, 12,155 → 12,052):** `sessions.ts` 846 → 793 — one chunked line walker (`eachLine`) replaces `consume` + `forEachLineSync`, one shared `foldEntry` for index + search (titles now agree), `intact` reuses the fingerprint helpers, `isFlatDir`/`projectDirs` deduped, dead `readAll` + privatized internals; dropped dead routes `GET /api/projects` (superset: `/api/sessions`) and `GET /api/headless/status` (superset: `/api/runners`) — both zero callers, unpinned, absent from ADR-022's canonical list; dropped dead client helpers (`listProjects`, `sessionFileExists`, `listRunners`, `listInstances`, `headlessStatus`, `clientError`) + `debounce` + `runnerList` + `errorResponse`. Pinned routes (`/api/runners`, `/api/instances`, `/api/client-error` limiter, `/api/session-file-exists` canonical) untouched. Full gate green. |
+| 6 | _(this change)_ | **LoC reduction, batch 2 (−236 product lines, 12,052 → 11,816):** one `LineBuffer` (protocol.ts) replaces three NDJSON loops (RPC child, hub.sock server+client) with a unit pin; `mirror.messageContent` reuses `isValidMessageImage` instead of re-validating; dialog wrappers table-driven; one `fail` helper for 7 catch bodies; `probePort`/`probeSocket` share one prober; dead WS `instances` verb, `isDriver`/`driverId`/`broadcastDialog`, `sendDrive`, `pendingCount`, `HeadlessRunner.request`, `settled` emit, `hasClient`, `clientCount`, `configured`, dead CSS rules (banner-icon/brand-logo/cursor/fsize/fav-row/live-title/sr-only), 14 unused icons + shadowed `message` + 5 unused logo marks collapsed to one, dead `state.banner` branch, `offer`/`confirm` merged + dead `prompt`/`pending`, settings toggles table-driven, `shortCwd`/`shortenPath` share `collapseHome`, routes share `sessionAnchor`/`rootsFor`, unused mime rows/imports/exports dropped, 3 dead state fields. Deliberately NOT cut: sub-threshold dups (composer foot/search, transcript usage lines, registry pid loops — abstraction costs more than it saves), write-only `connState`/`authRequired` (entangled in live lines), pinned routes. Full gate green (70/90/170). |
 | next | — | H1, H2, H4, H5; P4 (client streaming render); decide H6 (trusted proxy) in an ADR; `tests/cases.json` + meta-test; pick up M1–M4 if wanted. |
 
 ## 8. Deferred scope & deliberate differences
@@ -150,7 +151,7 @@ registry, and the direct/hub-local channel.
 
 ```bash
 cd pi-hub && npm install
-node tests/run.mjs --unit          # 69 pure contracts
+node tests/run.mjs --unit          # 70 pure contracts
 node tests/run.mjs                 # 90 HTTP/WS checks (real pi, fake model)
 node tests/run.mjs --e2e           # 170 Playwright checks
 node tests/run.mjs --all -j1       # + Firefox smoke, serial logs

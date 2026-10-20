@@ -4,6 +4,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   isValidMessageImage,
+  LineBuffer,
   normalizePiEvent,
   sessionKey,
   streamDelta,
@@ -87,4 +88,14 @@ test("isRpcCommand gates the browser command vocabulary", () => {
   assert.equal(isRpcCommand({ type: 42 }), false);
   assert.equal(isRpcCommand(null), false);
   for (const forbidden of ["shutdown", "exec", "eval"]) assert.equal(RPC_COMMANDS.has(forbidden), false);
+});
+
+test("LineBuffer splits LF-JSONL the way all three transports need", () => {
+  const lb = new LineBuffer();
+  // split across chunks, CR tolerance, empty lines skipped
+  assert.deepEqual(lb.push('{"a":1}\n{"b"'), ['{"a":1}']);
+  assert.deepEqual(lb.push(':2}\n\n{"c":3}\r\n'), ['{"b":2}', '{"c":3}']);
+  // an unterminated tail waits for its newline
+  assert.deepEqual(lb.push('{"d":4}'), []);
+  assert.deepEqual(lb.push("\n"), ['{"d":4}']);
 });

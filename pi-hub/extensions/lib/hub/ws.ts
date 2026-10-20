@@ -94,13 +94,7 @@ export class WsHub {
       socket.destroy();
       return;
     }
-    const ip = (() => {
-      try {
-        return req.socket.remoteAddress || "unknown";
-      } catch {
-        return "unknown";
-      }
-    })();
+    const ip = req.socket?.remoteAddress || "unknown";
     const held = this.wsCountByIp.get(ip) || 0;
     if (held >= WsHub.MAX_WS_PER_IP) {
       hubLog(`ws upgrade refused: ${ip} holds ${held} sockets`);
@@ -213,11 +207,6 @@ export class WsHub {
     }
   }
 
-  /** Called by the relay when a mirror dialog arrives (not bound to a WS). */
-  broadcastDialog(frame: any): void {
-    this.broadcast(frame);
-  }
-
   private onConnection(ws: WebSocket): void {
     const client: Client = {
       id: this.nextId++,
@@ -231,7 +220,6 @@ export class WsHub {
       deltaTimer: null,
     };
     this.clients.add(client);
-    ws.on("pong", () => {});
     ws.on("message", (data) => this.onMessage(client, String(data)));
     ws.on("close", () => this.cleanup(client));
     ws.on("error", () => this.cleanup(client));
@@ -295,13 +283,6 @@ export class WsHub {
         case "extension_ui_response":
           this.deps.dialogs.resolve(msg.id || id, msg);
           return this.ack(client, id, { type: "ack" });
-        case "instances":
-          return this.ack(client, id, {
-            type: "response",
-            command: "instances",
-            success: true,
-            data: { instances: this.deps.registry.list().map((r) => r.info()) },
-          });
         default:
           return this.send(client, { type: "error", message: `unknown message type: ${msg.type}` });
       }
@@ -429,14 +410,7 @@ export class WsHub {
     }
   }
 
-  isDriver(runnerId: string, clientId: number): boolean {
-    return this.driverByRunner.get(runnerId)?.id === clientId;
-  }
-
-  driverId(runnerId: string): number | null {
-    return this.driverByRunner.get(runnerId)?.id ?? null;
-  }
-
+  /** Called by hub.ts when a runner is removed (driver mapping is by id). */
   noteRunnerRemoved(runnerId: string): void {
     this.driverByRunner.delete(runnerId);
   }

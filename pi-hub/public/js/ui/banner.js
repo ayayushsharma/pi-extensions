@@ -9,17 +9,6 @@ export function renderBanner(node, state, actions) {
   const bound = state.bound;
   show(node, false);
 
-  if (state.banner) {
-    const b = state.banner;
-    node.dataset.kind = b.kind || "info";
-    node.replaceChildren(
-      icon(b.icon || "info", 18),
-      el("div", { class: "banner-copy" }, el("div", { class: "banner-title", text: b.title }), b.sub ? el("div", { class: "banner-sub", text: b.sub }) : null),
-      ...(b.actions || []).map((a) => el("button", { class: `btn small${a.primary ? " primary" : ""}`, type: "button", onclick: a.onClick, text: a.label })),
-    );
-    return show(node, true);
-  }
-
   if (!bound) return;
 
   // R-10: the session's folder no longer exists — tools run in the fallback.

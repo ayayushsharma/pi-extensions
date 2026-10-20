@@ -3,7 +3,7 @@
  * a no-op; a running agent is never switched; the pool cap evicts idle only.
  */
 import * as fs from "node:fs";
-import { basename, resolve } from "node:path";
+import { resolve } from "node:path";
 import { hubLog } from "../log.js";
 import { sessionCwd } from "../store/sessions.js";
 import { HeadlessRunner, assertValidCwd } from "./headless.js";

@@ -65,8 +65,7 @@ export function createTabs({ strip, newBtn }, actions) {
               e.stopPropagation();
               actions.closeTab(tab.key);
             },
-            html: '<svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>',
-          }),
+          }, icon("x", 11)),
         );
         strip.append(node);
       }

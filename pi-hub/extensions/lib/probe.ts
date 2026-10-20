@@ -7,10 +7,9 @@
  */
 import * as net from "node:net";
 
-export function probePort(host: string, port: number, timeoutMs = 800): Promise<boolean> {
+function probe(connect: () => net.Socket, timeoutMs: number): Promise<boolean> {
   return new Promise((resolve) => {
-    if (!Number.isInteger(port) || port <= 0 || port > 65535) return resolve(false);
-    const sock = net.connect({ host, port });
+    const sock = connect();
     let done = false;
     const finish = (alive: boolean) => {
       if (done) return;
@@ -26,20 +25,11 @@ export function probePort(host: string, port: number, timeoutMs = 800): Promise<
   });
 }
 
+export function probePort(host: string, port: number, timeoutMs = 800): Promise<boolean> {
+  if (!Number.isInteger(port) || port <= 0 || port > 65535) return Promise.resolve(false);
+  return probe(() => net.connect({ host, port }), timeoutMs);
+}
+
 export function probeSocket(sockPath: string, timeoutMs = 600): Promise<boolean> {
-  return new Promise((resolve) => {
-    const sock = net.connect(sockPath);
-    let done = false;
-    const finish = (alive: boolean) => {
-      if (done) return;
-      done = true;
-      try {
-        sock.destroy();
-      } catch {}
-      resolve(alive);
-    };
-    sock.once("connect", () => finish(true));
-    sock.once("error", () => finish(false));
-    setTimeout(() => finish(false), timeoutMs).unref?.();
-  });
+  return probe(() => net.connect(sockPath), timeoutMs);
 }

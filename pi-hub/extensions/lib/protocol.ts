@@ -24,6 +24,25 @@ export function isValidMessageImage(img: any): boolean {
  *  this bounds downstream fan-out (child, relay, every viewer). */
 export const MAX_COMMAND_IMAGES = 10;
 
+/** LF-JSONL line splitter (ADR-003 framing): feed byte chunks, take complete
+ *  lines. The RPC child stdout reader and both hub.sock ends share it so the
+ *  CR-strip / trim / empty-skip rules cannot drift apart again. */
+export class LineBuffer {
+  private buf = "";
+  push(chunk: string): string[] {
+    this.buf += chunk;
+    const out: string[] = [];
+    let idx = this.buf.indexOf("\n");
+    while (idx >= 0) {
+      const line = this.buf.slice(0, idx).replace(/\r$/, "").trim();
+      this.buf = this.buf.slice(idx + 1);
+      if (line) out.push(line);
+      idx = this.buf.indexOf("\n");
+    }
+    return out;
+  }
+}
+
 /**
  * Validate the `images` payload of a prompt/steer/follow_up command.
  * Strict on purpose (raw base64 only, no data: URLs): a client bug must

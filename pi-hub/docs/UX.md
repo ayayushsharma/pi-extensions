@@ -207,7 +207,7 @@ this section is the short version for a fresh session.
 
 ### Verified green
 
-- Unit **68 tests + ISO store check** (`node tests/run.mjs --unit` reports 69/69,
+- Unit **69 tests + ISO store check** (`node tests/run.mjs --unit` reports 70/70,
   ≈2 s; store index + Termux `/proc` pins included)
 - Integration **90/90** (HTTP/WS against a real `pi`, fake model, sandboxed store)
 - E2E **170/170** in **12 groups** (core, live, close, panels, tabs, models,
@@ -229,6 +229,10 @@ this section is the short version for a fresh session.
   unified session-store walker/fold, dropped dead routes (`/api/projects`,
   `/api/headless/status`) and dead client helpers; standing LoC rule recorded
   in PLAN §7 with the remaining-work register.
+- **Working tree (this batch)**: LoC reduction batch 2 (−236 product lines) —
+  shared LineBuffer/protocol validation/prober, dead WS verb + methods +
+  icons + marks + CSS + dialog/state cleanup; composer/transcript/sidebar
+  reviewed and kept (below abstraction threshold).
 - **Docs**: `docs/code-review.md` is the single home for findings and their
   status (P2/P3/F1 fixed, P4 open); README/PLAN/testing counts and claims
   were corrected to match.

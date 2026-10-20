@@ -89,6 +89,22 @@ export function createDialogs(container, sendResponse, actions = {}) {
     answer(id, { cancelled: true });
   }
 
+  /** Two-button choice; offer/confirm differ only in labels and danger. */
+  function choice(title, message, { confirmLabel, cancelLabel = "Cancel", danger = false }) {
+    return new Promise((resolve) => {
+      container.append(
+        frame({
+          title,
+          message,
+          actions: [
+            el("button", { class: "btn small", type: "button", text: cancelLabel, onclick: () => { close(); resolve(false); } }),
+            el("button", { class: `btn small ${danger ? "danger" : "primary"}`, type: "button", text: confirmLabel, onclick: () => { close(); resolve(true); } }),
+          ],
+        }),
+      );
+    });
+  }
+
   function handleEvent(event) {
     if (event?.type !== "extension_ui_request") return false;
     if (event.method === "notify") {
@@ -108,56 +124,11 @@ export function createDialogs(container, sendResponse, actions = {}) {
     handleEvent,
     /** Continue/Cancel decision with caller-supplied labels (R-10 flow). */
     offer(title, message, { confirmLabel = "Continue", cancelLabel = "Cancel" } = {}) {
-      return new Promise((resolve) => {
-        container.append(
-          frame({
-            title,
-            message,
-            actions: [
-              el("button", { class: "btn small", type: "button", text: cancelLabel, onclick: () => { close(); resolve(false); } }),
-              el("button", { class: "btn small primary", type: "button", text: confirmLabel, onclick: () => { close(); resolve(true); } }),
-            ],
-          }),
-        );
-      });
+      return choice(title, message, { confirmLabel, cancelLabel });
     },
     confirm(title, message) {
-      return new Promise((resolve) => {
-        container.append(
-          frame({
-            title,
-            message,
-            actions: [
-              el("button", { class: "btn small", type: "button", text: "Cancel", onclick: () => { close(); resolve(false); } }),
-              el("button", { class: "btn small danger", type: "button", text: "Confirm", onclick: () => { close(); resolve(true); } }),
-            ],
-          }),
-        );
-      });
-    },
-    prompt(title, prefill = "") {
-      return new Promise((resolve) => {
-        const input = el("input", { type: "text", value: prefill, "aria-label": title });
-        input.addEventListener("keydown", (e) => {
-          if (e.key === "Enter") { const v = input.value; close(); resolve(v); }
-          if (e.key === "Escape") { close(); resolve(null); }
-        });
-        container.append(
-          frame({
-            title,
-            body: input,
-            actions: [
-              el("button", { class: "btn small", type: "button", text: "Cancel", onclick: () => { close(); resolve(null); } }),
-              el("button", { class: "btn small primary", type: "button", text: "OK", onclick: () => { const v = input.value; close(); resolve(v); } }),
-            ],
-          }),
-        );
-        queueMicrotask(() => input.focus());
-      });
+      return choice(title, message, { confirmLabel: "Confirm", danger: true });
     },
     close,
-    get pending() {
-      return container.childElementCount;
-    },
-  };
+}
 }

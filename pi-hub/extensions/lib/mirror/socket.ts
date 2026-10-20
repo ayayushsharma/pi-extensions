@@ -12,12 +12,11 @@ import * as net from "node:net";
 import * as path from "node:path";
 import { hubLog } from "../log.js";
 import { probeSocket } from "../probe.js";
-
-export { probeSocket };
+import { LineBuffer } from "../protocol.js";
 
 interface Conn {
   socket: net.Socket;
-  buffer: string;
+  lines: LineBuffer;
   pid?: number;
 }
 
@@ -63,25 +62,18 @@ export class HubSocketServer extends EventEmitter {
   }
 
   private onConnection(socket: net.Socket): void {
-    const conn: Conn = { socket, buffer: "" };
+    const conn: Conn = { socket, lines: new LineBuffer() };
     this.conns.add(conn);
     socket.setEncoding("utf8");
     socket.on("data", (chunk: string) => {
-      conn.buffer += chunk;
-      let idx = conn.buffer.indexOf("\n");
-      while (idx >= 0) {
-        const line = conn.buffer.slice(0, idx).replace(/\r$/, "").trim();
-        conn.buffer = conn.buffer.slice(idx + 1);
-        if (line) {
-          try {
-            const frame = JSON.parse(line);
-            if (frame && typeof frame.pid === "number") conn.pid = frame.pid;
-            this.emit("frame", frame, (reply: any) => this.sendTo(conn, reply));
-          } catch {
-            hubLog("socket: malformed frame dropped");
-          }
+      for (const line of conn.lines.push(chunk)) {
+        try {
+          const frame = JSON.parse(line);
+          if (frame && typeof frame.pid === "number") conn.pid = frame.pid;
+          this.emit("frame", frame, (reply: any) => this.sendTo(conn, reply));
+        } catch {
+          hubLog("socket: malformed frame dropped");
         }
-        idx = conn.buffer.indexOf("\n");
       }
     });
     const drop = () => {
@@ -109,14 +101,6 @@ export class HubSocketServer extends EventEmitter {
     return false;
   }
 
-  broadcast(frame: any): void {
-    for (const conn of this.conns) this.sendTo(conn, frame);
-  }
-
-  count(): number {
-    return this.conns.size;
-  }
-
   stop(): void {
     for (const conn of this.conns) {
       try {
@@ -139,7 +123,7 @@ export class HubSocketServer extends EventEmitter {
 export class HubSocketClient extends EventEmitter {
   connected = false;
   private socket: net.Socket | null = null;
-  private buffer = "";
+  private lines = new LineBuffer();
   private stopped = false;
   private retryMs = 1000;
 
@@ -188,17 +172,10 @@ export class HubSocketClient extends EventEmitter {
       this.emit("connected");
     });
     socket.on("data", (chunk: string) => {
-      this.buffer += chunk;
-      let idx = this.buffer.indexOf("\n");
-      while (idx >= 0) {
-        const line = this.buffer.slice(0, idx).replace(/\r$/, "").trim();
-        this.buffer = this.buffer.slice(idx + 1);
-        if (line) {
-          try {
-            this.emit("frame", JSON.parse(line));
-          } catch {}
-        }
-        idx = this.buffer.indexOf("\n");
+      for (const line of this.lines.push(chunk)) {
+        try {
+          this.emit("frame", JSON.parse(line));
+        } catch {}
       }
     });
     socket.on("close", () => {

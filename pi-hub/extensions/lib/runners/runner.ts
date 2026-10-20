@@ -29,7 +29,6 @@ export interface RunnerInfo {
   thinkingLevel?: string | null;
   viewers: number;
   lastActiveAt: number;
-  clientCount: number;
 }
 
 export type RunnerFrame = { runnerId: string; seq: number; event: any };
@@ -81,7 +80,6 @@ export abstract class Runner {
       thinkingLevel: this.thinkingLevel,
       viewers: this.clients.size,
       lastActiveAt: this.lastActiveAt,
-      clientCount: this.clients.size,
     };
   }
 
@@ -126,10 +124,6 @@ export abstract class Runner {
 
   viewers(): number {
     return this.clients.size;
-  }
-
-  hasClient(ws: unknown): boolean {
-    return this.clients.has(ws);
   }
 
   protected applyStatusHints(event: any): void {

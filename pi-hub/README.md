@@ -152,7 +152,7 @@ node tests/run.mjs --all        # + Firefox CLI smoke (cross-platform, ADR-020)
 node tests/run.mjs --all -j1    # serial, deterministic logs/timings
 ```
 
-Current: **69 unit + 90 integration + 170 Playwright checks green**; the Firefox
+Current: **70 unit + 90 integration + 170 Playwright checks green**; the Firefox
 CLI smoke SKIPs on hosts whose system Firefox cannot render headless (it is the
 Termux/Android backend — Playwright's bundled Chromium cannot run there).
 Known unpinned items and open findings live in `docs/code-review.md` §4 — the

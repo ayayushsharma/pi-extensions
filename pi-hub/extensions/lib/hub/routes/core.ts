@@ -69,12 +69,9 @@ export function coreRoutes(deps: CoreDeps): Route[] {
         try {
           // Secure flag only over TLS (loopback stays plain HTTP; a TLS
           // terminator sets X-Forwarded-Proto or the socket is encrypted).
-          let secure = false;
-          try {
-            secure =
-              !!(req.socket as any)?.encrypted ||
-              String(req.headers["x-forwarded-proto"] || "").split(",")[0].trim().toLowerCase() === "https";
-          } catch {}
+          const secure =
+            !!(req.socket as any)?.encrypted ||
+            String(req.headers["x-forwarded-proto"] || "").split(",")[0].trim().toLowerCase() === "https";
           const cookie = auth.login(String(body.user || ""), String(body.pass || ""), secure);
           auth.clearFailures(ip);
           res.setHeader("Set-Cookie", cookie);
@@ -100,10 +97,7 @@ export function coreRoutes(deps: CoreDeps): Route[] {
       path: "/api/client-error",
       auth: true,
       handler: async ({ req, res }) => {
-        let ip = "unknown";
-        try {
-          ip = req.socket.remoteAddress || "unknown";
-        } catch {}
+        const ip = req.socket?.remoteAddress || "unknown";
         if (!clientErrorAllowed(ip)) {
           res.writeHead(429);
           res.end();

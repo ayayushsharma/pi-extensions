@@ -103,26 +103,18 @@ export function createSettings(refs, actions) {
     actions.applyPrefs?.();
   }
 
-  refs.thinkingToggle.addEventListener("change", () => {
-    state.prefs.showThinking = refs.thinkingToggle.checked;
-    savePrefs();
-    applyPrefs();
-  });
-  refs.costsToggle.addEventListener("change", () => {
-    state.prefs.showCosts = refs.costsToggle.checked;
-    savePrefs();
-    applyPrefs();
-  });
-  refs.toolsToggle.addEventListener("change", () => {
-    state.prefs.expandTools = refs.toolsToggle.checked;
-    savePrefs();
-    applyPrefs();
-  });
-  refs.wrapToggle.addEventListener("change", () => {
-    state.prefs.wrapCode = refs.wrapToggle.checked;
-    savePrefs();
-    applyPrefs();
-  });
+  for (const [toggle, key] of [
+    [refs.thinkingToggle, "showThinking"],
+    [refs.costsToggle, "showCosts"],
+    [refs.toolsToggle, "expandTools"],
+    [refs.wrapToggle, "wrapCode"],
+  ]) {
+    toggle.addEventListener("change", () => {
+      state.prefs[key] = toggle.checked;
+      savePrefs();
+      applyPrefs();
+    });
+  }
 
   refs.close.addEventListener("click", () => show(refs.root, false));
   refs.root.addEventListener("click", (e) => {

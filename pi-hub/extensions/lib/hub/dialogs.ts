@@ -53,8 +53,4 @@ export class DialogBroker {
       }
     }
   }
-
-  pendingCount(): number {
-    return this.pending.size;
-  }
 }

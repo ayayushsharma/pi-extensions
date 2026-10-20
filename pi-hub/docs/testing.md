@@ -10,9 +10,9 @@ printed case names, not by a meta-test. When in doubt, grep the case ID in
 
 ### As built (2026-10-21)
 
-- Counts: **60 unit**, **90 integration**, **170 Playwright** (`--e2e`, 12
+- Counts: **69 unit**, **90 integration**, **170 Playwright** (`--e2e`, 12
 groups: core, live, close, panels, tabs, models, chrome, detail, deadcwd,
-steer, auth, images). `--all` reports **320 checks** (319 pass, 1 documented
+steer, auth, images). `--all` reports **328 checks** (327 pass, 1 documented
 skip — the Firefox CLI smoke when the host's Firefox cannot render headless).
 - **Parallelism is a knob**: `-j N` / `--jobs N` (or `--serial`), default
   `min(4, cpus)`. Groups are independent (own hub, own store copy, own page),
@@ -251,7 +251,7 @@ WS is filtered only in layer-A cases.
 | X9 | JS injection via tool/output fields | Rendered as text; no event-handler attributes |
 | X10 | WS oversized frame | 2 MB `maxPayload` closes the socket (1009) and the hub stays healthy; clients must fit the budget — composer downscales attachments (E42, integration X10) |
 | X11 | Slow consumer | Backpressure drop, no unbounded hub memory (S10) |
-| X12 | Process kill | Fingerprint fail-closed; stale pid 404; self/pid≤1 refused (ADR-013) |
+| X12 | Process kill | Fingerprint fail-closed (argv/`exe`, Linux + Android); stale pid 404; self/pid≤1 refused (ADR-013) |
 | X13 | Dead frames | Unknown WS type ignored silently, no error spam (P2/D1) |
 | X14 | `export_html` path | Client path jailed to session store, outside refused (S3; X20) |
 | X15 | CSP without inline scripts | Boot works with `script-src 'self'` |

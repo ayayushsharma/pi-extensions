@@ -1,7 +1,7 @@
 # pi-hub — implementation plan
 
 Status: **implemented (P0–P6)** (2026-10-18 overnight; updated 2026-10-21).
-Current gate: **60 unit · 90 integration · 170 Playwright** checks green
+Current gate: **69 unit · 90 integration · 170 Playwright** checks green
 (including one real model round-trip with `PI_HUB_E2E_PROMPT=1`); `--firefox`
 adds the zero-dependency CLI smoke (skips where system Firefox cannot render
 headless). As-built deltas from the original plan: `playwright-core` + a small
@@ -149,9 +149,9 @@ extensions/lib/
     mirror.ts        dials hub.sock; forwards events; executes drive/dialog
     socket.ts        NDJSON over unix socket; stale-socket detection
   store/
-    sessions.ts      list / parse (mtime+size cache) / window / fork / rename
+    sessions.ts      list / window / fork / rename over an append-aware index
     files.ts         browse roots, realpath jails, mime, preview, mkdir
-  processes.ts       /proc scan + TERM→KILL (ADR-013)
+  processes.ts       /proc scan (Linux + Android) + TERM→KILL (ADR-013)
 ```
 
 ### 3.1 The Runner contract
@@ -265,8 +265,11 @@ Port the tau-web posture and fix its findings by construction:
 - export writes only under the session store with generated names (S3).
 - Body caps on every POST (S5), beacon rate limit (S7), WS `maxPayload` +
   backpressure drop (S10), bounded maps (S9).
-- Process kill keeps the fingerprint rules (ADR-013): basename exactly
-  `pi`, re-checked at kill time, never self, never pid ≤ 1.
+- Process kill keeps the fingerprint rules (ADR-013): argv or `exe` must be
+  pi (argv[0] `pi`, a `pi-coding-agent` install path, `bundle/cli.js`,
+  `bin/pi`, or the `pi-node.sh` wrapper), re-checked at kill time; never
+  self, never pid ≤ 1. The scan works on Linux and Android/Termux (`/proc`);
+  other platforms report unsupported.
 
 ## 5. Performance budgets (the box is a Galaxy F12, ~2 GB free)
 
@@ -276,14 +279,20 @@ Port the tau-web posture and fix its findings by construction:
 | 3 headless children | fits `PI_HUB_MAX_HEADLESS=3`; eviction never kills a run |
 | `GET /api/runners` warm | < 30 ms, never parses all session files |
 | `GET .../history` first window | tail-read only; < 50 ms for a 10k-entry file |
+| History read after the first | reads only the tail lines (a 39 MB session ⇒ < 1 MB window) |
+| Listing after an append | reads only the appended bytes; no full re-parse of the growing file |
 | Stream fan-out | delta coalescing ≈ 25–40 ms; no per-token WS frames |
 | Client first interactive (warm cache, local) | < 1 s; parser budget < 300 ms JS |
 | Phone UX | 390 px first, no layout thrash (`contain` on rows), one scroller |
 | Network | push updates, zero periodic session-store polling; health check only while visible |
 
-Session-store cache: `(path, mtimeMs, size)`, 15 s TTL, invalidated on
-rename/fork/mkdir; project summaries parsed lazily; `/api/runners` is
-metadata only.
+Session-store index: append-aware, per file — inode + head/tail fingerprints,
+256 KB streaming chunks, and a 4096-line offset ring. Totals (tokens, cost),
+title, model, thinking level and the entry count are updated incrementally as
+bytes are appended; a listing reads only the delta since the last call, and a
+history window reads only the lines it returns. First touch after hub start
+streams the file once (CPU O(file), RAM constant) and is then cached; a
+truncate/rewrite is detected and rebuilt. `/api/runners` stays metadata-only.
 
 ## 6. Coexistence & deployment
 
@@ -334,8 +343,13 @@ tests ≈ 2.4k → **≈ 10k vs tau-web's ≈ 23.6k incl. tests**.
 
 ## 7.1 Known gaps (next session)
 
-- History `readWindow` still reads the whole JSONL; the P3 tail-read budget
-  is not met yet. Session list caching is in place (`mtime+size`, 15 s TTL).
+- History and listing are served from the incremental index above: a window
+  reads only its tail lines, and appends cost the appended bytes. The one
+  remaining cost is the first scan after start (≈0.3 s per 87 MB on the dev
+  box; constant RAM), which still blocks the event loop while it runs.
+- Streaming is still re-rendered as full markdown per frame in the browser
+  (≈0.5 s of CPU on a 20k-char message); that is a client concern, tracked as
+  P4 in `code-review.md` and not part of the server RAM fix.
 - Reconnect re-binds and refetches the window; per-runner sequence numbers are
   now tracked client-side and sent as `sinceSeq`, so the 200-event ring
   replays the gap on the next frame (H10b).

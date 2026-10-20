@@ -20,8 +20,8 @@ suite cannot cheaply cover (singleton refusal, drive consent, frame caps).
 Suites are re-run after each batch; claims in this document are test-backed
 unless marked manual.
 
-Last verified: **60 unit · 90 integration · 170 Playwright** green (`--all`:
-320 checks, 1 Firefox SKIP), jiti load of 15 touched modules (see §6).
+Last verified: **69 unit · 90 integration · 170 Playwright** green (`--all`:
+328 checks: 327 pass, 1 Firefox SKIP), jiti load of every touched module (see §6).
 
 ## 2. Verdict
 
@@ -69,6 +69,10 @@ inside that shape, not another rewrite.
 | R4 | Low | A synchronous throw from a custom `ui.confirm` left `forceNative` stuck, disabling browser dialogs for the session | **Fixed** | `mirror.test.ts` |
 | R5 | Low | `Hub.stop()`/`start()` reuse could leave the advert claim and an unclosed server after a failed restart | **Fixed** (latent, single-use in practice) | — |
 | P1 | Low | Search read every session file per request; export download buffered the whole file | **Fixed** (file/budget caps, streamed download) | `store.test.ts`, X20 |
+| P2 | High | History and listing parsed the **whole** JSONL every time: a 39 MB session cost ~+120 MB hub RSS (HWM 479 MB on a 3.7 GB phone) and a cold 99 MB store listing +200 MB | **Fixed** (append-aware per-file index; windows read tail lines, first touch streams in 256 KB chunks) | `store.test.ts` (incremental/partial/truncate/deep) |
+| P3 | High | The actively-growing session was re-parsed on **every token**: the summary cache keyed `(mtime,size)`, so each append invalidated the entry | **Fixed** (index consumes appended bytes only; a 12 KB append reads 12 KB) | `store.test.ts` |
+| P4 | Med | Streaming re-renders the full markdown per frame in the **browser** (533 ms vs 2.6 ms for 20k chars as plain text) — client CPU, not hub RAM | **Open** (deferred; safe to do after the server fix) | — |
+| F1 | Med | Process panel said "not supported on this platform" on the homeserver: Node reports `process.platform === "android"` on Termux, and pi's argv[0] is `node`/`sh`, never `pi` | **Fixed** (Linux+Android gate; argv/`exe` fingerprint: `pi-coding-agent` path, `bundle/cli.js`, `bin/pi`, `pi-node.sh`) | `processes.test.ts` |
 | D1 | Info | Spawn throttle has no test (needs 21 real children) | **Open (manual)** | — |
 | D2 | Info | `tests/cases.json` registry + meta-test still absent, so the matrix is enforced by review, not by CI | **Open** | — |
 | D3 | Info | Firefox CLI smoke SKIPs on hosts whose system Firefox cannot render headless | **Environmental** | FC0 |
@@ -109,6 +113,13 @@ model; keep loopback bind and strong credentials off-loopback.
 - The case matrix in `testing.md` is now accurate about semantics (X10 closes
   with 1009 rather than staying alive) and about what is unpinned (spawn
   throttle, drive-consent timeout leg).
+- Store pins: an append reads only the appended bytes (12 KB append ⇒ 12 KB),
+  an unterminated trailing line stays invisible until its newline arrives, a
+  truncate/rewrite rebuilds instead of serving stale totals, and paging older
+  than the 4096-line offset ring still returns the right window.
+  `processes.test.ts` builds a fake `/proc` and pins the Termux argv shapes
+  (`node …/pi-coding-agent/…`, `sh …/pi-node.sh`, `bun`, `node …/bundle/cli.js`)
+  and that `node app.js` never matches.
 - Firefox CLI smoke requires a system Firefox that can render headless
   (`--dump-dom`); it SKIPs with a reason elsewhere (CP2/CP6).
 - Manual per release: phone smoke (`testing.md` §5.4), UI parity screenshots,
@@ -120,8 +131,9 @@ model; keep loopback bind and strong credentials off-loopback.
 |---|---|---|
 | 1 | `26a0a7a` | Singleton (ADR-021); live parity + single-driver enforcement; security hardening (S2/S3/S4/S7/S9/S10/S12/S14 equivalents, A8/A9, cookies, floods, topology scrub, drive consent); caps (search/fence/export); ADR-019 amendment; matrix X17–X22, A2/A4–A9 corrected. |
 | 2 | `6fcff39` | R1–R5 from this review: history image normalization, composer allowlist + downscale + budgets + restore, consent window, `forceNative` reset, `stopped` reset; X10 semantics corrected and pinned; X21/X21c flood pins; E41–E43; docs (this file, README/PLAN/testing/UX counts and rows). |
-| 3 | _(this change)_ | **Independence (ADR-022):** pi-hub owns its client/wire; tau-web aliases + third-gate harness dropped; deferred features M1–M4 recorded instead of implied; ADR-019 §4/§5 annotated; manifest `start_url` fixed to `/`; PLAN protocol table corrected to the real dialect (`subscribe`/`dialog_response` rows removed). |
-| next | — | H1, H2, H4, H5; decide H6 (trusted proxy) in an ADR; `tests/cases.json` + meta-test; pick up M1–M4 if wanted. |
+| 3 | `a0e25cc` | **Independence (ADR-022):** pi-hub owns its client/wire; tau-web aliases + third-gate harness dropped; deferred features M1–M4 recorded instead of implied; ADR-019 §4/§5 annotated; manifest `start_url` fixed to `/`; PLAN protocol table corrected to the real dialect (`subscribe`/`dialog_response` rows removed). |
+| 4 | _(this change)_ | **Server RAM + Termux:** append-aware session index (window reads 0.8 MB of a 31 MB file instead of all of it; cold 87 MB store +13 MB RSS instead of +200 MB; append listing reads only the 12 KB delta); history meta still exact (tokens/cost/title) from the index; Android process scan fixed (platform gate + argv fingerprint; `/proc` works in Termux); unit pins for both; docs. |
+| next | — | H1, H2, H4, H5; P4 (client streaming render); decide H6 (trusted proxy) in an ADR; `tests/cases.json` + meta-test; pick up M1–M4 if wanted. |
 
 ## 8. Deferred scope & deliberate differences
 
@@ -137,7 +149,7 @@ registry, and the direct/hub-local channel.
 
 ```bash
 cd pi-hub && npm install
-node tests/run.mjs --unit          # 60 pure contracts
+node tests/run.mjs --unit          # 69 pure contracts
 node tests/run.mjs                 # 90 HTTP/WS checks (real pi, fake model)
 node tests/run.mjs --e2e           # 170 Playwright checks
 node tests/run.mjs --all -j1       # + Firefox smoke, serial logs

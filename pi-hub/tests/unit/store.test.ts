@@ -78,6 +78,80 @@ test("forkSession copies bytes and leaves the original alone", () => {
   assert.ok(fs.readFileSync(src).equals(before));
 });
 
+test("readWindow stays incremental when a session grows (and totals follow)", () => {
+  const dir = "--tmp-unit-incremental--";
+  const file = writeSession({ dirName: dir, file: "grow.jsonl", entries: [userMessage("first", "g0")] });
+  const a = store.readWindow(file, 10, null);
+  const scans = store.sessionStoreStats.fullScans;
+  const bytes = store.sessionStoreStats.incrementalBytes;
+  assert.equal(a.entries.at(-1).id, "g0");
+  assert.equal(a.meta.total, 2);
+
+  const added = [
+    userMessage("second", "g1"),
+    { type: "message", id: "g2", parentId: "g1", timestamp: "2026-01-01T00:00:02.000Z", message: { role: "assistant", content: [{ type: "text", text: "ok" }], usage: { totalTokens: 42, cost: { total: 0.5 } } } },
+  ];
+  const raw = added.map((e) => JSON.stringify(e)).join("\n") + "\n";
+  fs.appendFileSync(file, raw);
+
+  const b = store.readWindow(file, 10, null);
+  assert.equal(store.sessionStoreStats.fullScans, scans, "no full re-scan for an append");
+  assert.equal(store.sessionStoreStats.incrementalBytes - bytes, raw.length, "only the appended bytes are read");
+  assert.equal(b.entries.at(-1).id, "g2");
+  assert.equal(b.meta.total, 4);
+  assert.equal(b.meta.tokens, 42);
+  assert.equal(b.meta.cost, 0.5);
+
+  const [summary] = store.listSessions(dir);
+  assert.equal(summary.entryCount, 4);
+  assert.equal(summary.tokens, 42);
+  assert.equal(summary.cost, 0.5);
+
+  // An unchanged listing re-reads nothing.
+  const before = store.sessionStoreStats.incrementalBytes;
+  store.listSessions(dir);
+  assert.equal(store.sessionStoreStats.incrementalBytes, before);
+});
+
+test("an unterminated trailing line is not counted until it is complete", () => {
+  const dir = "--tmp-unit-partial--";
+  const file = writeSession({ dirName: dir, file: "partial.jsonl", entries: [userMessage("one", "p0")] });
+  assert.equal(store.readWindow(file, 10, null).meta.total, 2);
+  const extra = JSON.stringify(userMessage("two", "p1"));
+  fs.appendFileSync(file, extra); // no newline yet: a writer is mid-line
+  assert.equal(store.readWindow(file, 10, null).meta.total, 2, "partial line ignored");
+  fs.appendFileSync(file, "\n");
+  assert.equal(store.readWindow(file, 10, null).meta.total, 3);
+  assert.equal(store.readWindow(file, 10, null).entries.at(-1).id, "p1");
+});
+
+test("truncate/rewrite is detected and rebuilt, not served stale", () => {
+  const dir = "--tmp-unit-rewrite--";
+  const file = writeSession({ dirName: dir, file: "rewrite.jsonl", entries: Array.from({ length: 8 }, (_, i) => userMessage(`old-${i}`, `r${i}`)) });
+  assert.equal(store.readWindow(file, 20, null).meta.total, 9);
+  // Same inode, smaller: a truncate + rewrite (e.g. export/relocate tooling).
+  writeSession({ dirName: dir, file: "rewrite.jsonl", entries: [userMessage("new text", "n0")] });
+  const win = store.readWindow(file, 20, null);
+  assert.equal(win.meta.total, 2);
+  assert.deepEqual(win.entries.map((e) => e.id), ["unit-1", "n0"]);
+  assert.equal(store.listSessions(dir)[0].title, "new text");
+});
+
+test("paging older than the offset ring still returns the right window", () => {
+  const dir = "--tmp-unit-deep--";
+  const total = 4200; // > OFFSET_RING (4096)
+  const entries = Array.from({ length: total }, (_, i) => userMessage(`deep-${i}`, `d${i}`));
+  const file = writeSession({ dirName: dir, file: "deep.jsonl", entries });
+  const tail = store.readWindow(file, 5, null);
+  assert.equal(tail.entries.at(-1).id, `d${total - 1}`);
+  // The ring keeps the last 4096 lines (d104… on), so d100 is out of reach and
+  // the streaming fallback has to find it.
+  const older = store.readWindow(file, 5, "d100");
+  assert.deepEqual(older.entries.map((e) => e.id), ["d95", "d96", "d97", "d98", "d99"]);
+  assert.equal(store.windowInfo(file).total, total + 1);
+});
+
+
 test("relocateSession rewrites the cwd header only (R-10)", () => {
   const target = fs.mkdtempSync(path.join(ROOT, "relocated-"));
   const src = path.join(ROOT, PROJECT, FILE);

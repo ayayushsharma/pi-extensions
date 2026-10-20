@@ -152,7 +152,7 @@ node tests/run.mjs --all        # + Firefox CLI smoke (cross-platform, ADR-020)
 node tests/run.mjs --all -j1    # serial, deterministic logs/timings
 ```
 
-Current: **60 unit + 90 integration + 170 Playwright checks green**; the Firefox
+Current: **69 unit + 90 integration + 170 Playwright checks green**; the Firefox
 CLI smoke SKIPs on hosts whose system Firefox cannot render headless (it is the
 Termux/Android backend — Playwright's bundled Chromium cannot run there).
 Known unpinned items and open findings live in `docs/code-review.md` §4 — the
@@ -199,7 +199,8 @@ parent PID; every browser case fails on a page error or a non-empty
 - Live TUIs are driven only through the relay by the single attached driver
   (preview sockets read, drive verbs are refused); the hub never injects
   into a foreign process except through an explicit attach or the
-  process-kill switch (ADR-013/014). `PI_HUB_DRIVE_CONFIRM=1` adds native
+  process-kill switch (ADR-013/014: argv/`exe` fingerprint, re-checked at
+  kill time, never self, never pid ≤ 1; works on Linux and Android/Termux). `PI_HUB_DRIVE_CONFIRM=1` adds native
   TUI approval per attach for shared deployments (deny/timeout fail closed).
 
 ## Docs

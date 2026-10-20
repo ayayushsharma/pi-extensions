@@ -207,11 +207,13 @@ this section is the short version for a fresh session.
 
 ### Verified green
 
-- Unit **60/60** (`node tests/run.mjs --unit`, ≈2 s with the singleton/probe tests)
+- Unit **68 tests + ISO store check** (`node tests/run.mjs --unit` reports 69/69,
+  ≈2 s; store index + Termux `/proc` pins included)
 - Integration **90/90** (HTTP/WS against a real `pi`, fake model, sandboxed store)
 - E2E **170/170** in **12 groups** (core, live, close, panels, tabs, models,
   chrome, detail, deadcwd, steer, auth, images)
-- Firefox CLI smoke SKIPs unless the system Firefox can render headless
+- `--all` **328 checks (327 pass, 1 Firefox SKIP)** unless the system Firefox
+  can render headless
 - jiti loads every touched extension module; `node --check` covers edited
   frontend files
 
@@ -220,12 +222,15 @@ this section is the short version for a fresh session.
 - **Committed (`26a0a7a`)**: ADR-021 singleton enforcement, live-command parity
   + server-enforced single driver, the security-hardening batch, and the
   caps (search/fence/export).
-- **Working tree (this review batch)**: R1–R5 — legacy history image
-  normalization, composer allowlist + downscale + attachment restore, consent
-  armed before accept, `forceNative` reset, `stopped` reset — with E41–E43,
-  integration X10/X21/X21c and the matrix rows to match.
+- **Committed (`6fcff39`)**: R1–R5 review fixes with E41–E43, X10/X21/X21c.
+- **Committed (`a0e25cc`)**: wire independence (ADR-022).
+- **Working tree (this batch)**: server-RAM fix (append-aware session index —
+  windows read tail lines, listings read appended bytes only; `renameSession`
+  no longer parses the whole file) and the Termux/Android process scan
+  (platform gate + argv/`exe` fingerprint), with unit pins for both.
 - **Docs**: `docs/code-review.md` is the single home for findings and their
-  status; README/PLAN/testing counts and claims were corrected to match.
+  status (P2/P3/F1 fixed, P4 open); README/PLAN/testing counts and claims
+  were corrected to match.
 
 ### Semantics decided (do not re-litigate silently)
 
@@ -244,6 +249,9 @@ this section is the short version for a fresh session.
   `PI_HUB_DRIVE_CONFIRM` asks the TUI user and fails closed.
 - Attachments are downscaled in-browser to fit the 2 MB WS frame; GIFs are
   never re-encoded.
+- Session reads are incremental (append-aware index, tail windows); the first
+  scan after start streams in 256 KB chunks. Client streaming render is still
+  per-frame markdown (P4, open).
 - pi-hub is wire-independent (ADR-022): its own client/dialect/routes are
   canonical, there are no tau-web aliases, and tau-web's harness is not a
   gate. Deferred tau-web features (math, highlighting, TTS, PWA SW) are

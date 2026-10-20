@@ -223,13 +223,14 @@ WS is filtered only in layer-A cases.
 | ID | Scenario | Assertion |
 |---|---|---|
 | A1 | Unauthed `/api/*` + WS upgrade | 401/close; inline login overlay; never `WWW-Authenticate` |
-| A2 | Login → cookie | HttpOnly, SameSite=Lax, Max-Age; WS handshake accepted |
+| A2 | Login → cookie | HttpOnly, SameSite=Lax, Max-Age, Secure over TLS; WS handshake accepted |
 | A3 | Logout | Cookie revoked; next WS upgrade refused |
-| A4 | Bad-login backoff | Per-IP delay after N failures; success resets |
-| A5 | Token TTL | Expired cookie → 401 → re-login overlay (no silent hang) |
-| A6 | `set_auth` | Requires re-auth; persists only after confirm |
-| A7 | Host/Origin gates | Wrong Host/Origin refused on API + WS; explicit port matching |
-| A8 | Loopback bind | `0.0.0.0` without credentials refused at boot |
+| A4 | Bad-login AND bad-Basic backoff | Per-IP delay after N failures on both; success resets |
+| A5 | Token TTL | Expired cookie → 401 → re-login overlay (no silent hang); sliding refresh past half-life |
+| A6 | `set_auth` | Absent by design — no runtime auth toggle, so XSS cannot persist auth-off |
+| A7 | Host/Origin gates | Exact match only (loopback + own bind + pins); any-IPv4/`*.ts.net`/smuggled hosts refused on API + WS |
+| A8 | Loopback bind | `0.0.0.0`/`::` without credentials refused at boot (A9, claims nothing) |
+| A9 | Basic for scripts | Correct creds authenticate; colon passwords intact; sustained guessing → 429 |
 
 ### X — security hardening (S3–S14)
 
@@ -248,9 +249,15 @@ WS is filtered only in layer-A cases.
 | X11 | Slow consumer | Backpressure drop, no unbounded hub memory (S10) |
 | X12 | Process kill | Fingerprint fail-closed; stale pid 404; self/pid≤1 refused (ADR-013) |
 | X13 | Dead frames | Unknown WS type ignored silently, no error spam (P2/D1) |
-| X14 | `export_html` path | Generated name only, under session store (S3) |
+| X14 | `export_html` path | Client path jailed to session store, outside refused (S3; X20) |
 | X15 | CSP without inline scripts | Boot works with `script-src 'self'` |
 | X16 | hub.sock stale path | Live socket not hijacked; stale path reclaimed (B9) |
+| X17 | Relocate jail (ADR-017) | `/api/sessions/relocate` to `/etc` → 403; under `$HOME` → 200 with rewritten header |
+| X18 | Command image validation | Hostile `images` on prompt/steer/follow_up rejected before execution (unit + D2b) |
+| X19 | Live drive enforcement (ADR-014) | Bound-but-not-attached socket: drive verb refused (`attach first`), preview reads acked (D8/D8b) |
+| X20 | Export jail end-to-end | WS `export_html` to `/etc` refused, nothing written; pathless forward acks |
+| X21 | Flood guards | WS sockets per IP → 429; headless spawns throttled; client-error beacon 429 (X6) |
+| X22 | Drive confirm (opt-in) | `PI_HUB_DRIVE_CONFIRM=1`: attach pends native TUI confirm; deny/timeout fails closed (unit; manual against a real TUI) |
 
 ### R — rendering
 
@@ -340,6 +347,7 @@ WS is filtered only in layer-A cases.
 | D4 | Credentials | `~/.env` mode 600; creds not in logs or child env |
 | D5 | Memory cap | 3 children + hub under available RAM; LMK untouched at idle |
 | D6 | Flip/rollback | `sv down tau-web; sv up pi-hub` verified; rollback one command |
+| D7 | Singleton (ADR-021) | second hub refuses while the advert claim is live (names owner pid/port/sock); stale claim reclaimed; no port bump — unit-pinned, manual: start hub twice |
 
 ## 5. Definition of done
 

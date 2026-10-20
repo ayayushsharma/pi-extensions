@@ -348,11 +348,21 @@ export interface SearchHit {
   timestamp: number;
 }
 
-/** Full-text scan across the session store, bounded by `limit` hits. */
+/**
+ * Full-text scan across the session store, bounded by `limit` hits.
+ * DoS-shaped inputs stay cheap: files over SEARCH_FILE_CAP are skipped
+ * (a 100 MB session must not be re-read per keystroke), and the whole
+ * query stops after SEARCH_BUDGET_BYTES no matter how many files remain.
+ * Per-IP throttling lives at the route (one scan is fast; a flood is not).
+ */
+export const SEARCH_FILE_CAP = 8 * 1024 * 1024;
+export const SEARCH_BUDGET_BYTES = 64 * 1024 * 1024;
+
 export function searchSessions(query: string, limit = 30): SearchHit[] {
   const q = String(query || "").trim().toLowerCase();
   if (q.length < 2) return [];
   const hits: SearchHit[] = [];
+  let scanned = 0;
   let dirs: string[] = [];
   const rootName = path.basename(SESSIONS_DIR);
   try {
@@ -369,6 +379,15 @@ export function searchSessions(query: string, limit = 30): SearchHit[] {
     }
     for (const file of files) {
       const abs = sessionFilePath(dirName, file);
+      if (scanned >= SEARCH_BUDGET_BYTES) break outer;
+      let st: fs.Stats | null = null;
+      try {
+        st = fs.statSync(abs);
+      } catch {
+        continue;
+      }
+      if (!st.isFile() || st.size > SEARCH_FILE_CAP) continue;
+      scanned += st.size;
       let raw = "";
       try {
         raw = fs.readFileSync(abs, "utf8");
@@ -398,15 +417,35 @@ export function searchSessions(query: string, limit = 30): SearchHit[] {
         }
       }
       if (!hit) continue;
-      let mtime = 0;
-      try {
-        mtime = fs.statSync(abs).mtimeMs;
-      } catch {}
-      hits.push({ dirName, file, filePath: abs, cwd, title: title || file, snippet, timestamp: mtime });
+      hits.push({ dirName, file, filePath: abs, cwd, title: title || file, snippet, timestamp: st?.mtimeMs || 0 });
       if (hits.length >= limit) break outer;
     }
   }
   return hits;
+}
+
+/**
+ * S3: export_html outputPath is client-controlled. Constrain it to the
+ * session store: a string-prefix jail plus a realpath check of an existing
+ * parent (a symlinked dir inside the store must not redirect the write
+ * outside). Returns the absolute path; throws with status 400/403.
+ */
+export function validateExportPath(raw: string): string {
+  const abs = path.resolve(String(raw || ""));
+  const root = path.resolve(SESSIONS_DIR);
+  if (abs !== root && !abs.startsWith(root + path.sep)) {
+    throw Object.assign(new Error("export path must be inside the session store"), { status: 403 });
+  }
+  try {
+    const parentReal = fs.realpathSync(path.dirname(abs));
+    if (parentReal !== root && !parentReal.startsWith(root + path.sep)) {
+      throw Object.assign(new Error("export path must be inside the session store"), { status: 403 });
+    }
+  } catch (e: any) {
+    if (e?.status === 403) throw e;
+    // Parent missing: the child fails cleanly; the prefix jail above stands.
+  }
+  return abs;
 }
 
 /** Every entry in the file (no window) — used by the compat history shape. */

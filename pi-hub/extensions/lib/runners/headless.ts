@@ -13,9 +13,30 @@ import { hubLog, hubDebug } from "../log.js";
 import { randId } from "../protocol.js";
 import { Runner, type RunnerKind } from "./runner.js";
 
+/**
+ * Child env: secrets stay out, and so does every knob that controls hub or
+ * mirror topology. A child inheriting PI_HUB_ROLE=hub would resolve the hub
+ * role despite PI_HUB_DISABLED (isDisabled yields to forced roles) and try
+ * to start a nested hub; inheriting SOCK/DIR/PORT/ADVERT would point that
+ * mistake — or a confused mirror — at the wrong scope. The child is inert:
+ * it serves nothing and dials nothing.
+ */
+const CHILD_TOPOLOGY_KEYS = [
+  "PI_HUB_ROLE",
+  "PI_HUB_FORCE_ROLE",
+  "PI_HUB_SOCK",
+  "PI_HUB_DIR",
+  "PI_HUB_ADVERT_FILE",
+  "PI_HUB_PORT",
+  "PI_HUB_MIRROR_PORT",
+  "PI_HUB_HOST",
+  "TAU_ROLE",
+];
+
 export function buildHeadlessChildEnv(extra?: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env, ...(extra || {}) };
   for (const k of ["PI_HUB_USER", "PI_HUB_PASS", "TAU_USER", "TAU_PASS"]) delete env[k];
+  for (const k of CHILD_TOPOLOGY_KEYS) delete env[k];
   for (const k of Object.keys(env)) {
     if (k === "PI_HUB_AUTH" || k.startsWith("PI_HUB_AUTH_")) delete env[k];
     if (k === "TAU_AUTH" || k.startsWith("TAU_AUTH_")) delete env[k];

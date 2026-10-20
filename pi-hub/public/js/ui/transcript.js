@@ -14,12 +14,26 @@ function textOf(content) {
   return "";
 }
 
+/** History image allowlist — mirrors protocol.ts isValidMessageImage (the
+ *  browser cannot import the .ts sources, so the check is duplicated here).
+ *  <img> context is already scriptless, but invalid blocks still render as
+ *  broken icons and hostile sizes bloat the DOM, so drop them silently. */
+const VALID_IMAGE_MIMES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
+
+function isValidImage(b) {
+  if (!b || typeof b !== "object") return false;
+  if (!VALID_IMAGE_MIMES.has(String(b.mimeType || ""))) return false;
+  const data = typeof b.data === "string" ? b.data : "";
+  if (!data || data.length > 8 * 1024 * 1024) return false;
+  return /^[A-Za-z0-9+/]+={0,2}$/.test(data);
+}
+
 function imageNodes(content) {
   if (!Array.isArray(content)) return null;
-  const images = content.filter((b) => b?.type === "image" && typeof b.data === "string");
+  const images = content.filter((b) => b?.type === "image" && isValidImage(b));
   if (!images.length) return null;
   const grid = el("div", { class: "image-grid" });
-  for (const b of images) grid.append(el("img", { src: `data:${b.mimeType || "image/png"};base64,${b.data}`, alt: "image", loading: "lazy" }));
+  for (const b of images) grid.append(el("img", { src: `data:${b.mimeType};base64,${b.data}`, alt: "image", loading: "lazy" }));
   return grid;
 }
 

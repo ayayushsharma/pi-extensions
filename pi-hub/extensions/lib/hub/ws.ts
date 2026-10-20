@@ -8,8 +8,23 @@ import { WebSocketServer, WebSocket } from "ws";
 import type { Auth } from "./auth.js";
 import type { DialogBroker } from "./dialogs.js";
 import type { RunnerRegistry } from "../runners/registry.js";
-import { RPC_COMMANDS, streamDelta } from "../protocol.js";
+import { RPC_COMMANDS, streamDelta, validateCommandImages } from "../protocol.js";
+import { validateExportPath } from "../store/sessions.js";
 import { hubDebug, hubLog } from "../log.js";
+
+/**
+ * Verbs a previewing browser may send to a live TUI without driving it
+ * (ADR-009/014: preview is read-only history + banner, no input). Every
+ * other verb mutates the TUI and requires attach (the single driver).
+ */
+const LIVE_PREVIEW_COMMANDS = new Set([
+  "get_state",
+  "get_messages",
+  "get_commands",
+  "get_available_models",
+  "get_available_thinking_levels",
+  "get_session_stats",
+]);
 
 const MAX_BUFFERED = 1024 * 1024;
 
@@ -47,18 +62,69 @@ export class WsHub {
   attach(server: http.Server): void {
     this.wss = new WebSocketServer({ noServer: true, maxPayload: 2 * 1024 * 1024 });
     server.on("upgrade", (req, socket, head) => {
-      const url = new URL(req.url || "/", "http://localhost");
-      if (url.pathname !== "/ws") {
-        socket.destroy();
-        return;
-      }
-      if (!this.deps.auth.wsAuthenticated(req)) {
-        socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
-        socket.destroy();
-        return;
-      }
-      this.wss!.handleUpgrade(req, socket, head, (ws) => this.onConnection(ws));
+      void this.onUpgrade(req, socket, head).catch(() => {
+        try {
+          socket.destroy();
+        } catch {}
+      });
     });
+  }
+
+  /** Connection flood guard (S9/S10): one browser holds 1–2 sockets; a
+   *  misbehaving client holding hundreds is cut off with 429. */
+  private wsCountByIp = new Map<string, number>();
+  private static readonly MAX_WS_PER_IP = 32;
+  /** Opt-in drive consent (PI_HUB_DRIVE_CONFIRM): set once the relay exists. */
+  private driveConfirm = false;
+  private driveConfirmer: ((pid: number) => Promise<boolean>) | null = null;
+
+  setDriveConfirm(enabled: boolean, request?: (pid: number) => Promise<boolean>): void {
+    this.driveConfirm = enabled;
+    this.driveConfirmer = request || null;
+  }
+
+  private async onUpgrade(req: http.IncomingMessage, socket: any, head: Buffer): Promise<void> {
+    const url = new URL(req.url || "/", "http://localhost");
+    if (url.pathname !== "/ws") {
+      socket.destroy();
+      return;
+    }
+    if (!this.deps.auth.hostAllowed(req)) {
+      socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
+      socket.destroy();
+      return;
+    }
+    const ip = (() => {
+      try {
+        return req.socket.remoteAddress || "unknown";
+      } catch {
+        return "unknown";
+      }
+    })();
+    const held = this.wsCountByIp.get(ip) || 0;
+    if (held >= WsHub.MAX_WS_PER_IP) {
+      hubLog(`ws upgrade refused: ${ip} holds ${held} sockets`);
+      socket.write("HTTP/1.1 429 Too Many Requests\r\nConnection: close\r\n\r\n");
+      socket.destroy();
+      return;
+    }
+    const verdict = await this.deps.auth.authenticateRequest(req);
+    if (verdict !== "ok") {
+      socket.write(
+        verdict === "limited"
+          ? "HTTP/1.1 429 Too Many Requests\r\nConnection: close\r\n\r\n"
+          : "HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n",
+      );
+      socket.destroy();
+      return;
+    }
+    this.wsCountByIp.set(ip, held + 1);
+    socket.once("close", () => {
+      const n = (this.wsCountByIp.get(ip) || 1) - 1;
+      if (n <= 0) this.wsCountByIp.delete(ip);
+      else this.wsCountByIp.set(ip, n);
+    });
+    this.wss!.handleUpgrade(req, socket, head, (ws) => this.onConnection(ws));
   }
 
   close(): void {
@@ -215,7 +281,7 @@ export class WsHub {
         case "command":
           return this.handleCommand(client, id, msg.command || msg);
         case "attach":
-          return this.handleAttach(client, id, msg);
+          return await this.handleAttach(client, id, msg);
         case "detach":
           return this.handleDetach(client, id);
         case "unbind": {
@@ -280,17 +346,57 @@ export class WsHub {
       this.send(client, { type: "error", id, message: `command not allowed: ${command.type}` });
       return;
     }
+    const imageError = validateCommandImages(command);
+    if (imageError) {
+      this.send(client, { type: "error", id, message: imageError });
+      return;
+    }
+    if (command?.type === "export_html" && typeof command.outputPath === "string" && command.outputPath.trim()) {
+      // S3: a client-controlled path must never reach the child's exporter
+      // unchecked. Validated (and absolutized) here; without outputPath the
+      // child exports next to the session file, already inside the store.
+      try {
+        command = { ...command, outputPath: validateExportPath(command.outputPath) };
+      } catch (e: any) {
+        this.send(client, { type: "error", id, message: e?.message || "invalid export path" });
+        return;
+      }
+    }
+    if (runner.kind === "live" && command?.type && !LIVE_PREVIEW_COMMANDS.has(command.type)) {
+      // ADR-014 single driver, enforced (not just UI-disabled): previewing
+      // browsers read, only the attached driver writes. Without this any
+      // bound socket could steer a TUI it never attached to.
+      if (this.driverByRunner.get(runner.id) !== client) {
+        this.send(client, { type: "error", id, message: "not driving this TUI — attach first" });
+        return;
+      }
+    }
     runner.command(command);
     this.ack(client, id, { type: "ack", command: command?.type });
   }
 
-  private handleAttach(client: Client, id: string | undefined, msg: any): void {
+  private async handleAttach(client: Client, id: string | undefined, msg: any): Promise<void> {
     const runner = this.deps.registry.get(msg.runnerId || client.boundId || "");
     if (!runner || runner.kind !== "live") throw new Error("not a live runner");
     const holder = this.driverByRunner.get(runner.id);
     if (holder && holder !== client && !msg.take) {
       this.send(client, { type: "driver_busy", id, runnerId: runner.id, heldBy: holder.id });
       return;
+    }
+    if (this.driveConfirm && runner.pid) {
+      // Opt-in drive consent: the TUI user approves each attach (including
+      // takeovers) on their own terminal. Asked after the busy check so
+      // refused attempts never pester the TUI. Deny/timeout fails closed.
+      let confirmed = false;
+      try {
+        confirmed = this.driveConfirmer ? await this.driveConfirmer(runner.pid) : false;
+      } catch {
+        confirmed = false;
+      }
+      if (!confirmed) {
+        this.send(client, { type: "error", id, message: "drive not confirmed by the TUI" });
+        return;
+      }
     }
     if (holder && holder !== client) {
       holder.driverId = null;

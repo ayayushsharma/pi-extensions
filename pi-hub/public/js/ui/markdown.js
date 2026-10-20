@@ -74,7 +74,10 @@ export function renderMarkdown(src) {
       i++;
       while (i < lines.length && !/^```\s*$/.test(lines[i])) body.push(lines[i++]);
       i++;
-      const codeText = body.join("\n");
+      // R2: a huge fence must not bloat the DOM — cap like tool output.
+      const full = body.join("\n");
+      const truncated = full.length > 65536;
+      const codeText = truncated ? full.slice(0, 65536) : full;
       frag.append(
         el(
           "div",
@@ -91,6 +94,7 @@ export function renderMarkdown(src) {
             }),
           ),
           el("pre", { class: "code-block" }, el("code", { text: codeText })),
+          truncated ? el("div", { class: "truncated", text: `… truncated (${full.length} chars)` }) : null,
         ),
       );
       continue;

@@ -52,6 +52,8 @@ export interface HubConfig {
   debug: boolean;
   allowedHosts: string[];
   allowAnyHost: boolean;
+  /** opt-in TUI confirmation per browser attach (shared deployments) */
+  driveConfirm: boolean;
   version: string;
 }
 
@@ -117,6 +119,7 @@ export function loadConfig(): HubConfig {
         .filter(Boolean),
     ],
     allowAnyHost: envBool("PI_HUB_ALLOW_ANY_HOST") === true,
+    driveConfirm: envBool("PI_HUB_DRIVE_CONFIRM") === true || settings.driveConfirm === true,
     version: process.env.PI_HUB_VERSION || "0.1.0",
   };
 }

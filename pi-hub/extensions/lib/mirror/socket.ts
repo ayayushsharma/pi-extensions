@@ -11,24 +11,9 @@ import * as fs from "node:fs";
 import * as net from "node:net";
 import * as path from "node:path";
 import { hubLog } from "../log.js";
+import { probeSocket } from "../probe.js";
 
-function probeSocket(sockPath: string, timeoutMs = 600): Promise<boolean> {
-  return new Promise((resolve) => {
-    const sock = net.connect(sockPath);
-    let done = false;
-    const finish = (alive: boolean) => {
-      if (done) return;
-      done = true;
-      try {
-        sock.destroy();
-      } catch {}
-      resolve(alive);
-    };
-    sock.once("connect", () => finish(true));
-    sock.once("error", () => finish(false));
-    setTimeout(() => finish(false), timeoutMs).unref?.();
-  });
-}
+export { probeSocket };
 
 interface Conn {
   socket: net.Socket;
@@ -41,8 +26,11 @@ export class HubSocketServer extends EventEmitter {
   private conns = new Set<Conn>();
   private ownedIno: bigint | null = null;
 
-  constructor(public sockPath: string) {
+  public sockPath: string;
+
+  constructor(sockPath: string) {
     super();
+    this.sockPath = sockPath;
   }
 
   async start(): Promise<void> {
@@ -155,10 +143,13 @@ export class HubSocketClient extends EventEmitter {
   private stopped = false;
   private retryMs = 1000;
 
+  private source: string | (() => string[]);
+
   /** `source` may be a function: it is asked again on every retry, so a stale
    *  socket file (hub killed hard) cannot pin the mirror to a dead path. */
-  constructor(private source: string | (() => string[])) {
+  constructor(source: string | (() => string[])) {
     super();
+    this.source = source;
   }
 
   /** the socket actually in use (set on connect) */

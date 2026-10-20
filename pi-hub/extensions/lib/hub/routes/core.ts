@@ -10,7 +10,10 @@ import type { HubConfig } from "../../env.js";
 import type { Auth } from "../auth.js";
 import type { RunnerRegistry } from "../../runners/registry.js";
 import type { WsHub } from "../ws.js";
-import { BODY_LOGIN, BODY_SMALL, readJson, sendError, sendJson, type Route } from "../http.js";
+import { BODY_LOGIN, BODY_SMALL, createRateLimiter, readJson, sendError, sendJson, type Route } from "../http.js";
+
+/** Beacon flood guard (S7): 20 reports/min per IP, then 429 unlogged. */
+const clientErrorAllowed = createRateLimiter({ windowMs: 60 * 1000, max: 20 });
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -64,7 +67,15 @@ export function coreRoutes(deps: CoreDeps): Route[] {
           return sendError(res, e?.status || 400, e?.message || "bad request");
         }
         try {
-          const cookie = auth.login(String(body.user || ""), String(body.pass || ""));
+          // Secure flag only over TLS (loopback stays plain HTTP; a TLS
+          // terminator sets X-Forwarded-Proto or the socket is encrypted).
+          let secure = false;
+          try {
+            secure =
+              !!(req.socket as any)?.encrypted ||
+              String(req.headers["x-forwarded-proto"] || "").split(",")[0].trim().toLowerCase() === "https";
+          } catch {}
+          const cookie = auth.login(String(body.user || ""), String(body.pass || ""), secure);
           auth.clearFailures(ip);
           res.setHeader("Set-Cookie", cookie);
           return sendJson(res, 200, { ok: true });
@@ -89,6 +100,15 @@ export function coreRoutes(deps: CoreDeps): Route[] {
       path: "/api/client-error",
       auth: true,
       handler: async ({ req, res }) => {
+        let ip = "unknown";
+        try {
+          ip = req.socket.remoteAddress || "unknown";
+        } catch {}
+        if (!clientErrorAllowed(ip)) {
+          res.writeHead(429);
+          res.end();
+          return;
+        }
         try {
           const body = await readJson(req, BODY_SMALL);
           hubLog(`client error: ${String(body.message || "").slice(0, 300)}`);

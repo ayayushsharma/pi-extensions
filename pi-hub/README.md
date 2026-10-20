@@ -69,6 +69,15 @@ pi -e .
 # to it when its configured socket is absent.
 ```
 
+One hub per machine (ADR-021): the first hub to start claims the advert
+file, and a second `pi -e . --mode rpc` refuses while the claim is live
+(pid + reachable port/socket) instead of bumping to a surprise port — no
+more shadow hubs beside the one the tunnel and mirrors point at. The
+refusal names the running hub's pid/port/sock in `pi-hub.log`; stop it
+first, or give the second hub its own `PI_HUB_PORT` **and** its own
+`PI_HUB_ADVERT_FILE`. A hard-killed hub leaves a dead claim behind and the
+next start reclaims it.
+
 `.ts` changes need a jiti cache clear + `/reload`; `public/` changes are a
 browser reload. Asset cache-busting is automatic: the shell stamps a live
 version (newest mtime under `public/`) onto the `?v=` URLs, so edited CSS/JS
@@ -106,7 +115,8 @@ display sizes because it is outline art, not strokes.
 | `PI_HUB_FS_ROOTS` | — | extra `:`-separated browse roots |
 | `PI_HUB_STATIC_DIR` | bundled `public/` | UI override for development |
 | `PI_HUB_DISABLED` / `PI_HUB_ROLE` | — / inferred | inert role; force `hub\|mirror` |
-| `PI_HUB_ALLOWED_HOSTS` / `PI_HUB_ALLOW_ANY_HOST` | — | DNS-rebinding allowlist |
+| `PI_HUB_ALLOWED_HOSTS` / `PI_HUB_ALLOW_ANY_HOST` | — | DNS-rebinding allowlist (exact hosts; loopback + own bind always allowed) |
+| `PI_HUB_DRIVE_CONFIRM` | off | Native TUI approval per browser attach (fail-closed) |
 | `PI_HUB_LOG_FILE` / `PI_HUB_DEBUG` | `~/.pi/pi-hub/pi-hub.log` | file-only logging (never stdout) |
 
 Deprecation-free coexistence with an installed `tau-web`: pi-hub only reads
@@ -146,18 +156,26 @@ parent PID; every browser case fails on a page error or a non-empty
 
 ## Security
 
-- Cookie-session auth, HttpOnly + SameSite=Lax, login backoff, no
-  `WWW-Authenticate` (no native browser prompt), token TTL.
-- Child env is scrubbed of `PI_HUB_USER/PASS/AUTH*` (and `TAU_*`).
+- Cookie-session auth, HttpOnly + SameSite=Lax (+Secure over TLS), login
+  and Basic backoff with 429 past sustained guessing, no
+  `WWW-Authenticate` (no native browser prompt), 30-day TTL with sliding
+  refresh. An authenticated browser reads like the user (full `$HOME`
+  file view) — keep loopback + strong creds off-loopback.
+- Child env is scrubbed of `PI_HUB_USER/PASS/AUTH*` (and `TAU_*`) **and**
+  hub/mirror topology knobs, so a child can never resolve into a nested hub.
 - File APIs are realpath-jailed: the viewer is jailed to the viewed
-  session's cwd (ADR-017), browsing to configured roots, and the **only**
+  session's cwd (ADR-017), browsing to configured roots, session relocate
+  targets jailed to the browse roots, and the **only**
   mutation is a single-level `mkdir` under `$HOME` (ADR-018) — no delete,
   no rename, no write.
 - Strict CSP, `nosniff`, frame denial; markdown/transcripts are built with
-  DOM APIs (no `innerHTML`), images are mime/base64 validated.
-- Live TUIs are driven only through the relay; the hub never injects into a
-  foreign process except through an explicit attach or the process-kill
-  switch (ADR-013/014).
+  DOM APIs (no `innerHTML`), images are mime/base64 validated on the wire
+  and in history rendering.
+- Live TUIs are driven only through the relay by the single attached driver
+  (preview sockets read, drive verbs are refused); the hub never injects
+  into a foreign process except through an explicit attach or the
+  process-kill switch (ADR-013/014). `PI_HUB_DRIVE_CONFIRM=1` adds native
+  TUI approval per attach for shared deployments (deny/timeout fail closed).
 
 ## Docs
 

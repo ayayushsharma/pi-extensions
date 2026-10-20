@@ -504,6 +504,7 @@ a { color: var(--accent-text); }
 .msg .bubble pre code { background: none; padding: 0; font-size: var(--fs-sm); line-height: 1.55; }
 .code-wrap { margin: 0.6em 0; }
 .code-wrap .code-block { margin: 0; }
+.code-wrap .truncated { padding: 4px 2px 0; color: var(--text-3); font-size: var(--fs-xs); }
 .code-head {
   display: flex; align-items: center; justify-content: space-between;
   font-size: var(--fs-xs); color: var(--text-3); padding: 0 2px 4px;

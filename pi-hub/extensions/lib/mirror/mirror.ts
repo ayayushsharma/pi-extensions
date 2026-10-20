@@ -7,21 +7,22 @@
 import * as fs from "node:fs";
 import { HubSocketClient } from "./socket.js";
 import { hubLog } from "../log.js";
-import { randId } from "../protocol.js";
+import { VALID_IMAGE_MIMES, randId } from "../protocol.js";
 import type { HubConfig } from "../env.js";
 
 export class Mirror {
   private client: HubSocketClient | null = null;
   private pendingDialogs = new Map<string, (v: any) => void>();
   private wrapped = new WeakSet<object>();
+  /** While answering a hub drive-consent prompt, dialogs stay native: the
+   *  TUI user — not the browser asking for access — must answer. */
+  private forceNative = false;
+  private config: HubConfig;
   private getCtx: () => any;
   private pi: any;
 
-  constructor(
-    private config: HubConfig,
-    pi: any,
-    getCtx: () => any,
-  ) {
+  constructor(config: HubConfig, pi: any, getCtx: () => any) {
+    this.config = config;
     this.pi = pi;
     this.getCtx = getCtx;
   }
@@ -124,6 +125,29 @@ export class Mirror {
       this.execute(frame.command);
       return;
     }
+    if (frame?.type === "drive_confirm" && frame.id) {
+      // Opt-in drive consent (PI_HUB_DRIVE_CONFIRM): the TUI user approves
+      // each browser attach on their own terminal. No UI to ask (or an
+      // answer that never comes) denies — fail-closed, never fail-open.
+      const id = frame.id;
+      const ui = this.getCtx()?.ui;
+      if (!ui || typeof ui.confirm !== "function") {
+        this.client?.send({ type: "drive_confirm_reply", pid: process.pid, id, confirmed: false });
+        return;
+      }
+      this.forceNative = true;
+      Promise.resolve(ui.confirm("Browser drive request", "A browser wants to drive this TUI (send prompts, steer, abort). Allow?"))
+        .then((ok) => {
+          this.client?.send({ type: "drive_confirm_reply", pid: process.pid, id, confirmed: ok === true });
+        })
+        .catch(() => {
+          this.client?.send({ type: "drive_confirm_reply", pid: process.pid, id, confirmed: false });
+        })
+        .finally(() => {
+          this.forceNative = false;
+        });
+      return;
+    }
     if (frame?.type === "dialog_relay") {
       const resolve = this.pendingDialogs.get(frame.id);
       if (resolve) {
@@ -139,7 +163,7 @@ export class Mirror {
     if (!ui || this.wrapped.has(ui)) return;
     this.wrapped.add(ui);
     const ask = (method: string, fields: any): Promise<any> | null => {
-      if (!this.connected) return null;
+      if (!this.connected || this.forceNative) return null;
       const id = randId("dlg");
       const promise = new Promise<any>((resolve) => {
         this.pendingDialogs.set(id, resolve);
@@ -200,6 +224,30 @@ export class Mirror {
     this.pushEvent(event);
   }
 
+  /** Build sendUserMessage content with validated image blocks. The hub
+   *  already rejected hostile attachments (validateCommandImages); this
+   *  second pass stays strict anyway — never upgrade a bad block to a
+   *  default, just drop it and log (a client bug must stay visible). */
+  private messageContent(message: string, images: any): string | Array<{ type: string; text?: string; data?: string; mimeType?: string }> {
+    if (!Array.isArray(images) || !images.length) return message;
+    const content: Array<{ type: string; text?: string; data?: string; mimeType?: string }> = [
+      { type: "text", text: message || "(see attached image)" },
+    ];
+    for (const img of images) {
+      if (!img || typeof img !== "object" || !VALID_IMAGE_MIMES.has(String(img.mimeType || ""))) {
+        hubLog(`mirror: dropping image with bad mimeType ${String(img?.mimeType)}`);
+        continue;
+      }
+      const data = typeof img.data === "string" ? img.data : "";
+      if (!data || data.length > 8 * 1024 * 1024 || !/^[A-Za-z0-9+/]+={0,2}$/.test(data)) {
+        hubLog("mirror: dropping image with bad data");
+        continue;
+      }
+      content.push({ type: "image", data, mimeType: String(img.mimeType) });
+    }
+    return content.length > 1 ? content : message;
+  }
+
   private execute(command: any): void {
     const ctx = this.getCtx();
     const pi = this.pi;
@@ -207,22 +255,23 @@ export class Mirror {
       switch (command?.type) {
         case "prompt": {
           const isSlash = typeof command.message === "string" && command.message.trimStart().startsWith("/");
+          const content = this.messageContent(command.message, command.images);
           if (ctx && !ctx.isIdle()) {
-            pi.sendUserMessage(command.message, { deliverAs: "steer", ...(isSlash ? { expandPromptTemplates: true } : {}) });
+            pi.sendUserMessage(content, { deliverAs: "steer", ...(isSlash ? { expandPromptTemplates: true } : {}) });
           } else if (isSlash) {
-            pi.sendUserMessage(command.message, { expandPromptTemplates: true });
+            pi.sendUserMessage(content, { expandPromptTemplates: true });
           } else {
-            pi.sendUserMessage(command.message);
+            pi.sendUserMessage(content);
           }
           this.reply(command, { disposition: "accepted" });
           break;
         }
         case "steer":
-          pi.sendUserMessage(command.message, { deliverAs: "steer" });
+          pi.sendUserMessage(this.messageContent(command.message, command.images), { deliverAs: "steer" });
           this.reply(command);
           break;
         case "follow_up":
-          pi.sendUserMessage(command.message, { deliverAs: "followUp" });
+          pi.sendUserMessage(this.messageContent(command.message, command.images), { deliverAs: "followUp" });
           this.reply(command);
           break;
         case "abort":
@@ -249,6 +298,61 @@ export class Mirror {
           } catch (e: any) {
             this.reply(command, undefined, e?.message || String(e));
           }
+          break;
+        case "get_messages": {
+          if (!ctx) return this.reply(command, undefined, "No context available");
+          try {
+            this.reply(command, { entries: ctx.sessionManager?.getEntries?.() || [] });
+          } catch (e: any) {
+            this.reply(command, undefined, e?.message || String(e));
+          }
+          break;
+        }
+        case "get_session_stats": {
+          if (!ctx) return this.reply(command, undefined, "No context available");
+          try {
+            const usage = ctx.getContextUsage?.();
+            const entries = ctx.sessionManager?.getEntries?.() || [];
+            let userMessages = 0;
+            let assistantMessages = 0;
+            let toolCalls = 0;
+            for (const e of entries) {
+              if (e?.type === "message") {
+                if (e.message?.role === "user") userMessages++;
+                else if (e.message?.role === "assistant") assistantMessages++;
+                else if (e.message?.role === "toolResult") toolCalls++;
+              }
+            }
+            this.reply(command, {
+              sessionFile: ctx.sessionManager?.getSessionFile?.() || null,
+              userMessages,
+              assistantMessages,
+              toolCalls,
+              totalMessages: entries.length,
+              tokens: usage ? { input: usage.tokens, total: usage.tokens } : null,
+            });
+          } catch (e: any) {
+            this.reply(command, undefined, e?.message || String(e));
+          }
+          break;
+        }
+        case "get_available_thinking_levels": {
+          // Per-model levels live on the session runtime, which the
+          // extension API does not expose — probe defensively and let the
+          // client fall back to its static list when absent (R-2).
+          try {
+            const levels = ctx?.session?.getAvailableThinkingLevels?.();
+            if (Array.isArray(levels) && levels.length) return this.reply(command, { levels });
+            return this.reply(command, undefined, "thinking levels unavailable for this session");
+          } catch (e: any) {
+            return this.reply(command, undefined, e?.message || String(e));
+          }
+        }
+        case "clear_queue":
+          // No extension API clears pi's steer/follow-up queues: the queue
+          // lives in the TUI and stays queued (nothing is lost). The client
+          // already treats this as empty and still delivers its abort.
+          this.reply(command, undefined, "queue lives in the TUI — clear it there (Esc)");
           break;
         case "set_model": {
           Promise.resolve(ctx?.modelRegistry?.getAvailable?.() ?? [])

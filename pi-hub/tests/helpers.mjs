@@ -100,7 +100,7 @@ export function killTree(proc) {
  * important part — a throwaway agent dir + session store, so nothing a test
  * does can appear in the developer's real `~/.pi/agent`.
  */
-function cleanEnv(extra = {}) {
+export function cleanEnv(extra = {}) {
   const env = { ...process.env };
   for (const key of Object.keys(env)) {
     if (key.startsWith("TAU_") || key.startsWith("PI_HUB_") || key === "PI_WEB_PI_BIN") delete env[key];

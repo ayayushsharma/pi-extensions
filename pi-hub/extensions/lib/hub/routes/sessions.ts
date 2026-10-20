@@ -19,10 +19,19 @@ import {
 import type { RunnerRegistry } from "../../runners/registry.js";
 import { browseRoots, jailPath, listDir, makeDir, readContent, readPreview } from "../../store/files.js";
 import { gitInfo } from "../../store/git.js";
-import { BODY_SMALL, readJson, sendError, sendJson, type Route } from "../http.js";
+import { BODY_SMALL, createRateLimiter, readJson, sendError, sendJson, type Route } from "../http.js";
+
+/**
+ * Per-IP throttle for the full-text scan: one query is fast, a flood is
+ * not. Generous on purpose (sidebar filter + picker share it) — 120/min,
+ * then 429.
+ */
+const searchAllowed = createRateLimiter({ windowMs: 60 * 1000, max: 120 });
 
 export interface SessionDeps {
   config: HubConfig;
+  /** the hub's own working directory — the R-10 fallback target (H35) */
+  defaultCwd?: string;
   registry?: RunnerRegistry;
 }
 
@@ -104,13 +113,23 @@ export function sessionRoutes(deps: SessionDeps): Route[] {
         const roots = [path.resolve(sessionsDir()), path.resolve(os.tmpdir())];
         const ok = roots.some((r) => real === r || real.startsWith(r + path.sep));
         if (!ok) throw Object.assign(new Error("export path outside allowed roots"), { status: 403 });
-        const data = fs.readFileSync(real);
+        // Stream, never buffer: an export can be tens of MB and this route
+        // must not grow hub RSS per download. Oversized exports are refused.
+        const st = fs.statSync(real);
+        if (!st.isFile() || st.size > 32 * 1024 * 1024) {
+          throw Object.assign(new Error("export too large"), { status: 413 });
+        }
         res.writeHead(200, {
           "content-type": "text/html; charset=utf-8",
           "content-disposition": `attachment; filename="${path.basename(real)}"`,
           "cache-control": "no-store",
+          "content-length": st.size,
         });
-        res.end(data);
+        fs.createReadStream(real).on("error", () => {
+          try {
+            res.destroy();
+          } catch {}
+        }).pipe(res);
       },
     },
     {
@@ -118,7 +137,9 @@ export function sessionRoutes(deps: SessionDeps): Route[] {
       method: "GET",
       path: "/api/search",
       auth: true,
-      handler: ({ res, url }) => {
+      handler: ({ req, res, url }) => {
+        const ip = req.socket.remoteAddress || "unknown";
+        if (!searchAllowed(ip)) return sendError(res, 429, "search rate limit exceeded");
         const q = url.searchParams.get("q") || "";
         return sendJson(res, 200, { query: q, hits: searchSessions(q, 30) });
       },
@@ -136,14 +157,28 @@ export function sessionRoutes(deps: SessionDeps): Route[] {
     },
     {
       // R-10: continue a session in a folder that exists. Copies the file with
-      // a rewritten cwd header (never edits the original).
+      // a rewritten cwd header (never edits the original). The target is
+      // jailed to the browse roots plus the hub's own cwd (ADR-017): without
+      // this any caller could point a session at /etc and turn the
+      // session-cwd viewer into a reader for it. The hub cwd stays allowed
+      // because it is the silent-fallback target too (H35) — refusing it
+      // here while binding into it there would be incoherent. The UI
+      // confirms before calling (R-10 flow).
       method: "POST",
       path: "/api/sessions/relocate",
       auth: true,
       handler: async ({ req, res }) => {
         const body = await readJson(req, BODY_SMALL);
         if (!body.dirName || !body.file || !body.cwd) return sendError(res, 400, "dirName, file and cwd required");
-        return sendJson(res, 200, relocateSession(String(body.dirName), String(body.file), String(body.cwd)));
+        const roots = [...browseRoots(deps.config)];
+        if (deps.defaultCwd) roots.push(path.resolve(deps.defaultCwd));
+        let target: string;
+        try {
+          target = jailPath(String(body.cwd), [...new Set(roots)]);
+        } catch (e: any) {
+          return sendError(res, e?.status || 403, e?.message || "target cwd not allowed");
+        }
+        return sendJson(res, 200, relocateSession(String(body.dirName), String(body.file), target));
       },
     },
     {

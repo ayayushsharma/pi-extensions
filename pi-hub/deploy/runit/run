@@ -58,8 +58,10 @@ rm -rf "$TMPDIR/jiti"
 
 cd "$HUB_DIR" || exit 1
 
-# Fail loudly — instead of bumping to :12046 while the tunnel still points at
-# :12045 — when the canonical port is busy. runsv retries with backoff.
+# Fail loudly when the canonical port is busy. The hub itself now enforces the
+# singleton in-process (ADR-021: advert claim, no port bump, live-sock conflict
+# is fatal); this probe stays as the fast fail before jiti loads. runsv retries
+# with backoff.
 if ! "$NODE" -e '
   const net = require("node:net");
   const s = net.connect({ port: Number(process.env.PI_HUB_PORT), host: "127.0.0.1" });

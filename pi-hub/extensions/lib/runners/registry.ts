@@ -2,8 +2,10 @@
  * registry — the switchboard. One process per session file; same-file bind is
  * a no-op; a running agent is never switched; the pool cap evicts idle only.
  */
+import * as fs from "node:fs";
 import { basename, resolve } from "node:path";
 import { hubLog } from "../log.js";
+import { sessionCwd } from "../store/sessions.js";
 import { HeadlessRunner, assertValidCwd } from "./headless.js";
 import { LiveRunner, type LiveRecord } from "./live.js";
 import { Runner, type RunnerFrame } from "./runner.js";
@@ -29,8 +31,13 @@ export class RunnerRegistry {
   private timers = new Map<string, NodeJS.Timeout>();
   private changeListeners = new Set<(c: RegistryChange) => void>();
   private frameListeners = new Set<(f: RunnerFrame) => void>();
+  private spawnAt: number[] = [];
 
-  constructor(private opts: RegistryOptions) {}
+  private opts: RegistryOptions;
+
+  constructor(opts: RegistryOptions) {
+    this.opts = opts;
+  }
 
   list(): Runner[] {
     return [...this.runners.values()];
@@ -116,19 +123,56 @@ export class RunnerRegistry {
     const abs = opts.absFile ? resolve(opts.absFile) : null;
     // R-10: a session whose folder is gone must still open — resume in the
     // hub's default cwd and let the UI explain why (silent fallback would
-    // run tools in the wrong tree without telling anyone).
+    // run tools in the wrong tree without telling anyone). Resume-only: a
+    // fresh bind with a bad cwd is an honest error, never a quiet move into
+    // another directory. The stored-cwd check covers resumes that name a
+    // valid-but-different cwd while the session's own folder is gone and
+    // matches what was asked for (pi would refuse the switch otherwise).
     let cwd = requested;
     let cwdFallback: { from: string; to: string } | null = null;
-    try {
+    if (!abs) {
       assertValidCwd(cwd);
-    } catch {
-      cwd = resolve(opts.fallbackCwd || process.env.HOME || process.cwd());
-      assertValidCwd(cwd);
-      cwdFallback = { from: requested, to: cwd };
-      hubLog(`cwd fallback: ${requested} -> ${cwd}`);
+    } else {
+      let valid = true;
+      try {
+        assertValidCwd(cwd);
+      } catch {
+        valid = false;
+      }
+      if (valid) {
+        try {
+          const stored = sessionCwd(abs);
+          valid = !stored || resolve(stored) !== cwd || fs.existsSync(stored);
+        } catch {
+          valid = true;
+        }
+      }
+      if (!valid) {
+        cwd = resolve(opts.fallbackCwd || process.env.HOME || process.cwd());
+        assertValidCwd(cwd);
+        cwdFallback = { from: requested, to: cwd };
+        hubLog(`cwd fallback: ${requested} -> ${cwd}`);
+      }
     }
 
     let runner = abs ? this.byFile.get(abs) : undefined;
+    if (!runner) {
+      // Spawn throttle: children cost seconds and tens of MB each. Human
+      // flows (tabs, picker, reload storms) never approach 20 spawns/min;
+      // a looping client does. Thrown before the spawn, never after.
+      const now = Date.now();
+      this.spawnAt = this.spawnAt.filter((t) => now - t < 60_000);
+      if (this.spawnAt.length >= 20) {
+        throw new Error("spawn rate limit exceeded — close idle sessions first");
+      }
+      this.spawnAt.push(now);
+    }
+    if (runner && runner.kind !== "headless") {
+      // A live TUI owns this file: never spawn a second writer behind it
+      // (dual-write), and never hand its relay to a plain bind — driving a
+      // live session requires attach (ADR-014 single driver, C1).
+      throw new Error("session is owned by a live TUI — attach to it instead of binding");
+    }
     if (!runner) {
       // A fresh child in the same cwd with no identity yet is not reusable.
       runner = new HeadlessRunner({ cwd, absFile: abs, bin: this.opts.bin, env: this.opts.env });
@@ -142,7 +186,7 @@ export class RunnerRegistry {
         runner.close();
         throw e;
       }
-    } else if (cwdFallback && runner.kind === "headless") {
+    } else if (cwdFallback) {
       runner.cwdFallback = cwdFallback;
     }
     this.bind(ws, runner);
@@ -169,16 +213,20 @@ export class RunnerRegistry {
     this.scheduleTtl(runner);
   }
 
+  /**
+   * Live runners are keyed by pid only (ADR-019, clarified): two TUIs may
+   * legitimately open the same session file, and collapsing them by file
+   * orphans the first TUI's relay (its pid mapping is lost and its events
+   * drop). One headless child per file stays the rule; live is one runner
+   * per announcing process. A same-pid re-announce (re-dial, session
+   * switch) refreshes the record and the drive channel, whose old socket
+   * is dead.
+   */
   addLive(record: LiveRecord, onDrive: (frame: any) => void): LiveRunner {
-    let existing = this.byPid.get(record.pid) as LiveRunner | undefined;
-    if (!existing) existing = this.getByFile(record.sessionFile || "") as LiveRunner | undefined;
+    const existing = this.byPid.get(record.pid) as LiveRunner | undefined;
     if (existing && existing.kind === "live") {
       existing.updateRecord(record);
-      if (existing.pid && existing.pid !== record.pid) {
-        this.byPid.delete(existing.pid);
-        existing.pid = record.pid;
-        this.byPid.set(record.pid, existing);
-      }
+      existing.onDrive = onDrive;
       if (existing.absFile) this.byFile.set(resolve(existing.absFile), existing);
       return existing;
     }

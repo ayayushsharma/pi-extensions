@@ -10,6 +10,8 @@ import {
   isRpcCommand,
   RPC_COMMANDS,
   randId,
+  validateCommandImages,
+  MAX_COMMAND_IMAGES,
 } from "../../extensions/lib/protocol.ts";
 
 test("isValidMessageImage accepts a bounded, well-formed image", () => {
@@ -58,6 +60,24 @@ test("sessionKey and randId stay filesystem-free and unique", () => {
   const b = randId("hr");
   assert.match(a, /^hr-/);
   assert.notEqual(a, b);
+});
+
+test("validateCommandImages accepts clean payloads and rejects hostile ones", () => {
+  const good = { mimeType: "image/png", data: "aGVsbG8=" };
+  assert.equal(validateCommandImages({ type: "prompt", message: "hi" }), null, "no images key");
+  assert.equal(validateCommandImages({ type: "prompt", message: "hi", images: [good] }), null);
+  assert.equal(validateCommandImages({ type: "abort" }), null, "non-prompt verbs unchecked");
+  assert.equal(validateCommandImages(null), null);
+  assert.match(validateCommandImages({ type: "prompt", images: "nope" }) || "", /array/);
+  assert.match(validateCommandImages({ type: "steer", images: [{ mimeType: "image/png", data: "!!!" }] }) || "", /index 0/);
+  assert.match(validateCommandImages({ type: "follow_up", images: [{ mimeType: "image/svg+xml", data: "aGk=" }] }) || "", /index 0/);
+  assert.match(
+    validateCommandImages({ type: "prompt", images: [{ mimeType: "data:image/png;base64,aGk=", data: "aGk=" }] }) || "",
+    /index 0/,
+    "data: URL prefix in mime is rejected, not stripped",
+  );
+  const many = Array.from({ length: MAX_COMMAND_IMAGES + 1 }, () => good);
+  assert.match(validateCommandImages({ type: "prompt", images: many }) || "", /too many/);
 });
 
 test("isRpcCommand gates the browser command vocabulary", () => {

@@ -4,19 +4,30 @@
  * commands and dialog answers back by pid.
  */
 import { hubLog } from "../log.js";
+import { randId } from "../protocol.js";
 import type { RunnerRegistry } from "../runners/registry.js";
 import type { LiveRunner } from "../runners/live.js";
 import type { DialogBroker } from "./dialogs.js";
 import type { HubSocketServer } from "../mirror/socket.js";
 
+/** Answered well before the browser's own attach timeout (30 s). */
+export const DRIVE_CONFIRM_TIMEOUT_MS = 25000;
+
 export class Relay {
-  constructor(
-    private deps: {
-      server: HubSocketServer;
-      registry: RunnerRegistry;
-      dialogs: DialogBroker;
-    },
-  ) {}
+  private deps: {
+    server: HubSocketServer;
+    registry: RunnerRegistry;
+    dialogs: DialogBroker;
+  };
+  private confirmWaiters = new Map<string, (confirmed: boolean) => void>();
+
+  constructor(deps: {
+    server: HubSocketServer;
+    registry: RunnerRegistry;
+    dialogs: DialogBroker;
+  }) {
+    this.deps = deps;
+  }
 
   start(): void {
     const { server, registry, dialogs } = this.deps;
@@ -71,6 +82,14 @@ export class Relay {
         if (runner) dialogs.registerMirror(frame.pid, runner.id, frame.request);
         break;
       }
+      case "drive_confirm_reply": {
+        const resolve = this.confirmWaiters.get(frame.id);
+        if (resolve) {
+          this.confirmWaiters.delete(frame.id);
+          resolve(frame.confirmed === true);
+        }
+        break;
+      }
       case "bye": {
         registry.removeLive(frame.pid, "TUI closed");
         break;
@@ -82,5 +101,34 @@ export class Relay {
 
   sendDrive(pid: number, command: any): boolean {
     return this.deps.server.sendToPid(pid, { type: "drive", command });
+  }
+
+  /**
+   * Opt-in drive consent (PI_HUB_DRIVE_CONFIRM): ask the TUI user to confirm
+   * a browser attach. Resolves false on deny, timeout, disconnect, or an old
+   * mirror that never answers — fail-closed, never fail-open.
+   */
+  requestDriveConfirm(pid: number, timeoutMs = DRIVE_CONFIRM_TIMEOUT_MS): Promise<boolean> {
+    return new Promise((resolve) => {
+      const id = randId("confirm");
+      const timer = setTimeout(() => {
+        this.confirmWaiters.delete(id);
+        resolve(false);
+      }, timeoutMs);
+      if (timeoutMs > 0 && typeof (timer as any)?.unref === "function") (timer as any).unref();
+      this.confirmWaiters.set(id, (confirmed) => {
+        clearTimeout(timer);
+        resolve(confirmed);
+      });
+      if (!this.deps.server.sendToPid(pid, { type: "drive_confirm", id, pid })) {
+        clearTimeout(timer);
+        this.confirmWaiters.delete(id);
+        resolve(false);
+      }
+    });
+  }
+
+  pendingConfirmCount(): number {
+    return this.confirmWaiters.size;
   }
 }

@@ -4,9 +4,11 @@
 // contract, the shell asset-versioning contract, and auth. They run
 // concurrently (see groups.mjs) so the whole suite is a few seconds.
 import fs from "node:fs";
+import http from "node:http";
 import path from "node:path";
+import { spawn } from "node:child_process";
 import { runGroups } from "./groups.mjs";
-import { PKG_ROOT, connectWs, fixtureSessionDir, freePort, jsonFetch, startHub, startMirror, tmpDir, waitFor } from "./helpers.mjs";
+import { PKG_ROOT, cleanEnv, connectWs, findPi, fixtureSessionDir, freePort, jsonFetch, startHub, startMirror, tmpDir, waitFor } from "./helpers.mjs";
 
 export async function runIntegration({ log }) {
   return runGroups(
@@ -79,6 +81,45 @@ async function hubGroup({ check }) {
     const delBad = await jsonFetch(`${base}/api/sessions/delete`, { method: "POST", body: { dirName: "../..", file: "anything.jsonl" } });
     check("X4b delete traversal refused", delBad.status >= 400, `status ${delBad.status}`);
     check("X4c fixture untouched", fs.existsSync(path.join(sessions, "--tmp-pihub-fixtures--", "2026-01-01T00-00-00Z_fixture.jsonl")));
+
+    // R-10 relocate target is jailed to the browse roots (ADR-017): /etc
+    // must not become a session cwd even though it exists; a dir under
+    // $HOME stays allowed so the Continue flow keeps working.
+    const relBad = await jsonFetch(`${base}/api/sessions/relocate`, { method: "POST", body: { dirName: "--tmp-pihub-fixtures--", file: "2026-01-01T00-00-00Z_fixture.jsonl", cwd: "/etc" } });
+    check("X17 relocate outside roots refused", relBad.status === 403, `status ${relBad.status}`);
+    const relTarget = path.join(process.env.HOME || "/tmp", `pi-hub-test-reloc-${Date.now().toString(36)}`);
+    fs.mkdirSync(relTarget, { recursive: true });
+    try {
+      const relOk = await jsonFetch(`${base}/api/sessions/relocate`, { method: "POST", body: { dirName: "--tmp-pihub-fixtures--", file: "2026-01-01T00-00-00Z_fixture.jsonl", cwd: relTarget } });
+      const relJson = await relOk.json().catch(() => ({}));
+      const relFile = relJson.file && path.join(sessions, "--tmp-pihub-fixtures--", relJson.file);
+      const headerOk = relFile && fs.existsSync(relFile) && JSON.parse(fs.readFileSync(relFile, "utf8").split("\n")[0]).cwd === fs.realpathSync(relTarget);
+      check("X17b relocate under HOME ok with rewritten header", relOk.status === 200 && !!headerOk, `status ${relOk.status}`);
+      if (relFile && fs.existsSync(relFile)) fs.unlinkSync(relFile);
+    } finally {
+      try { fs.rmdirSync(relTarget); } catch {}
+    }
+
+    // X20 (S3): export_html outputPath is validated before it can reach the
+    // child's exporter; without a path the forward still works (child
+    // defaults next to the session file, inside the store).
+    const wsX = await connectWs(`ws://127.0.0.1:${port}/ws`);
+    await wsX.wait((m) => m.type === "hello", 10000, "hello");
+    wsX.send({ type: "bind", id: "bx", dirName: "--tmp-pihub-fixtures--", file: "2026-01-01T00-00-00Z_fixture.jsonl", cwd: "/tmp/pihub-fixtures" });
+    const bx = await wsX.wait((m) => m.type === "bound" && m.id === "bx", 30000, "bind for export");
+    wsX.send({ type: "command", id: "ex1", command: { type: "export_html", outputPath: "/etc/pi-hub-evil.html", id: "ex1" } });
+    const exErr = await wsX.wait((m) => m.type === "error" && m.id === "ex1", 10000, "export jail error");
+    check("X20 export_html outside store refused", /session store/.test(exErr.message), exErr.message);
+    check("X20b evil export wrote nothing", !fs.existsSync("/etc/pi-hub-evil.html"));
+    wsX.send({ type: "command", id: "ex2", command: { type: "export_html", id: "ex2" } });
+    const exAck = await wsX.wait((m) => (m.type === "ack" || m.type === "error") && m.id === "ex2", 10000, "export forward");
+    check("X20c export without path still forwards", exAck.type === "ack", JSON.stringify(exAck).slice(0, 160));
+    wsX.send({ type: "close", id: "clx", runnerId: bx.runner.id });
+    await wsX.wait((m) => m.type === "closed", 10000, "closed after export").catch(() => {});
+    await wsX.close();
+    // The close ack precedes actual child exit; the next bind for this file
+    // must not reuse the dying runner (registry race, still open — H2).
+    await waitFor(async () => (await (await fetch(`${base}/api/runners`)).json()).runners.length === 0, { timeoutMs: 15000, what: "export runner removed" });
 
     // ── WS: bind, get_state, rejoin no-op, close ────────────────────────
     const ws = await connectWs(`ws://127.0.0.1:${port}/ws`);
@@ -157,10 +198,29 @@ async function hubGroup({ check }) {
       ws2.send({ type: "attach", id: "a1", runnerId: instances.instances[0].id });
       const attached = await ws2.wait((m) => m.type === "attached", 10000, "attached");
       check("D2 attach acks driving", attached.runnerId === instances.instances[0].id);
+      // D2b: hostile attachments are validated before any execution, driver or not.
+      ws2.send({ type: "bind", id: "b-live", runnerId: instances.instances[0].id });
+      await ws2.wait((m) => m.type === "bound" && m.id === "b-live", 10000, "live bind ack");
+      ws2.send({ type: "command", id: "v1", command: { type: "prompt", message: "hi", images: [{ mimeType: "image/svg+xml", data: "aGk=" }] } });
+      const vErr = await ws2.wait((m) => m.type === "error" && m.id === "v1", 10000, "image validation error");
+      check("D2b hostile image blocked before execution", /invalid image/.test(vErr.message), vErr.message);
       ws2.send({ type: "detach", id: "d1" });
       const detached = await ws2.wait((m) => m.type === "detached", 10000, "detached");
       check("D3 detach acks", detached.runnerId === instances.instances[0].id);
       await ws2.close();
+      // D8: ADR-014 single driver, enforced server-side (not just UI-disabled).
+      // A bound-but-not-attached socket reads (preview) but may not write.
+      const ws3 = await connectWs(`ws://127.0.0.1:${port}/ws`);
+      await ws3.wait((m) => m.type === "hello", 10000, "hello");
+      ws3.send({ type: "bind", id: "b7", runnerId: instances.instances[0].id });
+      await ws3.wait((m) => m.type === "bound" && m.id === "b7", 10000, "preview bind ack");
+      ws3.send({ type: "command", id: "p7", command: { type: "prompt", message: "steer without attach" } });
+      const pErr = await ws3.wait((m) => m.type === "error" && m.id === "p7", 10000, "drive refusal");
+      check("D8 drive verb without attach is refused", /attach first/.test(pErr.message), pErr.message);
+      ws3.send({ type: "command", id: "g7", command: { type: "get_state" } });
+      const gAck = await ws3.wait((m) => (m.type === "ack" || m.type === "error") && m.id === "g7", 10000, "preview read");
+      check("D8b preview reads stay allowed", gAck.type === "ack", JSON.stringify(gAck).slice(0, 160));
+      await ws3.close();
     } finally {
       await mirror.close();
     }
@@ -356,6 +416,67 @@ async function authGroup({ check }) {
     check("A5 origin rebinding refused", originHeader.status === 403, `status ${originHeader.status}`);
     const healthPublic = await fetch(`${secure.url}/api/health`);
     check("A6 health stays public", healthPublic.ok);
+    // A9: wildcard bind without credentials refuses at boot (before claiming
+    // anything or serving anything) — the tunnel must never meet an open hub.
+    {
+      const piBin = findPi();
+      const dir = tmpDir();
+      const port = await freePort();
+      const env = cleanEnv({});
+      Object.assign(env, {
+        PI_HUB_PORT: String(port),
+        PI_HUB_HOST: "0.0.0.0",
+        PI_HUB_DIR: dir,
+        PI_HUB_ADVERT_FILE: path.join(dir, "hub.json"),
+        PI_HUB_LOG_FILE: path.join(dir, "hub.log"),
+        PI_HUB_STATIC_DIR: path.join(PKG_ROOT, "public"),
+        PI_HUB_PI_BIN: piBin,
+      });
+      const proc = spawn(piBin, ["-e", PKG_ROOT, "--mode", "rpc"], { cwd: PKG_ROOT, env, stdio: ["pipe", "pipe", "pipe"] });
+      proc.stdin.on("error", () => {});
+      proc.stdin.write("\n");
+      try {
+        const logFile = path.join(dir, "hub.log");
+        const refused = await waitFor(async () => {
+          try {
+            return fs.readFileSync(logFile, "utf8").includes("refusing to bind");
+          } catch {
+            return false;
+          }
+        }, { timeoutMs: 25000, what: "wildcard refusal in hub log" });
+        check("A9 wildcard bind without credentials refused", !!refused);
+        const reachable = await fetch(`http://127.0.0.1:${port}/api/health`).then(() => true).catch(() => false);
+        check("A9b refused hub serves nothing", !reachable);
+        check("A9c refused hub claims no scope", !fs.existsSync(path.join(dir, "hub.json")));
+      } finally {
+        try {
+          proc.kill("SIGKILL");
+        } catch {}
+      }
+    }
+    check("A6b no Secure flag over plain HTTP", !/;\s*Secure/i.test(cookie), cookie.slice(0, 80));
+    // A7: Basic covers scripts/curl (S12 backoff below); wrong password 401s.
+    const basicOk = await fetch(`${secure.url}/api/sessions`, { headers: { authorization: `Basic ${Buffer.from("tau:tpass").toString("base64")}` } });
+    check("A7 Basic authenticates scripts", basicOk.ok, `status ${basicOk.status}`);
+    const basicBad = await fetch(`${secure.url}/api/sessions`, { headers: { authorization: `Basic ${Buffer.from("tau:wrong").toString("base64")}` } });
+    check("A7b wrong Basic password 401", basicBad.status === 401, `status ${basicBad.status}`);
+    // A8: Host allowlist is exact now (S12 Host hardening) — raw Host header.
+    const rawStatus = (hostHeader) =>
+      new Promise((resolve) => {
+        const r = http.request(
+          { host: "127.0.0.1", port: authPort, path: "/api/health", method: "GET", headers: { Host: hostHeader } },
+          (res) => {
+            res.resume();
+            resolve(res.statusCode);
+          },
+        );
+        r.on("error", () => resolve(-1));
+        r.end();
+      });
+    check("A8 wrong Host refused", (await rawStatus("evil.example")) === 403);
+    check("A8b bracketed IPv6 loopback parses", (await rawStatus(`[::1]:${authPort}`)) === 200);
+    check("A8c tailnet suffix alone is not trusted", (await rawStatus("other.ts.net")) === 403);
+    check("A8d userinfo-smuggled loopback refused", (await rawStatus("x@127.0.0.1")) === 403);
   } finally {
     await secure.close();
   }

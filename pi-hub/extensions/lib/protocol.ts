@@ -20,6 +20,31 @@ export function isValidMessageImage(img: any): boolean {
   return /^[A-Za-z0-9+/]+={0,2}$/.test(data);
 }
 
+/** Max attachments per prompt: the WS frame cap already bounds total bytes;
+ *  this bounds downstream fan-out (child, relay, every viewer). */
+export const MAX_COMMAND_IMAGES = 10;
+
+/**
+ * Validate the `images` payload of a prompt/steer/follow_up command.
+ * Strict on purpose (raw base64 only, no data: URLs): a client bug must
+ * surface as an error, never as a silently mutated attachment. Returns an
+ * error message, or null when there is nothing to check.
+ */
+export function validateCommandImages(command: any): string | null {
+  if (!command || typeof command !== "object") return null;
+  if (command.type !== "prompt" && command.type !== "steer" && command.type !== "follow_up") return null;
+  const images = (command as any).images;
+  if (images === undefined) return null;
+  if (!Array.isArray(images)) return "images must be an array";
+  if (images.length > MAX_COMMAND_IMAGES) return `too many images (max ${MAX_COMMAND_IMAGES})`;
+  for (let i = 0; i < images.length; i++) {
+    if (!isValidMessageImage(images[i])) {
+      return `invalid image at index ${i}: png/jpeg/gif/webp base64 up to 8 MB only`;
+    }
+  }
+  return null;
+}
+
 export function randId(prefix = "r"): string {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }

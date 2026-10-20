@@ -109,6 +109,37 @@ test("searchSessions finds message text inside the store", () => {
   assert.ok(hits.every((h) => h.filePath.startsWith(path.resolve(ROOT))), "never escapes the store");
 });
 
+test("searchSessions skips oversized files instead of re-reading them per query", () => {
+  const token = ` capacitance-${Math.random().toString(16).slice(2, 10)}`;
+  const big = path.join(ROOT, PROJECT, "2026-01-01T00-00-01Z_big.jsonl");
+  const filler = `{"type":"message","id":"x","message":{"role":"user","content":"pad"}}\n`;
+  const fd = fs.openSync(big, "w");
+  fs.writeSync(fd, `{"type":"session","id":"b","timestamp":"2026-01-01T00:00:00.000Z","cwd":"${CWD}"}\n`);
+  fs.writeSync(fd, `{"type":"message","id":"hit","timestamp":"2026-01-01T00:00:01.000Z","message":{"role":"user","content":"${token}"}}\n`);
+  const pad = "x".repeat(1024 * 1024);
+  while (fs.fstatSync(fd).size <= store.SEARCH_FILE_CAP) fs.writeSync(fd, filler.replace("pad", pad));
+  fs.closeSync(fd);
+  assert.ok(fs.statSync(big).size > store.SEARCH_FILE_CAP);
+  const hits = store.searchSessions(token.trim());
+  assert.ok(!hits.some((h) => h.file === "2026-01-01T00-00-01Z_big.jsonl"), "over-cap file skipped");
+  fs.unlinkSync(big);
+});
+
+test("validateExportPath keeps exports inside the session store (S3)", () => {
+  const inside = path.join(ROOT, PROJECT, "out.html");
+  assert.equal(store.validateExportPath(inside), path.resolve(inside));
+  assert.throws(() => store.validateExportPath("/etc/evil.html"), /session store/);
+  assert.throws(() => store.validateExportPath(path.join(ROOT, "..", "escape.html")), /session store/);
+  const linkDir = path.join(ROOT, PROJECT);
+  const link = path.join(linkDir, "sneaky");
+  try {
+    fs.symlinkSync(os.tmpdir(), link);
+    assert.throws(() => store.validateExportPath(path.join(link, "out.html")), /session store/, "symlinked parent cannot redirect outside");
+  } finally {
+    try { fs.unlinkSync(link); } catch {}
+  }
+});
+
 test("resolveSessionPath jails paths to the sessions dir", () => {
   assert.throws(() => store.resolveSessionPath(PROJECT, "../../etc/passwd"));
   assert.throws(() => store.resolveSessionPath("../..", FILE));

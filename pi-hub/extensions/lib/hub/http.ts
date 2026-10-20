@@ -62,6 +62,32 @@ export function sendError(res: http.ServerResponse, status: number, message: str
   sendJson(res, status, { error: message });
 }
 
+/**
+ * Fixed-window per-key throttle (search, client-error beacons, …). Stale
+ * buckets decay on access and the key map is capped, so floods cannot grow
+ * hub memory — the same eviction pattern as the auth failure map (S9).
+ */
+export function createRateLimiter(opts: { windowMs: number; max: number; maxKeys?: number }): (key: string) => boolean {
+  const hits = new Map<string, number[]>();
+  const maxKeys = opts.maxKeys ?? 1000;
+  return (key: string): boolean => {
+    const now = Date.now();
+    let bucket = hits.get(key);
+    if (!bucket) {
+      bucket = [];
+      if (hits.size >= maxKeys) {
+        const first = hits.keys().next().value;
+        if (first !== undefined) hits.delete(first);
+      }
+      hits.set(key, bucket);
+    }
+    while (bucket.length && now - bucket[0] > opts.windowMs) bucket.shift();
+    if (bucket.length >= opts.max) return false;
+    bucket.push(now);
+    return true;
+  };
+}
+
 export function readJson(req: http.IncomingMessage, maxBytes = BODY_DEFAULT): Promise<any> {
   return new Promise((resolve, reject) => {
     let size = 0;
@@ -255,7 +281,12 @@ export function createHttpServer(opts: HttpOptions): http.Server {
       if (r.method !== req.method) continue;
       const params = r.match(p);
       if (!params) continue;
-      if (r.auth && !opts.auth.authenticate(req)) return sendError(res, 401, "authentication required");
+      if (r.auth) {
+        const verdict = await opts.auth.authenticateRequest(req);
+        if (verdict !== "ok") {
+          return sendError(res, verdict === "limited" ? 429 : 401, "authentication required");
+        }
+      }
       try {
         await r.handler({ req, res, url, params });
       } catch (e: any) {

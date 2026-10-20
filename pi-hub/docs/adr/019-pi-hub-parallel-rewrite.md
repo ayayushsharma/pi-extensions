@@ -44,6 +44,14 @@ one test gate.
    no-op (ADR-015) and never `switch_session`s a running agent; bind acks
    only after readiness with honest failures (fixes B3); bounded pool and
    event ring buffer.
+
+   *Amendment (2026-10-21):* "one process per session file" scopes to
+   hub-spawned **headless** children. Live TUIs are announced, not spawned —
+   two TUIs may legitimately share a file — so live runners are keyed by
+   pid (one runner per announcing process); collapsing them by file orphans
+   a relay. A plain bind to a live-owned file is refused (attach instead,
+   ADR-014 single driver); resumes still converge on the live TUI via the
+   client, which picks the most recently announced owner.
 2. **One envelope, push not poll.** Every runner emits the same
    `event {runnerId, seq, event}` stream (ADR-004 generalized); registry
    changes are pushed (`runner_added/status/removed`); the client keeps a

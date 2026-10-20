@@ -3,6 +3,11 @@
 #
 #   scripts/dev-hub.sh start|stop|restart|status [port]
 #
+# Singleton (ADR-021): the dev hub shares the default advert file, so it
+# refuses to start while the prod hub is up (and vice versa) — stop one
+# first. A custom PI_HUB_ADVERT_FILE would scope it apart, but then mirrors
+# and browsers no longer converge on one hub, which is the point.
+#
 # Binds to the machine's primary LAN IPv4 (not 0.0.0.0), serves the UI with
 # auth disabled, and keeps a pid + log under /tmp. Use `PI_HUB_ALLOW_ANY_HOST=1`
 # only if the UI must be reachable by hostname.

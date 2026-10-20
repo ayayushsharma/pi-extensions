@@ -81,7 +81,7 @@ a { color: var(--accent-text); }
 .btn:disabled { opacity: 0.45; cursor: default; }
 
 /* ── app shell ───────────────────────────────────────────────────────── */
-.app { display: flex; flex-direction: column; height: 100dvh; }
+.app { display: flex; flex-direction: column; height: 100vh; height: 100dvh; }
 .shell { flex: 1; display: flex; min-height: 0; position: relative; }
 
 /* ── tab bar ─────────────────────────────────────────────────────────── */
@@ -774,7 +774,7 @@ html[data-wrap-code="1"] .code-block {
   -webkit-backdrop-filter: blur(3px);
 }
 .card {
-  width: 100%; max-width: 560px; max-height: 84dvh;
+  width: 100%; max-width: 560px; max-height: 84vh; max-height: 84dvh;
   display: flex; flex-direction: column;
   background: var(--panel-solid); border: 1px solid var(--border-2);
   border-radius: var(--r-lg); box-shadow: var(--shadow-lg);
@@ -809,7 +809,7 @@ html[data-wrap-code="1"] .code-block {
 }
 .picker-prompt:focus { border-color: var(--border-3); }
 /* settings */
-.settings-card { max-width: 780px; height: min(86dvh, 660px); }
+.settings-card { max-width: 780px; height: min(86vh, 660px); height: min(86dvh, 660px); }
 .settings-note { font-size: var(--fs-xs); color: var(--text-3); }
 .settings-body {
   flex: 1; min-height: 0;
@@ -925,7 +925,7 @@ input.switch:focus-visible { outline: 2px solid var(--accent); outline-offset: 2
 .proc-empty { padding: 10px 0; font-size: var(--fs-sm); color: var(--text-2); }
 
 /* viewer */
-.viewer-card { max-width: 900px; height: 80dvh; }
+.viewer-card { max-width: 900px; height: 80vh; height: 80dvh; }
 .viewer-body {
   margin: 0; flex: 1; overflow: auto; padding: 12px 16px;
   font-family: var(--font-mono); font-size: var(--fs-sm); line-height: 1.6;
@@ -937,7 +937,7 @@ input.switch:focus-visible { outline: 2px solid var(--accent); outline-offset: 2
 .dialog-card { max-width: 440px; padding: 16px; gap: 10px; display: flex; flex-direction: column; }
 .dialog-card h2 { margin: 0; font-size: var(--fs-lg); }
 .dialog-card .dialog-message { color: var(--text-2); font-size: var(--fs-md); }
-.dialog-options { display: flex; flex-direction: column; gap: 4px; max-height: 50dvh; overflow-y: auto; }
+.dialog-options { display: flex; flex-direction: column; gap: 4px; max-height: 50vh; max-height: 50dvh; overflow-y: auto; }
 .dialog-options .opt {
   padding: 9px 12px; border-radius: var(--r-md); border: 1px solid var(--border);
   text-align: left; font-size: var(--fs-md);
@@ -960,7 +960,7 @@ input.switch:focus-visible { outline: 2px solid var(--accent); outline-offset: 2
   border-radius: var(--r-pill); box-shadow: var(--shadow-lg);
   font-size: var(--fs-md); animation: toast-in 0.22s var(--spring);
 }
-.toast[data-kind="error"] { color: var(--danger); border-color: rgba(210, 75, 75, 0.4); }
+.toast[data-kind="error"] { background: var(--danger); color: #fff; border-color: var(--danger); font-weight: 600; }
 @keyframes toast-in { from { opacity: 0; transform: translate(-50%, 8px); } }
 
 /* login */
@@ -1019,8 +1019,11 @@ input.switch:focus-visible { outline: 2px solid var(--accent); outline-offset: 2
 }
 @media (max-width: 860px) {
   :root { --hub-max: 100%; }
-  /* iOS zooms a focused field under 16px; keep fields at 16px on small screens. */
-  input, textarea, select { font-size: 16px; }
+  /* iOS zooms a focused field under 16px; keep fields at 16px on small screens.
+     Class selectors beat the bare-element rule, so list the classed fields too. */
+  input, textarea, select,
+  .picker-path, .picker-prompt, .sb-search,
+  .dialog-card input, .dialog-card textarea,
   .composer textarea { font-size: 16px; }
   .scroll-area, .sidebar .scroll, .file-list, .card-body { -webkit-overflow-scrolling: touch; }
   .sidebar {
@@ -1036,15 +1039,21 @@ input.switch:focus-visible { outline: 2px solid var(--accent); outline-offset: 2
   .file-panel { position: fixed; top: var(--header-h); bottom: 0; right: 0; width: min(320px, 88vw); z-index: 25; box-shadow: var(--shadow-lg); }
   .transcript-inner { padding: 12px 12px 18px; }
   .composer-wrap { padding-left: 10px; padding-right: 10px; }
-  .composer textarea { padding-right: 96px; font-size: var(--fs-md); }
+  .composer textarea { padding-right: 96px; }
   .banner { width: calc(100% - 20px); }
+  /* Narrow banners stack: copy full-width on top, buttons share a row below.
+     Side-by-side in one row squeezed the copy into a tall sliver. */
+  .banner { flex-wrap: wrap; gap: 8px 12px; }
+  .banner .icon { display: none; }
+  .banner .banner-copy { flex: 1 1 100%; }
+  .banner .btn { flex: 1; white-space: nowrap; justify-content: center; }
   .msg.user .bubble { max-width: 88%; }
   .tab .tab-title { max-width: 96px; }
   .conn #status-text { display: none; }
   /* Settings on a phone is a full-screen sheet: the rail becomes a
      scrollable tab strip above the pane. */
   #settings.overlay { padding: 0; align-items: stretch; }
-  .settings-card { max-width: none; width: 100%; height: 100dvh; max-height: 100dvh; border-radius: 0; border: 0; }
+  .settings-card { max-width: none; width: 100%; height: 100vh; height: 100dvh; max-height: 100vh; max-height: 100dvh; border-radius: 0; border: 0; }
   .settings-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
   .settings-tabs {
     flex-direction: row; gap: 4px; padding: 8px 12px;

@@ -11,15 +11,60 @@ import { isFavourite, favKey } from "../core/store.js";
 
 export function createPicker(refs, actions) {
   let dir = "";
+  let dirEntries = []; // { name, full } of the currently listed directory
+  let hi = 0; // highlighted index within the filtered dirs
   let projects = [];
   let choice = null; // { session } while the resume/fork choice is showing
+
+  // Type-to-filter over the current listing (no server roundtrip per
+  // keystroke): match the typed last segment against child names, but only
+  // while the typed path is still inside the listed dir. Typing upward (e.g.
+  // trimming to the parent) leaves the listing stale — filtering it by the
+  // parent's own name would fake an empty "No matching" state.
+  function commonPrefix(strs) {
+    let p = strs[0] || "";
+    for (const s of strs.slice(1)) {
+      let i = 0;
+      while (i < p.length && s[i] === p[i]) i++;
+      p = p.slice(0, i);
+      if (!p) break;
+    }
+    return p;
+  }
+  function norm(p) {
+    return (p || "").trim().replace(/[\\/]+$/, "") || "/";
+  }
+  function filteredDirs() {
+    const typed = norm(refs.path.value);
+    const here = norm(dir);
+    if (typed === here) return dirEntries;
+    if (!typed.startsWith(here === "/" ? "/" : here + "/")) return dirEntries;
+    const f = (typed.split(/[\\/]/).pop() || "").toLowerCase();
+    if (!f) return dirEntries;
+    return dirEntries.filter((d) => d.name.toLowerCase().includes(f));
+  }
+  function renderDirs() {
+    const list = filteredDirs();
+    if (hi >= list.length) hi = Math.max(0, list.length - 1);
+    refs.dirs.replaceChildren();
+    if (!dirEntries.length) refs.dirs.append(el("div", { class: "sb-empty", text: "No subdirectories" }));
+    else if (!list.length) refs.dirs.append(el("div", { class: "sb-empty", text: "No matching subdirectories" }));
+    list.forEach((d, i) => {
+      refs.dirs.append(
+        el("button", { type: "button", class: `sb-row${i === hi ? " active" : ""}`, onclick: () => browse(d.full) },
+          el("span", { class: "row-title" }, icon("folder", 13), el("span", { class: "grow", text: d.name })),
+        ),
+      );
+    });
+    return list;
+  }
 
   refs.close.append(icon("x", 15));
   refs.up.append(el("span", { text: "↑ Up" }));
 
   // New-folder affordance (single level, jailed server-side like all mkdir).
   const newFolderRow = el("div", { class: "picker-choice hidden" });
-  const newFolderName = el("input", { class: "picker-path", placeholder: "folder name", maxlength: "64", "aria-label": "New folder name" });
+  const newFolderName = el("input", { class: "picker-path", placeholder: "folder name", maxlength: "64", "aria-label": "New folder name", autocomplete: "off", autocorrect: "off", autocapitalize: "off", spellcheck: "false" });
   const newFolderGo = el("button", { class: "btn small primary", type: "button", text: "Create" });
   newFolderRow.append(newFolderName, newFolderGo);
   refs.path.parentElement.after(newFolderRow);
@@ -59,7 +104,6 @@ export function createPicker(refs, actions) {
   }
 
   function sessionRow(session, project) {
-    const fav = isFavourite(favKey(session, project));
     return el(
       "button",
       {
@@ -71,7 +115,7 @@ export function createPicker(refs, actions) {
           renderChoice();
         },
       },
-      el("span", { class: "row-title" }, fav ? icon("star", 12) : null, el("span", { class: "grow", style: "overflow:hidden;text-overflow:ellipsis", text: session.title || session.file })),
+      el("span", { class: "row-title" }, el("span", { class: "grow", style: "overflow:hidden;text-overflow:ellipsis", text: session.title || session.file })),
       el("span", { class: "row-sub" }, el("span", { text: session.messageCount ? `${session.messageCount} msgs` : "" }), el("span", { text: timeAgo(session.mtime) })),
     );
   }
@@ -98,16 +142,9 @@ export function createPicker(refs, actions) {
       const out = await listDir(path || dir || "~");
       dir = out.path;
       refs.path.value = dir;
-      refs.dirs.replaceChildren();
-      const dirs = out.entries.filter((e) => e.type === "dir");
-      if (!dirs.length) refs.dirs.append(el("div", { class: "sb-empty", text: "No subdirectories" }));
-      for (const entry of dirs) {
-        refs.dirs.append(
-          el("button", { type: "button", class: "sb-row", onclick: () => browse(`${out.path}/${entry.name}`) },
-            el("span", { class: "row-title" }, icon("folder", 13), el("span", { class: "grow", text: entry.name })),
-          ),
-        );
-      }
+      dirEntries = out.entries.filter((e) => e.type === "dir").map((entry) => ({ name: entry.name, full: `${out.path}/${entry.name}` }));
+      hi = 0;
+      renderDirs();
       refs.start.textContent = dir ? `Start new session in ${shortCwd(dir)}` : "Start new session here";
       const project = projectFor(dir);
       refs.sessionsLabel.textContent = project ? `Sessions in ${basename(dir) || dir}` : "Sessions here";
@@ -137,7 +174,7 @@ export function createPicker(refs, actions) {
     refs.favs.append(el("div", { class: "section-label" }, "★ Favourites"));
     for (const { s, p } of favs) {
       const row = sessionRow(s, p);
-      row.prepend(el("span", { class: "icon-btn", title: "Remove favourite", onclick: (e) => { e.stopPropagation(); actions.toggleFavourite(favKey(s, p)); renderFavourites(); } }, icon("starFill", 13)));
+      row.append(el("span", { class: "row-actions" }, el("span", { class: "icon-btn fav-btn", title: "Remove favourite", dataset: { fav: "1" }, onclick: (e) => { e.stopPropagation(); actions.toggleFavourite(favKey(s, p)); renderFavourites(); } }, icon("starFill", 13))));
       refs.favs.append(row);
     }
     show(refs.favs, true);
@@ -154,8 +191,40 @@ export function createPicker(refs, actions) {
     if (e.target === refs.root) close();
   });
   refs.up.addEventListener("click", () => browse(dir.split(/[\\/]/).slice(0, -1).join("/") || "/"));
+  refs.path.addEventListener("input", () => { hi = 0; renderDirs(); });
   refs.path.addEventListener("keydown", (e) => {
     if (e.key === "Enter") browse(refs.path.value.trim());
+    else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      const list = filteredDirs();
+      if (!list.length) return;
+      hi = (hi + (e.key === "ArrowDown" ? 1 : -1) + list.length) % list.length;
+      renderDirs();
+    } else if (e.key === "Tab") {
+      e.preventDefault();
+      const typed = norm(refs.path.value);
+      const here = norm(dir);
+      if (typed === here) return; // box already exact — nothing to complete
+      const list = filteredDirs();
+      if (list.length === 1) browse(list[0].full); // single match: complete + descend
+      else if (list.length > 1) {
+        const frag = (typed.split(/[\\/]/).pop() || "").toLowerCase();
+        if (frag && list.every((d) => d.name.toLowerCase().startsWith(frag))) {
+          const p = commonPrefix(list.map((d) => d.name.toLowerCase()));
+          if (p.length > frag.length) {
+            refs.path.value = `${here}/${list[0].name.slice(0, p.length)}`;
+            hi = 0;
+            renderDirs();
+            return;
+          }
+        }
+        hi = (hi + 1) % list.length; // nothing more to complete: cycle (zsh-style)
+        renderDirs();
+      } else if (!typed.startsWith(here === "/" ? "/" : here + "/")) {
+        browse(refs.path.value.trim()); // typed left this listing: go there, like Enter
+      }
+      // else: partial name with no match — leave it alone (bash would beep)
+    }
   });
   refs.start.addEventListener("click", () => {
     const starter = refs.starter.value.trim();

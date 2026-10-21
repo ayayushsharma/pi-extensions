@@ -710,7 +710,8 @@ export function forkSession(dirName: string, file: string): { file: string } {
   const src = resolveSessionPath(dirName, file);
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   const name = `${stamp}_${crypto.randomUUID()}.jsonl`;
-  const dest = path.join(SESSIONS_DIR, dirName, name);
+  // A flat store keeps files in the root; only nested layouts get a subdir.
+  const dest = isFlatDir(dirName) ? path.join(SESSIONS_DIR, name) : path.join(SESSIONS_DIR, dirName, name);
   fs.copyFileSync(src, dest);
   // src is untouched; the new copy gets indexed on first read.
   return { file: name };
@@ -745,7 +746,7 @@ export function relocateSession(dirName: string, file: string, cwd: string): { f
   if (!rewritten) throw new Error("no session header found");
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   const name = `${stamp}_${crypto.randomUUID()}.jsonl`;
-  const dest = path.join(SESSIONS_DIR, dirName, name);
+  const dest = isFlatDir(dirName) ? path.join(SESSIONS_DIR, name) : path.join(SESSIONS_DIR, dirName, name);
   fs.writeFileSync(dest, lines.join("\n"));
   invalidateSession(src);
   invalidateSession(dest);

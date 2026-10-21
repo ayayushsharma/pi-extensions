@@ -72,6 +72,26 @@ test("a healthy socket advances lastSeq exactly once per frame", () => {
   assert.deepEqual(sent.map((s) => JSON.parse(s).seq), [1, 2, 3], "no replay without a gap");
 });
 
+test("an empty delta flushes the pending batch instead of skipping it (H9)", () => {
+  const d1 = { runnerId: "r1", seq: 1, event: { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "hel" } } };
+  const d2 = { runnerId: "r1", seq: 2, event: { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "lo" } } };
+  const empty = { runnerId: "r1", seq: 3, event: { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "" } } };
+  // The ring only ever holds past frames: push as they fan out, or the mock
+  // replays frames the real ring could not contain yet and double-buffers.
+  const frames: any[] = [];
+  const { hub, client, sent } = hubWithRunner(frames);
+  frames.push(d1);
+  (hub as any).fanOut(d1);
+  frames.push(d2);
+  (hub as any).fanOut(d2);
+  frames.push(empty);
+  (hub as any).fanOut(empty);
+  const bodies = sent.map((s) => JSON.parse(s));
+  const batch = bodies.find((b: any) => b.event?.assistantMessageEvent?.delta === "hello");
+  assert.ok(batch, "pending batch delivered instead of skipped");
+  assert.equal(client.lastSeq, 3, "empty frame advances past the flushed batch");
+});
+
 test("a dropped coalesced flush replays its deltas on the next frame", () => {
   const d1 = { runnerId: "r1", seq: 1, event: { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "hel" } } };
   const d2 = { runnerId: "r1", seq: 2, event: { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "lo" } } };

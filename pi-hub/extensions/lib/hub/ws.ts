@@ -168,7 +168,10 @@ export class WsHub {
     if (c.deltaTpl && (c.deltaText || c.deltaThinking)) {
       const ev = JSON.parse(JSON.stringify(c.deltaTpl.event));
       ev.assistantMessageEvent.delta = c.deltaText || c.deltaThinking;
-      if (this.send(c, { type: "event", ...c.deltaTpl, event: ev })) {
+      // Stamp the batch with the max seq it covers, not the first frame's:
+      // the client records lastSeen from this seq, and a replay from an
+      // understated seq would redeliver (and duplicate) applied deltas.
+      if (this.send(c, { type: "event", ...c.deltaTpl, seq: c.deltaSeq, event: ev })) {
         c.lastSeq = Math.max(c.lastSeq, c.deltaSeq);
       }
     }
@@ -182,6 +185,9 @@ export class WsHub {
     const delta = streamDelta(frame);
     if (delta) {
       if (!delta.delta) {
+        // An empty delta still advances the frame: flush any pending batch
+        // first, or the ring would replay past its seqs and skip them (H9).
+        this.flushDeltas(c);
         c.lastSeq = Math.max(c.lastSeq, frame.seq);
         return;
       }
@@ -218,8 +224,10 @@ export class WsHub {
         // before notifying); replay only the gap, it is delivered below.
         // No lastSeq>0 guard: binds start at the head, so seq 0 can only
         // mean "nothing delivered yet" and the gap is real (H5).
+        // Frames at/below the coalescer ceiling are already buffered, not
+        // delivered — redelivering them would double-count their text.
         for (const missed of runner.replayFrom(c.lastSeq)) {
-          if (missed.seq < frame.seq) this.deliver(c, missed);
+          if (missed.seq < frame.seq && missed.seq > c.deltaSeq) this.deliver(c, missed);
         }
       }
       hubDebug(`ws[${c.id}] <- ${frame.runnerId} seq=${frame.seq} ${frame.event?.type || "?"}`);

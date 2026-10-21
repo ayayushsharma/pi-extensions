@@ -43,7 +43,7 @@ tau-web code is copied or imported). It matches tau-web's visual language and
 UX while fixing known rough edges:
 
 - **Tab bar + home**: one tab per open session, dot states (live/working),
-  `Ctrl+T` instant new session, `Ctrl+K` picker, `Ctrl+Shift+P` home.
+  `Ctrl+K` picker, `Ctrl+Shift+P` home.
 - **Sidebar**: current-session card with live state, *currently running tabs*,
   *running terminals* (Drive/Detach inline), project-grouped sessions with
   client-side filter plus full-text fallback (`GET /api/search`), favourites,
@@ -152,7 +152,7 @@ node tests/run.mjs --all        # + Firefox CLI smoke (cross-platform, ADR-020)
 node tests/run.mjs --all -j1    # serial, deterministic logs/timings
 ```
 
-Current on the **Linux dev host**: **73 unit + 94 integration + 170 Playwright
+Current on the **Linux dev host**: **76 unit + 94 integration + 171 Playwright
 checks**; the Firefox CLI smoke SKIPs on hosts whose system Firefox cannot
 render headless. **On Termux the suite does not run as checked out** (T1 in
 `docs/code-review.md` §4): with test-only portability fixes it is 72/72 unit
@@ -204,7 +204,7 @@ parent PID; every browser case fails on a page error or a non-empty
   (preview sockets read, drive verbs are refused); the hub never injects
   into a foreign process except through an explicit attach or the
   process-kill switch (ADR-013/014: argv/`exe` fingerprint, re-checked at
-  kill time, never self, never pid ≤ 1; works on Linux and Android/Termux). `PI_HUB_DRIVE_CONFIRM=1` adds native
+  kill time, never self, never pid ≤ 1; works on Linux, Android/Termux and macOS). `PI_HUB_DRIVE_CONFIRM=1` adds native
   TUI approval per attach for shared deployments (deny/timeout fail closed).
 
 ## Docs

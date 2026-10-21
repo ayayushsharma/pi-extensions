@@ -52,7 +52,7 @@
       <button id="sidebar-toggle" class="icon-btn" type="button" aria-label="Toggle sidebar" aria-expanded="false" title="Sessions sidebar"></button>
       <button id="home-btn" class="icon-btn" type="button" aria-label="All sessions" title="All sessions"></button>
       <div class="tab-strip" id="tab-strip" role="tablist" aria-label="Open sessions"></div>
-      <button id="tab-new" class="icon-btn tab-new" type="button" aria-label="New session" title="New session (Ctrl+T)"></button>
+      <button id="tab-new" class="icon-btn tab-new" type="button" aria-label="New session" title="New session"></button>
       <div class="spacer"></div>
       <button id="conn" class="conn" type="button" data-state="off" title="Connection status">
         <span class="status-dot" id="status-dot"></span>
@@ -102,8 +102,7 @@
           <div class="welcome hidden" id="welcome">
             <span id="welcome-logo"></span>
             <h2>Welcome to Pi Hub</h2>
-            <p>Type a message below to start chatting with Pi, or pick a session from the sidebar.</p>
-            <div class="hints" id="welcome-hints"></div>
+            <p>Start a new session below, or pick one from the sidebar.</p>
             <div class="welcome-actions" id="welcome-actions"></div>
             <div class="welcome-live hidden" id="welcome-live"></div>
             <div class="welcome-recents" id="welcome-recents"></div>
@@ -259,10 +258,37 @@
               </label>
               <label class="field-row">
                 <span class="field-copy">
-                  <span class="field-title">Wrap long lines</span>
-                  <span class="field-sub">Wrap code and wide output rather than scrolling sideways.</span>
+                  <span class="field-title">Wrap message code</span>
+                  <span class="field-sub">Wrap code and wide output in messages rather than scrolling sideways.</span>
                 </span>
                 <input id="toggle-wrap" class="switch" type="checkbox" />
+              </label>
+              <label class="field-row">
+                <span class="field-copy">
+                  <span class="field-title">Wrap tool calls</span>
+                  <span class="field-sub">Wrap tool arguments and output in tool cards rather than scrolling sideways.</span>
+                </span>
+                <input id="toggle-wrap-tools" class="switch" type="checkbox" />
+              </label>
+              <label class="field-row">
+                <span class="field-copy">
+                  <span class="field-title">Tool output</span>
+                  <span class="field-sub">Readable text shows the output plainly; raw JSON keeps the full result blocks.</span>
+                </span>
+                <select id="tool-output" class="field-select" aria-label="Tool output">
+                  <option value="text">Readable text</option>
+                  <option value="raw">Raw JSON</option>
+                </select>
+              </label>
+              <label class="field-row">
+                <span class="field-copy">
+                  <span class="field-title">Streaming replies</span>
+                  <span class="field-sub">Format live renders markdown as it arrives. Format on completion shows plain text while streaming and formats once at the end — easier on long replies and slower devices.</span>
+                </span>
+                <select id="stream-render" class="field-select" aria-label="Streaming replies">
+                  <option value="live">Format live</option>
+                  <option value="settled">Format on completion</option>
+                </select>
               </label>
             </div>
           </section>

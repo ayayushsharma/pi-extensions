@@ -26,10 +26,10 @@ function fake(pid: number, argv: string[], { rssPages = 1000, cwd = ROOT, exe = 
 const onProc = proc.supportsProcessScan();
 const skip = onProc ? false : "no /proc on this platform";
 
-test("platform gate accepts Linux and Android, rejects the rest", () => {
+test("platform gate accepts Linux, Android and macOS, rejects the rest", () => {
   assert.equal(proc.supportsProcessScan("linux"), true);
   assert.equal(proc.supportsProcessScan("android"), true, "Termux reports android, not linux");
-  assert.equal(proc.supportsProcessScan("darwin"), false);
+  assert.equal(proc.supportsProcessScan("darwin"), true, "macOS scans through ps");
   assert.equal(proc.supportsProcessScan("win32"), false);
 });
 
@@ -79,4 +79,19 @@ test("kill refuses self, init, hub-owned and non-pi pids before signalling", { s
   await assert.rejects(proc.killLivePiProcess(999, new Set(), 999, PROC), /hub itself/);
   await assert.rejects(proc.killLivePiProcess(100, new Set([100]), 999, PROC), /close_session/);
   await assert.rejects(proc.killLivePiProcess(103, new Set(), 999, PROC), /not a pi process/);
+});
+
+test("ps parse keeps pid/rss/command apart, skips pid 1 and junk", () => {
+  const rows = proc.parsePs(
+    "  4669 198432 02:05:23 /usr/local/bin/pi --mode rpc\n" +
+    "   123    512 00:00 node /srv/app/server.js\n" +
+    "     1      64 3-02:05:23 /sbin/launchd\n" +
+    "junk line\n",
+  );
+  assert.equal(rows.length, 2);
+  assert.equal(rows[0].pid, 4669);
+  assert.equal(rows[0].rssKb, 198432);
+  assert.ok(rows[0].startedAt !== null && rows[0].startedAt <= Date.now());
+  assert.equal(rows[0].command, "/usr/local/bin/pi --mode rpc");
+  assert.equal(rows[1].pid, 123);
 });

@@ -7,7 +7,9 @@ import { el, show, copyText, toast, basename } from "../core/dom.js";
 import { icon } from "../core/icons.js";
 
 const TEXT_EXT = /\.(txt|md|markdown|json|jsonl|js|mjs|cjs|ts|tsx|jsx|css|html|htm|xml|yml|yaml|toml|ini|cfg|conf|sh|bash|zsh|py|rb|go|rs|java|c|h|cpp|hpp|swift|kt|sql|log|csv)$/i;
-const IMAGE_EXT = /\.(png|jpe?g|gif|webp|bmp|svg|avif)$/i;
+/* Preview allowlist mirrors the server (files.ts IMAGE_EXT): png, jpeg, gif,
+   webp. Anything else downloads instead of rendering a broken image. */
+const IMAGE_EXT = /\.(png|jpe?g|gif|webp)$/i;
 
 export function createFiles(refs, actions) {
   let currentPath = "";

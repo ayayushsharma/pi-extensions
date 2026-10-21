@@ -1,7 +1,7 @@
 # pi-hub — implementation plan
 
 Status: **implemented (P0–P6)** (2026-10-18 overnight; updated 2026-10-22).
-Current gate on the Linux dev host: **73 unit · 94 integration · 170
+Current gate on the Linux dev host: **76 unit · 94 integration · 171
 Playwright** checks green (including one real model round-trip with
 `PI_HUB_E2E_PROMPT=1`); `--firefox` adds the zero-dependency CLI smoke (skips
 where system Firefox cannot render headless). **On Termux the gate does not run
@@ -154,7 +154,7 @@ extensions/lib/
   store/
     sessions.ts      list / window / fork / rename over an append-aware index
     files.ts         browse roots, realpath jails, mime, preview, mkdir
-  processes.ts       /proc scan (Linux + Android) + TERM→KILL (ADR-013)
+  processes.ts       /proc scan (Linux + Android), ps scan (macOS) + TERM→KILL (ADR-013)
 ```
 
 ### 3.1 The Runner contract
@@ -271,7 +271,7 @@ Port the tau-web posture and fix its findings by construction:
 - Process kill keeps the fingerprint rules (ADR-013): argv or `exe` must be
   pi (argv[0] `pi`, a `pi-coding-agent` install path, `bundle/cli.js`,
   `bin/pi`, or the `pi-node.sh` wrapper), re-checked at kill time; never
-  self, never pid ≤ 1. The scan works on Linux and Android/Termux (`/proc`);
+  self, never pid ≤ 1. The scan works on Linux and Android/Termux (`/proc`) and macOS (`ps`);
   other platforms report unsupported.
 
 ## 5. Performance budgets (the box is a Galaxy F12, ~2 GB free)

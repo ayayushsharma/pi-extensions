@@ -29,6 +29,7 @@ import {
   forkSession as apiFork,
   gitBranch,
   history as fetchHistory,
+  killProcess as apiKillProcess,
   listSessions,
   login,
   logout,
@@ -100,7 +101,6 @@ const refs = {
   jumpLatest: $("jump-latest"),
   welcome: $("welcome"),
   welcomeLogo: $("welcome-logo"),
-  welcomeHints: $("welcome-hints"),
   welcomeActions: $("welcome-actions"),
   welcomeRecents: $("welcome-recents"),
   welcomeLive: $("welcome-live"),
@@ -158,6 +158,9 @@ const refs = {
   toggleCosts: $("toggle-costs"),
   toggleTools: $("toggle-tools"),
   toggleWrap: $("toggle-wrap"),
+  wrapToolsToggle: $("toggle-wrap-tools"),
+  streamRenderSel: $("stream-render"),
+  toolOutputSel: $("tool-output"),
   serverInfo: $("server-info"),
   procRefresh: $("proc-refresh"),
   procList: $("proc-list"),
@@ -177,7 +180,7 @@ const refs = {
 function initialTheme() {
   if (state.prefs.theme) return state.prefs.theme;
   try {
-    return window.matchMedia?.("(prefers-color-scheme: light)").matches ? "terracotta" : "night";
+    return window.matchMedia?.("(prefers-color-scheme: light)").matches ? "clean" : "night";
   } catch {
     return "night";
   }
@@ -189,6 +192,12 @@ let socket = null;
 const pendingCommands = new Map();
 
 const lastSeenSeq = new Map(); // runnerId -> last event seq observed
+/* Head seq at the last bind ack per runner: history fetched after the bind
+   covers everything up to it, so replayed frames at/below it would paint
+   messages history already rendered (background output completed while we
+   were away). In-flight partials below the head heal at message_end. */
+let bindHeadRunner = null;
+let bindHeadSeq = 0;
 
 function rawSend(msg) {
   return socket?.send(msg) ?? false;
@@ -211,7 +220,10 @@ const transcript = createTranscript(refs.messages, {
   showThinking: state.prefs.showThinking,
   showCosts: state.prefs.showCosts,
   expandTools: state.prefs.expandTools,
+  streamRender: state.prefs.streamRender,
+  toolOutput: state.prefs.toolOutput,
   onOpenFile: (path) => files.view(path),
+  onLoadEarlier: () => loadEarlier().catch((e) => toast(e.message, { kind: "error" })),
 });
 
 const files = createFiles(
@@ -274,6 +286,9 @@ const settings = createSettings(
     costsToggle: refs.toggleCosts,
     toolsToggle: refs.toggleTools,
     wrapToggle: refs.toggleWrap,
+    wrapToolsToggle: refs.wrapToolsToggle,
+    streamSelect: refs.streamRenderSel,
+    toolOutputSelect: refs.toolOutputSel,
     info: refs.serverInfo,
     refresh: refs.procRefresh,
     procRefresh: refs.procRefresh,
@@ -291,6 +306,8 @@ const settings = createSettings(
         showThinking: state.prefs.showThinking,
         showCosts: state.prefs.showCosts,
         expandTools: state.prefs.expandTools,
+        streamRender: state.prefs.streamRender,
+        toolOutput: state.prefs.toolOutput,
       });
       render();
     },
@@ -303,6 +320,17 @@ async function clearQueue() {
   const texts = [...(r?.data?.steering || []), ...(r?.data?.followUp || [])].filter((t) => typeof t === "string");
   set({ queue: [] });
   return texts;
+}
+
+/** A delivered steer/follow-up arrives as its user message: drop the pill
+ *  whose text matches (first match — identical texts queue independently). */
+function dequeueDelivered(message) {
+  if (!state.queue.length) return;
+  const c = message?.content;
+  const text = typeof c === "string" ? c : Array.isArray(c) ? c.filter((b) => b?.type === "text").map((b) => b.text || "").join("\n") : "";
+  if (!text) return;
+  const i = state.queue.findIndex((q) => q.text === text);
+  if (i >= 0) set({ queue: [...state.queue.slice(0, i), ...state.queue.slice(i + 1)] });
 }
 
 /** Put recovered text back into the composer, keeping anything already typed. */
@@ -339,6 +367,9 @@ const composer = createComposer(
     prompt: (message, images) => commandRequest({ type: "prompt", message, ...(images.length ? { images } : {}) }, 30000),
     steer: (message, images) => commandRequest({ type: "steer", message, ...(images.length ? { images } : {}) }, 30000),
     followUp: (message, images) => commandRequest({ type: "follow_up", message, ...(images.length ? { images } : {}) }, 30000),
+    // The pill shows immediately on ack (pi reports no queue state back —
+    // `queue_update` is handled if it ever arrives and then wins as server
+    // truth). It clears when pi delivers the text as its user message.
     // Abort behaves like pi's Esc: queued text goes back to the editor instead
     // of being delivered after the run.
     abort: async () => {
@@ -367,6 +398,7 @@ const composer = createComposer(
       await refreshSessionState();
     },
     restoreQueue: async () => restoreToEditor(await clearQueue()),
+    queued: (text, kind) => set({ queue: [...state.queue, { text, kind }] }),
     takePendingFiles: () => state.pendingFiles.splice(0),
     toast: (message, opts) => toast(message, opts),
   },
@@ -419,11 +451,6 @@ refs.tbClose.append(icon("x", 14));
 refs.tbClose.addEventListener("click", () => state.activeKey && closeTab(state.activeKey));
 refs.welcomeLogo.append(logo(60));
 refs.loginMark.append(logo(48));
-refs.welcomeHints.append(
-  el("span", { class: "chip-mini" }, "/", " focus input"),
-  el("span", { class: "chip-mini" }, "Esc", " stop"),
-  el("span", { class: "chip-mini" }, "Ctrl+T", " new session"),
-);
 refs.welcomeActions.append(
   el("button", { class: "btn primary", type: "button", onclick: () => newSession(state.bound?.cwd || state.meta?.cwd) }, icon("plus", 14), "New session"),
   el("button", { class: "btn", type: "button", onclick: () => picker.open(state.bound?.cwd || state.meta?.cwd) }, icon("folder", 14), "Browse sessions…"),
@@ -452,9 +479,10 @@ function renderWelcomeLive() {
         el(
           "button",
           { type: "button", class: "welcome-live-main", onclick: () => bindRunner(info.id, info) },
-          el("span", { class: "row-title" }, icon("terminal", 13), el("span", { class: "grow", text: title }), el("span", { class: "chip live", text: "live" })),
+          el("span", { class: "row-title" }, icon("terminal", 13), el("span", { class: "grow", text: title })),
           el("span", { class: "row-sub" }, el("span", { class: `dot${info.state === "working" ? " working" : " on"}` }), el("span", { text: `pid ${info.pid}` }), el("span", { text: shortCwd(info.cwd) })),
         ),
+        el("span", { class: "chip live", text: "live" }),
         el("button", {
           type: "button",
           class: "btn small primary",
@@ -666,12 +694,21 @@ async function refreshSessionState() {
 
 /* ── bind lifecycle ──────────────────────────────────────────────────── */
 function applyBound(msg, tab) {
-  const runner = msg.runner || {};  set({
+  const runner = msg.runner || {};
+  bindHeadRunner = runner.id || null;
+  bindHeadSeq = typeof msg.lastSeq === "number" ? msg.lastSeq : 0;
+  // Leaving a driven TUI releases the drive lock: one driver at a time, and
+  // an idle tab must not squat it for other browsers. Rebinding the same
+  // runner keeps driving (the lock is still ours, so the banner is honest).
+  // Fire-and-forget: the bind already went out and detach is ordered after
+  // it; the server clears by driver id, not by binding.
+  if (state.driving && state.driving !== runner.id) detach();
+  set({
     boundId: runner.id,
     bound: runner,
     binding: false,
     driverBusy: null,
-    driving: null,
+    driving: state.driving === runner.id ? state.driving : null,
     cwdFallback: runner.cwdFallback || null,
     queue: [],
     contextUsage: null,
@@ -838,6 +875,7 @@ function closeTab(key) {
   const wasActive = state.activeKey === key;
   const nextKey = removeTab(key);
   if (wasActive) {
+    if (state.driving) detach();
     set({ bound: null, boundId: null, driving: null, entries: [], meta: null, view: "welcome" });
     rawSend({ type: "unbind" });
     // Never leave a hash pointing at the closed tab: if the next tab cannot
@@ -874,6 +912,28 @@ async function killAllHeadless() {
 
 async function killRunner(runner, { confirm: confirmFirst = true } = {}) {
   const bound = state.boundId === runner.id;
+  if (runner.kind === "live") {
+    // A live TUI is the user's own terminal process: the headless `close`
+    // verb refuses it by design, so the X routes to the fingerprinted
+    // process kill instead (same path as Settings → Server → Kill).
+    if (runner.pid == null) return toast("Live TUI has no known pid", { kind: "error" });
+    if (confirmFirst) {
+      const ok = await dialogs.confirm(
+        "Kill live TUI",
+        `Kill the live terminal (pid ${runner.pid})? Its transcript stays on disk — reopen it from the sidebar any time.`,
+      );
+      if (!ok) return;
+    }
+    try {
+      await apiKillProcess(runner.pid);
+      toast(`Killed pid ${runner.pid}`);
+      if (bound) goHome();
+      refreshSessions().catch(() => {});
+    } catch (e) {
+      toast(e.message, { kind: "error" });
+    }
+    return;
+  }
   if (confirmFirst) {
     const label = runner.title || runner.sessionFile || runner.id;
     const ok = await dialogs.confirm(
@@ -934,8 +994,10 @@ const bannerActions = {
   onDetach: () => detach(),
   onDismissFallback: () => set({ cwdFallback: null }),
   onDismiss: () => {
+    if (state.driving) detach();
     set({ bound: null, boundId: null, driving: null, driverBusy: null, view: "welcome" });
     rawSend({ type: "unbind" });
+    updateHash(null);
   },
   onResume: (runner) => {
     const tab = activeTab();
@@ -943,6 +1005,17 @@ const bannerActions = {
     else toast("No session file to resume", { kind: "error" });
   },
 };
+
+/* Home (All sessions): tear down like a dismiss — no bound runner, no hash,
+   so the banner and transcript cannot linger on the welcome screen. Tabs
+   stay open; activating one rebinds. */
+function goHome() {
+  if (state.driving) detach();
+  set({ view: "welcome", activeKey: null, bound: null, boundId: null, driving: null, driverBusy: null });
+  rawSend({ type: "unbind" });
+  updateHash(null);
+  saveTabs();
+}
 
 /* ── history ─────────────────────────────────────────────────────────── */
 let historyExhausted = true;
@@ -1085,7 +1158,8 @@ async function forkSession(session, project) {
     const data = await apiFork(session.dirName || project?.dirName, session.file);
     await refreshSessions();
     toast("Forked — opening the copy");
-    const found = allSessions().find((s) => s.file === data.file);
+    const dirName = session.dirName || project?.dirName;
+    const found = allSessions().find((s) => s.file === data.file && (dirName == null || s.dirName === dirName));
     if (found) openSession(found, { dirName: found.dirName, cwd: found.cwd });
   } catch (e) {
     toast(e.message, { kind: "error" });
@@ -1093,7 +1167,8 @@ async function forkSession(session, project) {
 }
 
 async function deleteSession(session, project) {
-  const tab = findTabByFile(session.file);
+  const dirName = session.dirName || project?.dirName;
+  const tab = findTabByFile(session.file, dirName);
   const owned = tab?.runnerId ? state.runners.get(tab.runnerId) : null;
   const extra = owned ? " Its running backend will be closed first." : "";
   const ok = await dialogs.confirm("Delete session", `Delete ${session.title || session.file} from disk? This cannot be undone.${extra}`);
@@ -1107,7 +1182,7 @@ async function deleteSession(session, project) {
     await apiDelete(session.dirName || project?.dirName, session.file);
     if (state.historyFile === session.file) {
       const key = sessionKey(session.dirName || project?.dirName, session.file);
-      if (findTabByFile(session.file)) closeTab(key);
+      if (findTabByFile(session.file, session.dirName || project?.dirName)) closeTab(key);
     }
     await refreshSessions();
     toast("Session deleted");
@@ -1142,7 +1217,7 @@ async function renameSession(session, project, name) {
   if (!name) return;
   try {
     await apiRename(session.dirName || project?.dirName, session.file, name);
-    const tab = findTabByFile(session.file);
+    const tab = findTabByFile(session.file, session.dirName || project?.dirName);
     if (tab) updateTab(tab.key, { title: name });
     await refreshSessions();
   } catch (e) {
@@ -1259,7 +1334,7 @@ function rebindIfRunnerChanged(runners) {
   }
 }
 
-function handleRunnerEvent(event) {
+function handleRunnerEvent(event, frame) {
   if (!event) return;
   if (event.id && pendingCommands.has(event.id)) {
     const p = pendingCommands.get(event.id);
@@ -1299,6 +1374,9 @@ function handleRunnerEvent(event) {
   }
   if (event.type === "runner_status") {
     set({ bound: { ...state.bound, state: event.state || state.bound?.state } });
+    // Live TUIs forward no message events, so delivered steers never surface
+    // as user messages there: an idle live runner has consumed its queue.
+    if (state.bound?.kind === "live" && event.state === "idle" && state.queue.length) set({ queue: [] });
     if (event.contextUsage != null) {
       const next = normalizeUsage(event.contextUsage);
       set({ contextUsage: next ? { ...(state.contextUsage || {}), ...next } : state.contextUsage });
@@ -1323,7 +1401,14 @@ function handleRunnerEvent(event) {
     return;
   }
 
-  transcript.handleEvent(event);
+  // Frames at/below the bind head are history's job: rendering them again
+  // duplicates messages that completed while we were bound elsewhere.
+  // Status/queue/streaming updates below stay live — they are idempotent.
+  const stale = frame && frame.runnerId === bindHeadRunner
+    && typeof frame.seq === "number" && frame.seq <= bindHeadSeq
+    && state.bound?.kind !== "live";
+  if (!stale) transcript.handleEvent(event);
+  if (event.type === "message_start" && event.message?.role === "user") dequeueDelivered(event.message);
   if (event.type === "agent_start") set({ streaming: true, connState: "working" });
   if (event.type === "agent_end") {
     set({ streaming: false, connState: "on" });
@@ -1447,8 +1532,7 @@ refs.sidebarOverlay.addEventListener("click", () => set({ ui: { ...(state.ui || 
 refs.newSessionBtn.addEventListener("click", () => picker.open(state.bound?.cwd || state.meta?.cwd));
 refs.tabNew.addEventListener("click", () => newSession(state.bound?.cwd || state.meta?.cwd));
 refs.homeBtn.addEventListener("click", () => {
-  set({ view: "welcome", activeKey: null });
-  saveTabs();
+  goHome();
 });
 refs.csClose.addEventListener("click", () => {
   const runner = state.bound;
@@ -1549,12 +1633,6 @@ refs.conn.addEventListener("click", () => {
     connect();
   }
 });
-refs.input?.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && state.streaming) {
-    e.preventDefault();
-    rawSend({ type: "command", id: `abort-${Date.now().toString(36)}`, command: { type: "abort" } });
-  }
-});
 /* jump-to-latest: visible whenever the transcript is scrolled away */
 const nearBottom = () => {
   const v = refs.view;
@@ -1577,15 +1655,12 @@ refs.input.addEventListener("focus", () => {
 document.addEventListener("keydown", (e) => {
   const meta = e.metaKey || e.ctrlKey;
   if (!meta) return;
-  if (e.key.toLowerCase() === "t") {
-    e.preventDefault();
-    newSession(state.bound?.cwd || state.meta?.cwd);
-  } else if (e.key.toLowerCase() === "k") {
+  if (e.key.toLowerCase() === "k") {
     e.preventDefault();
     picker.open(state.bound?.cwd || state.meta?.cwd);
   } else if (e.shiftKey && e.key.toLowerCase() === "p") {
     e.preventDefault();
-    set({ view: "welcome", activeKey: null });
+    goHome();
   }
 });
 

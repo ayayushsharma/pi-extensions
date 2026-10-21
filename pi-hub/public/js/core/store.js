@@ -71,7 +71,7 @@ export const state = {
   pendingFiles: [],
 
   prefs: Object.assign(
-    { theme: null, showThinking: true, showCosts: true, expandTools: false, wrapCode: false },
+    { theme: null, showThinking: true, showCosts: true, expandTools: false, wrapCode: false, wrapTools: false, streamRender: "live", toolOutput: "text" },
     readJSON(PREFS_KEY, {}),
   ),
 };
@@ -120,8 +120,12 @@ export function activeTab() {
   return state.tabs.find((t) => t.key === state.activeKey) || null;
 }
 
-export function findTabByFile(file) {
-  return state.tabs.find((t) => t.file === file) || null;
+export function findTabByFile(file, dirName) {
+  // Match the project too when known: two projects can hold the same
+  // basename, and closing/renaming must hit the right tab (R7).
+  return (
+    state.tabs.find((t) => t.file === file && (dirName == null || t.dirName === dirName)) || null
+  );
 }
 
 export function findTabByRunner(runnerId) {

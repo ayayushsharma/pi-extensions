@@ -366,8 +366,9 @@ export function createComposer(refs, actions) {
   }
 
   /* ── queue ────────────────────────────────────────────────────────── */
-  // Pills mirror pi's own queues (`queue_update` events), never a local echo:
-  // steering lands after the current turn, follow-ups after the whole run.
+  // Pills echo the just-acked steer/follow-up immediately (pi reports no
+  // queue state back), and clear when the text is delivered as its user
+  // message. A real `queue_update` event still wins as server truth.
   function renderQueue(queue) {
     refs.queueEl.replaceChildren();
     for (const q of queue) {
@@ -400,9 +401,10 @@ export function createComposer(refs, actions) {
     try {
       if (state_.streaming) {
         // Match native pi: Enter mid-run is a steering message; Alt+Enter is a
-        // follow-up. pi queues both itself and reports them back via
-        // `queue_update` — replaying them here would deliver the text twice.
+        // follow-up. The pill echoes on ack (see `queued`); pi never reports
+        // queue state back, so there is nothing to double-deliver.
         await (followUp ? actions.followUp(text, payloadImages) : actions.steer(text, payloadImages));
+        actions.queued?.(text, followUp ? "followUp" : "steer");
       } else {
         const files = actions.takePendingFiles();
         const message = text + (files.length ? `\n\n${files.map((f) => `@${f}`).join("\n")}` : "");

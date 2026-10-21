@@ -10,7 +10,6 @@ export function el(tag, attrs = {}, ...children) {
     if (v === undefined || v === null || v === false) continue;
     if (k === "class") node.className = v;
     else if (k === "text") node.textContent = String(v);
-    else if (k === "html") node.innerHTML = String(v); // trusted static markup only
     else if (k === "value") node.value = String(v);
     else if (k === "checked") node.checked = !!v;
     else if (k === "dataset") Object.assign(node.dataset, v);

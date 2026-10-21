@@ -69,6 +69,25 @@ test("readWindow returns the tail, then pages backwards without overlap", () => 
   assert.ok(!older.entries.some((e) => e.id === win.entries[0].id), "no overlap at the seam");
 });
 
+test("forkSession and relocateSession stay in the root for a flat store (H14)", () => {
+  const flatDir = path.basename(ROOT);
+  const file = "2026-01-01T00-00-00Z_flat.jsonl";
+  const header = { type: "session", version: 3, id: "flat-1", timestamp: "2026-01-01T00:00:00.000Z", cwd: CWD };
+  fs.writeFileSync(path.join(ROOT, file), `${JSON.stringify(header)}\n${JSON.stringify(userMessage("flat hello", "f0"))}\n`);
+  try {
+    const forked = store.forkSession(flatDir, file);
+    assert.ok(fs.existsSync(path.join(ROOT, forked.file)), "fork lands in the store root, not a subdir");
+    const target = fs.mkdtempSync(path.join(ROOT, "relocated-flat-"));
+    const out = store.relocateSession(flatDir, file, target);
+    assert.equal(out.dirName, flatDir);
+    assert.ok(fs.existsSync(path.join(ROOT, out.file)), "relocate lands in the store root");
+    fs.unlinkSync(path.join(ROOT, forked.file));
+    fs.unlinkSync(path.join(ROOT, out.file));
+  } finally {
+    try { fs.unlinkSync(path.join(ROOT, file)); } catch {}
+  }
+});
+
 test("forkSession copies bytes and leaves the original alone", () => {
   const src = path.join(ROOT, PROJECT, FILE);
   const before = fs.readFileSync(src);

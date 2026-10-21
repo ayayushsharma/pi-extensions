@@ -372,7 +372,7 @@ async function liveGroup({ check, log }) {
       await page.waitForSelector("#banner:not(.hidden)", { timeout: 15000 });
       await page.waitForTimeout(200);
       const previewText = (await page.textContent("#banner")) || "";
-      check("E8 preview banner (read-only)", /Read-only preview/.test(previewText), previewText.replace(/\s+/g, " ").slice(0, 80));
+      check("E8 preview banner (read-only)", /Preview/.test(previewText), previewText.replace(/\s+/g, " ").slice(0, 80));
       check("E8b input disabled while previewing", await page.locator("#input").isDisabled());
       await page.getByRole("button", { name: /^Drive/ }).first().click();
       await page.waitForFunction(() => /Driving/.test(document.querySelector("#banner")?.textContent || ""), null, { timeout: 15000 });
@@ -382,7 +382,7 @@ async function liveGroup({ check, log }) {
       check("E8d relay drive round-trip (model list via TUI)", true);
       await page.keyboard.press("Escape");
       await page.getByRole("button", { name: /Detach/ }).first().click();
-      await page.waitForFunction(() => /Read-only preview/.test(document.querySelector("#banner")?.textContent || ""), null, { timeout: 15000 });
+      await page.waitForFunction(() => /Preview/.test(document.querySelector("#banner")?.textContent || ""), null, { timeout: 15000 });
       check("E8e detach returns to preview", await page.locator("#input").isDisabled());
     } finally {
       await mirror.close();
@@ -579,7 +579,7 @@ async function panelsGroup({ check, log }) {
     check("E12c2 prefs are restyled native switches",
       switchState.tag === "INPUT" && switchState.appearance === "none" && switchState.radius > 8,
       JSON.stringify(switchState));
-    await page.locator(".field-row", { hasText: "Wrap long lines" }).click();
+    await page.locator(".field-row", { hasText: "Wrap message code" }).click();
     await page.waitForFunction(() => document.documentElement.dataset.wrapCode === "1", null, { timeout: 5000 });
     check("E12c3 clicking the row toggles its switch", await page.locator("#toggle-wrap").isChecked());
     await page.locator('.settings-tabs .tab-btn[data-tab="server"]').click();
@@ -716,7 +716,8 @@ async function tabsGroup({ check, log }) {
     // ── E15e the tab strip scrolls sideways instead of clipping ─────────
     // Squeeze the bar until two tabs no longer fit: the strip must overflow
     // (not shrink the tabs), scroll, and reveal the active tab after a switch.
-    await page.setViewportSize({ width: 520, height: 800 });
+    // 600px is a squeezed tablet (the strip hides only on phones ≤520px).
+    await page.setViewportSize({ width: 540, height: 800 });
     await page.waitForTimeout(250);
     const strip15 = await page.evaluate(() => {
       const s = document.querySelector("#tab-strip");
@@ -742,6 +743,12 @@ async function tabsGroup({ check, log }) {
     check("E15e tab strip scrolls instead of clipping its tabs",
       strip15.overflowX === "auto" && strip15.shrink === "0" && strip15.scrollWidth > strip15.clientWidth && scrolled.max > 0 && scrolled.revealed > 0,
       JSON.stringify({ ...strip15, ...scrolled }));
+    // Phones (≤520px) drop the strip entirely — the sidebar + titlebar own
+    // session identity there, and a clipped strip is unreachable anyway.
+    await page.setViewportSize({ width: 480, height: 800 });
+    await page.waitForTimeout(250);
+    check("E15e2 tab strip hides on phones",
+      await page.evaluate(() => getComputedStyle(document.querySelector("#tab-strip")).display === "none"));
     await page.setViewportSize({ width: 1280, height: 800 });
     await page.waitForTimeout(200);
 
@@ -1286,7 +1293,7 @@ async function detailGroup({ check, log }) {
       check("E34b sidebar lists live terminals above every other block", order.liveBeforeTabs && order.liveBeforeList, JSON.stringify(order));
       // open it → still visible in the block while also open in a tab
       await page.locator("#welcome-live .welcome-live-row .welcome-live-main").first().click();
-      await page.waitForFunction(() => /Read-only preview/.test(document.querySelector("#banner")?.textContent || ""), null, { timeout: 30000 });
+      await page.waitForFunction(() => /Preview/.test(document.querySelector("#banner")?.textContent || ""), null, { timeout: 30000 });
       check("E34c home row opens the read-only preview", true);
       const liveTabTitle = ((await page.textContent("#tab-strip .tab.active .tab-title")) || "").trim();
       check("E34c2 live tab shows a name, never a file name", liveTabTitle.length > 0 && !liveTabTitle.includes(".jsonl"), liveTabTitle);
@@ -1589,7 +1596,7 @@ async function steerGroup({ check, log }) {
       await page.fill("#input", "STEER-E38");
       await page.click("#send-btn");
       await page.waitForSelector(".queue .q-pill.steer", { timeout: 10000 });
-      check("E38b steering pill comes from pi's queue_update", ((await page.textContent(".queue .q-pill.steer")) || "").includes("STEER-E38"));
+      check("E38b steering pill appears right on send", ((await page.textContent(".queue .q-pill.steer")) || "").includes("STEER-E38"));
       await page.fill("#input", "LATER-E38");
       await page.keyboard.press("Alt+Enter");
       await page.waitForSelector(".queue .q-pill.later", { timeout: 10000 });

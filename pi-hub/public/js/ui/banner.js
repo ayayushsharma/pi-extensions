@@ -48,8 +48,7 @@ export function renderBanner(node, state, actions) {
     node.replaceChildren(
       icon("eye", 18),
       el("div", { class: "banner-copy" },
-        el("div", { class: "banner-title", text: `Driving the live TUI on port ${bound.pid}` }),
-        el("div", { class: "banner-sub", text: "The terminal is still attached, so prompts sent there and here may race." }),
+        el("div", { class: "banner-text" }, el("strong", { text: "Driving" }), " — terminal still attached, prompts here and there may race."),
       ),
       el("button", { class: "btn small", type: "button", text: "Detach", onclick: () => actions.onDetach() }),
     );
@@ -72,8 +71,7 @@ export function renderBanner(node, state, actions) {
   node.replaceChildren(
     icon("eye", 18),
     el("div", { class: "banner-copy" },
-      el("div", { class: "banner-title", text: bound.title || `Live TUI on port ${bound.pid}` }),
-      el("div", { class: "banner-sub", text: `Read-only preview — Drive to take over. Last active ${timeAgo(bound.lastActiveAt)}.` }),
+      el("div", { class: "banner-text" }, el("strong", { text: "Preview" }), ` — read-only. Drive to take over. Last active ${timeAgo(bound.lastActiveAt)}.`),
     ),
     el("button", { class: "btn small primary", type: "button", text: "Drive", onclick: () => actions.onAttach(bound, false) }),
     el("button", { class: "btn small", type: "button", text: "Dismiss", onclick: () => actions.onDismiss() }),

@@ -56,7 +56,7 @@ function imageNodes(content) {
 }
 
 export function createTranscript(container, opts = {}) {
-  const settings = { showThinking: true, showCosts: true, expandTools: false, ...opts };
+  const settings = { showThinking: true, showCosts: true, expandTools: false, streamRender: "live", toolOutput: "text", ...opts };
   const toolCards = new Map();
   let sessionCwd = ""; // refreshed on every history load; shortens tool paths
   const nodeForEntry = new Map();
@@ -147,8 +147,19 @@ export function createTranscript(container, opts = {}) {
       else if ((block?.type === "thinking" || block?.type === "reasoning") && (block.thinking || block.text)) {
         wrap.append(thinkingNode(block.thinking || block.text));
       } else if (block?.type === "toolCall") {
-        const card = createToolCard(block.id, block.name, block.arguments || {}, { expanded: settings.expandTools, cwd: sessionCwd });
-        toolCards.set(block.id, card);
+        // One card per tool call id: the start event may already have
+        // rendered it (no streaming message alive at the time), so adopt
+        // the live card instead of painting a running duplicate next to it.
+        let card = toolCards.get(block.id);
+        if (!card) {
+          card = createToolCard(block.id, block.name, block.arguments || {}, { expanded: settings.expandTools, cwd: sessionCwd });
+          toolCards.set(block.id, card);
+        } else {
+          // The end message is authoritative: refresh the stash so the
+          // finish paints full args even if the start arrived partial.
+          card.toolName = block.name;
+          card.toolArgs = block.arguments;
+        }
         wrap.append(card);
       }
     }
@@ -161,7 +172,7 @@ export function createTranscript(container, opts = {}) {
 
   function toolResultNode(message) {
     const card = toolCards.get(message.toolCallId);
-    if (card) finishToolCard(card, message.content, message.isError, { expand: settings.expandTools });
+    if (card) finishToolCard(card, message.content, message.isError, { expand: settings.expandTools, outputMode: settings.toolOutput });
   }
 
   function systemNode(text, kind = "") {
@@ -216,6 +227,9 @@ export function createTranscript(container, opts = {}) {
   function renderHistory(entries, meta) {
     toolCards.clear();
     nodeForEntry.clear();
+    trimCount = 0;
+    trimWrap = null;
+    trimBtn = null;
     if (meta?.cwd) sessionCwd = meta.cwd;
     pending = null;
     container.replaceChildren();
@@ -257,10 +271,75 @@ export function createTranscript(container, opts = {}) {
   }
 
   /* ── live events ─────────────────────────────────────────────────── */
+  /* R6: the transcript DOM is windowed. History arrives in pages of 50, but
+     a long live session appends forever — past TRIM_CAP nodes the oldest
+     are dropped from the DOM (never from the file) with a count + a way
+     back. The pending streaming node always sits at the bottom, so
+     top-trimming can never eat the reply in flight; a tool result landing
+     after its card was trimmed has nowhere to paint (rare past 300). */
+  const TRIM_CAP = 300;
+  let trimCount = 0;
+  let trimWrap = null;
+  let trimBtn = null;
+
+  function renderTrimNote() {
+    if (trimCount <= 0) {
+      trimWrap?.remove();
+      trimWrap = null;
+      trimBtn = null;
+      return;
+    }
+    if (!trimWrap) {
+      trimBtn = el("button", { class: "btn small", type: "button", onclick: () => opts.onLoadEarlier?.() });
+      trimWrap = el("div", { class: "trim-note" }, trimBtn);
+    }
+    trimBtn.textContent = `Show earlier (${trimCount} hidden from view)`;
+    if (container.firstChild !== trimWrap) container.prepend(trimWrap);
+  }
+
+  function maybeTrim() {
+    let removedH = 0;
+    let removed = 0;
+    while (container.childElementCount > TRIM_CAP + (trimWrap ? 1 : 0)) {
+      const first = trimWrap && container.firstChild === trimWrap ? trimWrap.nextSibling : container.firstChild;
+      if (!first || first === pending?.node) break;
+      removedH += first.offsetHeight || 0;
+      first.remove();
+      removed++;
+    }
+    if (!removed) return;
+    trimCount += removed;
+    renderTrimNote();
+    // Dropping nodes above the viewport would yank the reader upward: pay
+    // back the removed height unless we pin to the bottom below anyway.
+    if (!stick) scrollerEl().scrollTop -= removedH;
+  }
+  /* Re-rendering the whole accumulated reply every frame is O(n) per frame
+     over the stream — O(n²) for a long reply, and the jank lands on phones
+     first. So full markdown paints are throttled once the reply grows, and
+     "format on completion" mode skips parsing mid-stream entirely (one text
+     node, formatted once at message_end). */
+  let lastStreamPaint = 0;
+
   function flushPending() {
     flushQueued = false;
     if (!pending) return;
-    if (pending.textWrap) pending.textWrap.replaceChildren(renderMarkdown(pending.text));
+    if (pending.textWrap) {
+      const settled = settings.streamRender === "settled";
+      pending.textWrap.classList.toggle("stream-plain", settled);
+      const now = performance.now();
+      const long = pending.text.length > 6000;
+      if (!long || now - lastStreamPaint >= 150) {
+        lastStreamPaint = now;
+        if (settled) pending.textWrap.textContent = pending.text;
+        else pending.textWrap.replaceChildren(renderMarkdown(pending.text));
+      } else if (!flushQueued) {
+        // Throttled away: paint after the window so a paused stream never
+        // leaves a stale tail (message_end paints the final state anyway).
+        flushQueued = true;
+        setTimeout(flushPending, 160);
+      }
+    }
     if (pending.thinkBody && pending.thinking) pending.thinkBody.textContent = pending.thinking;
     if (pending.thinkDetails) pending.thinkDetails.classList.toggle("hidden", !settings.showThinking);
   }
@@ -332,6 +411,9 @@ export function createTranscript(container, opts = {}) {
         break;
       }
       case "tool_execution_start": {
+        // The end-of-message render may already own this id (adopted above)
+        // or the same start may redeliver: never paint a second card.
+        if (toolCards.has(event.toolCallId)) break;
         const card = createToolCard(event.toolCallId, event.toolName, event.args || {}, { expanded: settings.expandTools, cwd: sessionCwd });
         toolCards.set(event.toolCallId, card);
         const host = pending?.node || container;
@@ -340,7 +422,7 @@ export function createTranscript(container, opts = {}) {
       }
       case "tool_execution_end": {
         const card = toolCards.get(event.toolCallId);
-        finishToolCard(card, event.result, event.isError, { expand: settings.expandTools });
+        finishToolCard(card, event.result, event.isError, { expand: settings.expandTools, outputMode: settings.toolOutput });
         break;
       }
       case "compaction_start":
@@ -359,6 +441,7 @@ export function createTranscript(container, opts = {}) {
       default:
         break;
     }
+    maybeTrim();
     if (wasAtBottom) scrollToBottom();
   }
 

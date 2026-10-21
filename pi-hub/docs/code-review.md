@@ -53,7 +53,7 @@ inside that shape, not another rewrite.
 | S6 | Missing security headers | **Closed.** CSP (`script-src 'self'`), `nosniff`, `DENY`, `no-referrer`, CORP. |
 | S7 | Beacon flood | **Closed.** `/api/client-error` is authenticated, 4 K capped and 20/min per key. X21c. |
 | S9 | Unbounded maps | **Partially closed.** Tokens, failures, search/beacon buckets, session cache, replay ring and relay confirm waiters are bounded. The dialog broker is not: no cap/timeout and it broadcasts to every client (H10). |
-| S10 | WS payload/backpressure | **Partially closed.** `maxPayload` 2 MB + per-peer connection cap; deltas coalesced. H5's delivered-only `lastSeq` is better, but an empty delta still advances past a pending coalesced batch (H9); H2 is incomplete on TTL/spawn-failure paths (H8). |
+| S10 | WS payload/backpressure | **Partially closed.** `maxPayload` 2 MB + per-peer connection cap; deltas coalesced. H5's delivered-only `lastSeq` is better, and the empty-delta guard (H9) plus the coalescer-ceiling replay skip are in; H2 is incomplete on TTL/spawn-failure paths (H8). |
 | S12 | Basic auth without backoff | **Closed.** One async auth gate for HTTP + WS; failures back off (500 ms × fails, cap 2 s) and 429 past 20; colon passwords intact. |
 | S14 | mkdir through a symlinked parent | **Closed.** Parent realpath must stay under `$HOME`. |
 
@@ -65,23 +65,23 @@ inside that shape, not another rewrite.
 | H2 | High | No bind serialization: concurrent binds for one file spawn two children; a retry can reuse a child mid-`SIGTERM` | **Partially fixed** — explicit `closeById`/`closeByPid`/eviction unindex up front; TTL and spawn-failure paths do not, and unindex-before-exit permits a second writer during SIGTERM grace (H8) | Integration H2/H2b–H2d (explicit paths only) |
 | H3 | High | Live runners keyed by file collapsed two TUIs on one session and orphaned the first relay | **Fixed** (`26a0a7a`, ADR-019 amendment) | `registry.test.ts`, ADR-019 |
 | H4 | Med | Delta coalescer merges text+thinking into one `delta` under the first template's type | **Closed — accepted**: cosmetic mislabel only, on the single-driver preview path nobody reported; splitting the hot-path accumulators is not worth it. | — |
-| H5 | Med | Backpressure drop still advances `lastSeq`, so the gap is never replayed | **Partially fixed** — delivered-only `lastSeq` works for non-delta frames, but an empty delta still advances past a pending coalesced batch (H9) | `ws.test.ts` (drop/replay, healthy advance, dropped flush) |
+| H5 | Med | Backpressure drop still advances `lastSeq`, so the gap is never replayed | **Fixed** — delivered-only `lastSeq` for non-delta frames, empty deltas flush first (H9), replays skip the coalescer ceiling so buffered deltas are never double-counted | `ws.test.ts` (drop/replay, healthy advance, dropped flush, empty-delta) |
 | H6 | Med | Per-IP keys collapse behind a tunnel (all clients are `127.0.0.1`): 32-socket cap and rate limits are global | **Open — needs a decision** (trusted-proxy flag, or exempt loopback) | — |
 | H7 | High | Session-index cache cliff: with >200 files, `INDEX_MAX=200` eviction by `lastAt` makes every listing rebuild every file (260 files → 260 full scans on two consecutive calls; 285 ms then 165 ms). P2 is undone at real store sizes. | **Open** (measured 2026-10-22) | Needs a 250-file regression: second listing must scan 0 |
 | H8 | High | H2's close paths are incomplete: `scheduleTtl` and the `spawnHeadless` catch call `close()` without unindexing; `HeadlessRunner.close()` leaves `state` `idle`, so a retry binds a child mid-SIGTERM (`RpcSession.send` silently drops). Unindex-before-exit also permits a second writer during the SIGTERM grace. | **Open** | TTL/failure pin + a `closing` state; H2a–H2d only cover explicit close |
-| H9 | Med | Empty delta advances `lastSeq` while a coalesced batch is pending; if the flush drops on backpressure, the batch is discarded and the gap is never replayed (repro: `lastSeq=4`, only seq 3/4 sent). | **Open** | One-line guard + `ws.test.ts` case |
+| H9 | Med | Empty delta advances `lastSeq` while a coalesced batch is pending; if the flush drops on backpressure, the batch is discarded and the gap is never replayed (repro: `lastSeq=4`, only seq 3/4 sent). | **Fixed** (empty-delta path flushes first; replay skips seqs at/below the coalescer ceiling so buffered deltas are never double-counted) | `ws.test.ts` empty-delta case |
 | H10 | Med | Dialog broker is unbounded and unscoped: no timeout/cap, broadcasts to every client, `Mirror.ask` never times out. A background tab or a second session can hang the TUI or cross modals. | **Open** (S9 claim was premature) | Timeout + per-runner delivery + cap + disconnect cancel |
 | H11 | Med | Export path uses a lexical prefix + parent realpath only: a final-component symlink escapes the store and any file under the store can be overwritten; no generated-name enforcement. | **Open** (S3 partially closed) | lstat final, require `.html`, derive name server-side |
 | H12 | Low | Process fingerprint accepts any argv path ending `bundle/cli.js`/`bin/pi`; the kill route rechecks the same broad rule, so a user project named that way can be killed. | **Open** | Tighten to pi install roots; fail closed |
 | H13 | Low | Relay drive-confirm waiters are uncapped for 25 s; authenticated attach spam allocates timers. | **Open** | Per-pid cap |
-| H14 | Med | `forkSession`/`relocateSession` write `SESSIONS_DIR/<dirName>/` even when the store is flat; `resolveSessionPath` is flat-aware but the writes are not → ENOENT on a flat `PI_CODING_AGENT_SESSION_DIR`. | **Open** | Use `isFlatDir` for the destination |
+| H14 | Med | `forkSession`/`relocateSession` write `SESSIONS_DIR/<dirName>/` even when the store is flat; `resolveSessionPath` is flat-aware but the writes are not → ENOENT on a flat `PI_CODING_AGENT_SESSION_DIR`. | **Fixed** (`isFlatDir` destination) | `store.test.ts` flat fork/relocate |
 | R1 | Med | History images with no `mimeType` or a `data:` URL payload were dropped (tau-web's hardened renderer accepted both) | **Fixed** | E41/E41b |
 | R2 | Med | Composer accepted mimes the server rejects (AVIF/HEIC/BMP/SVG), lost the attachment on a failed send, and let an 8 MB file hit the 2 MB frame cap (close 1009) | **Fixed** (allowlist + downscale + budgets + restore) | E42/E42b/E43, X10 |
 | R3 | Low | `PI_HUB_DRIVE_CONFIRM` was armed after the server accepted sockets — a startup attach could bypass consent | **Fixed** | `relay.test.ts`, manual |
 | R4 | Low | A synchronous throw from a custom `ui.confirm` left `forceNative` stuck, disabling browser dialogs for the session | **Fixed** | `mirror.test.ts` |
 | R5 | Low | `Hub.stop()`/`start()` reuse could leave the advert claim and an unclosed server after a failed restart | **Fixed** (latent, single-use in practice) | — |
-| R6 | Med | Transcript DOM is unbounded (entries grow forever) and every `set()` re-renders the whole view; long sessions accumulate nodes/layout cost. P4 (streaming markdown) is a separate browser-CPU item. | **Open** | Cap visible rows + "N earlier hidden"; keyed append |
-| R7 | Low | Client nits: `findTabByFile` matches basename only; `IMAGE_EXT` accepts svg/bmp/avif while the server preview allows 4 mimes; `el({html})` is a dead footgun; the live-row X calls headless-only close; welcome copy says "type below" after the composer hide; picker Tab on a typed outside path; browse failure keeps stale entries. | **Open** | One small client batch |
+| R6 | Med | Transcript DOM is unbounded (entries grow forever) and every `set()` re-renders the whole view; long sessions accumulate nodes/layout cost. P4 (streaming markdown) is a separate browser-CPU item. | **Fixed** (300-node DOM cap + "N hidden" note wired to load-earlier; history already windowed at 50) | E15c2 (control survives), manual long-session |
+| R7 | Low | Client nits: `findTabByFile` matches basename only; `IMAGE_EXT` accepts svg/bmp/avif while the server preview allows 4 mimes; `el({html})` is a dead footgun; the live-row X calls headless-only close; welcome copy says "type below" after the composer hide; picker Tab on a typed outside path; browse failure keeps stale entries. | **Fixed** (dirName-aware tab match, 4-mime preview, `html` branch removed, live X routes to fingerprinted kill, Tab never navigates, browse failure clears the listing) | E15e2 (strip), full e2e green |
 | P1 | Low | Search read every session file per request; export download buffered the whole file | **Fixed** (file/budget caps, streamed download) | `store.test.ts`, X20 |
 | P2 | High | History and listing parsed the **whole** JSONL every time: a 39 MB session cost ~+120 MB hub RSS (HWM 479 MB on a 3.7 GB phone) and a cold 99 MB store listing +200 MB | **Fixed** (append-aware per-file index; windows read tail lines, first touch streams in 256 KB chunks) | `store.test.ts` (incremental/partial/truncate/deep) |
 | P3 | High | The actively-growing session was re-parsed on **every token**: the summary cache keyed `(mtime,size)`, so each append invalidated the entry | **Fixed** (index consumes appended bytes only; a 12 KB append reads 12 KB) | `store.test.ts` |
@@ -187,9 +187,9 @@ registry, and the direct/hub-local channel.
 
 ```bash
 cd pi-hub && npm install
-node tests/run.mjs --unit          # 73 pure contracts (Linux)
+node tests/run.mjs --unit          # 75 pure contracts (Linux)
 node tests/run.mjs                 # 94 HTTP/WS checks (real pi, fake model)
-node tests/run.mjs --e2e           # 170 Playwright checks
+node tests/run.mjs --e2e           # 171 Playwright checks
 node tests/run.mjs --all -j1       # + Firefox smoke, serial logs
 ```
 

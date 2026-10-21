@@ -13,10 +13,10 @@ bug, not a passing gate.
 
 Two environments are in scope: the **Linux/beefier dev host** and **Termux/Android**.
 
-- **Linux/CI gate (reported):** **73 unit**, **94 integration**, **170
-  Playwright** (`--e2e`, 12 groups: core, live, close, panels, tabs, models,
-  chrome, detail, deadcwd, steer, auth, images). `--all` reports **336 checks**
-  (335 pass, 1 documented skip — the Firefox CLI smoke when the host's Firefox
+- **Linux/CI gate (reported):** **76 unit**, **94 integration**, **171
+  Playwright** (`--e2e", 12 groups: core, live, close, panels, tabs, models,
+  chrome, detail, deadcwd, steer, auth, images). `--all` reports **340 checks**
+  (339 pass, 1 documented skip — the Firefox CLI smoke when the host's Firefox
   cannot render headless). Timings reported on the dev box: unit 0.3 s ·
   integration 3.0 s at `-j4` · Playwright 13 s at `-j4` · `--all` ≈ 13 s wall.
 - **Termux (measured 2026-10-22, Galaxy F12, Node 26.4, 7 cores/3.7 GB):** the

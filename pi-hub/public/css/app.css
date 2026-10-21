@@ -331,6 +331,8 @@ a { color: var(--accent-text); }
   text-align: left; background: none; border: 0; padding: 0; cursor: pointer; color: inherit;
 }
 .welcome-live-row.live-row { box-shadow: inset 2px 0 0 var(--accent); }
+.welcome-live-row > .chip.live { flex: none; align-self: center; }
+.welcome-live-row > .btn { flex: none; align-self: center; }
 /* The row parts borrow the sidebar row's look (those rules are scoped to
    .sb-row, so they need restating here). */
 .welcome-live-row .row-title {
@@ -396,6 +398,11 @@ a { color: var(--accent-text); }
 .banner .banner-copy { flex: 1; min-width: 0; }
 .banner .banner-title { font-weight: 600; font-size: var(--fs-md); }
 .banner .banner-sub { font-size: var(--fs-sm); color: var(--text-2); }
+/* Live preview/drive banners are a slim one-liner — the titlebar already
+   names the session, so no repeated title and no two-line stack. */
+.banner .banner-text { font-size: var(--fs-md); line-height: 1.35; color: var(--text-2); }
+.banner .banner-text strong { font-weight: 700; color: var(--text); }
+.banner[data-kind="ok"], .banner[data-kind="preview"] { padding: 8px 14px; gap: 12px; }
 .banner[data-kind="error"] { background: rgba(210, 75, 75, 0.08); }
 .banner[data-kind="ok"] { background: var(--accent-soft); }
 .banner[data-kind="warn"] { background: rgba(214, 158, 46, 0.12); }
@@ -411,7 +418,6 @@ a { color: var(--accent-text); }
 .welcome .logo { width: 44px; height: 44px; border-radius: 12px; opacity: 0.85; }
 .welcome h2 { margin: 6px 0 0; font-size: var(--fs-xl); font-weight: 600; }
 .welcome p { margin: 0; color: var(--text-2); max-width: 420px; }
-.welcome .hints { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; justify-content: center; }
 .welcome-actions { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; justify-content: center; max-width: 100%; }
 .welcome-recents {
   margin-top: 22px; width: min(520px, 100%);
@@ -437,6 +443,11 @@ a { color: var(--accent-text); }
   background: rgba(255, 255, 255, 0.18); color: inherit;
 }
 .msg.assistant .bubble { word-break: break-word; }
+/* Plain-text streaming tail ("format on completion"): raw text until the
+   reply lands, so preserve line breaks without markdown parsing. */
+.msg.assistant .bubble.stream-plain { white-space: pre-wrap; }
+/* R6: the window cap's way back — slim, centered, out of the way. */
+.trim-note { display: flex; justify-content: center; margin: 8px 0 2px; }
 .msg.assistant .bubble p { margin: 0.5em 0; }
 .msg.assistant .usage { margin-top: 4px; font-size: var(--fs-sm); color: var(--text-4); }
 .msg.assistant.streaming .bubble::after {
@@ -504,9 +515,13 @@ a { color: var(--accent-text); }
   font-size: inherit; color: inherit;
 }
 .code-copy:hover { color: var(--text); text-decoration: underline; }
-/* Optional wrapping for long lines and code (Settings → Chat). */
+/* Optional wrapping for message code (Settings → Chat). */
 html[data-wrap-code="1"] .msg .bubble pre,
 html[data-wrap-code="1"] .code-block {
+  white-space: pre-wrap; word-break: break-word; overflow-x: hidden;
+}
+/* Optional wrapping for tool cards (Settings → Chat). */
+html[data-wrap-tools="1"] .tool-body pre {
   white-space: pre-wrap; word-break: break-word; overflow-x: hidden;
 }
 /* thinking */
@@ -551,6 +566,10 @@ html[data-wrap-code="1"] .code-block {
 .tool-body pre {
   margin: 0; padding: 9px 12px; font-family: var(--font-mono);
   font-size: var(--fs-xs); line-height: 1.55; overflow-x: auto; max-height: 380px;
+}
+.tool-section-label {
+  padding: 8px 12px 0; font-size: var(--fs-xs); font-weight: 600;
+  letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-3);
 }
 .tool-body .truncated { padding: 4px 12px 8px; color: var(--text-3); font-size: var(--fs-xs); }
 .tool .diff { font-family: var(--font-mono); font-size: var(--fs-xs); line-height: 1.5; }
@@ -867,6 +886,14 @@ input.switch:checked { background: var(--accent); }
 input.switch:checked::after { transform: translateX(15px); }
 input.switch:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
+.field-select {
+  flex: none; max-width: 46%;
+  padding: 7px 10px; border-radius: var(--r-sm);
+  border: 1px solid var(--border-2); background: var(--panel-solid);
+  color: var(--text); font: inherit; font-size: var(--fs-md);
+}
+.field-select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
 /* theme picker: preview tiles grouped light/dark */
 .theme-groups { display: flex; flex-direction: column; gap: 16px; }
 .theme-group-label {
@@ -1086,9 +1113,9 @@ input.switch:focus-visible { outline: 2px solid var(--accent); outline-offset: 2
   .welcome-actions { margin-top: 10px; }
 }
 @media (max-width: 520px) {
-  .tab-strip { max-width: 42vw; }
-  .tab .tab-close { display: none; }
-  .welcome .hints { display: none; }
+  /* Phones only (tablets keep tabs): the strip clips with no width to
+     scroll in, and the sidebar + titlebar already identify the session. */
+  .tab-strip { display: none; }
   /* Composer on a phone: keep the field clear of the action cluster and let
      long model ids ellipsize instead of pushing the pills wider. */
   .composer textarea { padding-right: 88px; }

@@ -44,7 +44,7 @@ export function createSettings(refs, actions) {
   /* themes */
   /** The theme actually in effect — an unset pref still shows a selected tile. */
   function currentTheme() {
-    return document.documentElement.dataset.theme || state.prefs.theme || "terracotta";
+    return document.documentElement.dataset.theme || state.prefs.theme || "clean";
   }
 
   function themeTile(theme) {
@@ -95,10 +95,14 @@ export function createSettings(refs, actions) {
   function applyPrefs() {
     if (state.prefs.theme) document.documentElement.dataset.theme = state.prefs.theme;
     document.documentElement.dataset.wrapCode = state.prefs.wrapCode ? "1" : "";
+    document.documentElement.dataset.wrapTools = state.prefs.wrapTools ? "1" : "";
     refs.thinkingToggle.checked = state.prefs.showThinking;
     refs.costsToggle.checked = state.prefs.showCosts;
     refs.toolsToggle.checked = state.prefs.expandTools;
     refs.wrapToggle.checked = state.prefs.wrapCode;
+    refs.wrapToolsToggle.checked = state.prefs.wrapTools;
+    refs.streamSelect.value = state.prefs.streamRender === "settled" ? "settled" : "live";
+    refs.toolOutputSelect.value = state.prefs.toolOutput === "raw" ? "raw" : "text";
     renderThemes();
     actions.applyPrefs?.();
   }
@@ -108,6 +112,7 @@ export function createSettings(refs, actions) {
     [refs.costsToggle, "showCosts"],
     [refs.toolsToggle, "expandTools"],
     [refs.wrapToggle, "wrapCode"],
+    [refs.wrapToolsToggle, "wrapTools"],
   ]) {
     toggle.addEventListener("change", () => {
       state.prefs[key] = toggle.checked;
@@ -115,6 +120,18 @@ export function createSettings(refs, actions) {
       applyPrefs();
     });
   }
+
+  refs.streamSelect.addEventListener("change", () => {
+    state.prefs.streamRender = refs.streamSelect.value === "settled" ? "settled" : "live";
+    savePrefs();
+    applyPrefs();
+  });
+
+  refs.toolOutputSelect.addEventListener("change", () => {
+    state.prefs.toolOutput = refs.toolOutputSelect.value === "raw" ? "raw" : "text";
+    savePrefs();
+    applyPrefs();
+  });
 
   refs.close.addEventListener("click", () => show(refs.root, false));
   refs.root.addEventListener("click", (e) => {

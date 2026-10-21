@@ -1,5 +1,5 @@
 /**
- * toolcard — collapsible tool call card: status, argument hint, diff or
+ * toolcard — collapsible tool call card: status, argument hint, inputs and
  * output, copy. Running cards stay open; finished cards collapse unless the
  * user pinned them open or "Expand tool calls" is enabled in settings.
  */
@@ -82,28 +82,68 @@ export function createToolCard(toolCallId, name, args, { expanded = false, cwd =
   card.dataset.pinned = userToggled ? "1" : "0";
 
   renderArgs(body, name, args);
+  // Stashed for finish: the finished card shows inputs above the output.
+  card.toolName = name;
+  card.toolArgs = args;
   return card;
+}
+
+function inputNodes(name, args) {
+  const nodes = [];
+  if ((name === "edit" || name === "write") && args) {
+    const edits = Array.isArray(args.edits) ? args.edits : args.oldText !== undefined || args.newText !== undefined ? [args] : [];
+    if (edits.length) {
+      for (const e of edits) nodes.push(diffBlock(e.oldText, e.newText));
+      return nodes;
+    }
+    if (args.content !== undefined) {
+      nodes.push(el("pre", { text: String(args.content).slice(0, 20000) }));
+      return nodes;
+    }
+  }
+  const text = argText(args);
+  if (text) nodes.push(el("pre", { text }));
+  return nodes;
 }
 
 function renderArgs(body, name, args) {
   body.replaceChildren();
-  if ((name === "edit" || name === "write") && args) {
-    const edits = Array.isArray(args.edits) ? args.edits : args.oldText !== undefined || args.newText !== undefined ? [args] : [];
-    if (edits.length) {
-      for (const e of edits) body.append(diffBlock(e.oldText, e.newText));
-      return;
-    }
-    if (args.content !== undefined) {
-      body.append(el("pre", { text: String(args.content).slice(0, 20000) }));
-      return;
-    }
-  }
-  const text = argText(args);
-  if (text) body.append(el("pre", { text }));
+  const nodes = inputNodes(name, args);
+  if (nodes.length) body.append(...nodes);
   else body.append(el("div", { class: "meta", style: "padding:8px 12px", text: "running…" }));
 }
 
-export function finishToolCard(card, result, isError, { expand = false } = {}) {
+/** Tool result content to display text. Content-block arrays (the usual
+ *  `[{type:"text", text}, …]` shape) render as their joined text in readable
+ *  mode so Output reads as output, not JSON; raw mode keeps the dump. */
+function outputNodes(result, outputMode) {
+  const nodes = [];
+  const content = typeof result === "string" ? result : result?.content ?? result;
+  let text = null;
+  if (typeof content === "string") text = content;
+  else if (Array.isArray(content) && outputMode !== "raw") {
+    const parts = content.filter((b) => b?.type === "text").map((b) => b.text || "");
+    if (parts.length) text = parts.join("\n");
+  }
+  if (text === null) {
+    if (content !== undefined && content !== null && content !== "" && typeof content === "object") {
+      try {
+        text = JSON.stringify(content, null, 2);
+      } catch {
+        return { nodes, copyable: "", empty: true, unserializable: true };
+      }
+    } else if (!content && content !== 0) {
+      return { nodes, copyable: "", empty: true };
+    } else text = String(content);
+  }
+  if (text) {
+    nodes.push(el("pre", { text: text.slice(0, 60000) }));
+    if (text.length > 60000) nodes.push(el("div", { class: "truncated", text: `… truncated (${text.length} chars)` }));
+  }
+  return { nodes, copyable: text || "", empty: !text };
+}
+
+export function finishToolCard(card, result, isError, { expand = false, outputMode = "text" } = {}) {
   if (!card) return;
   card.dataset.status = isError ? "error" : "done";
   const status = card.querySelector(".tool-status");
@@ -113,19 +153,17 @@ export function finishToolCard(card, result, isError, { expand = false } = {}) {
   const scrollTop = body.querySelector("pre")?.scrollTop || 0;
   body.replaceChildren();
 
-  const text = typeof result === "string" ? result : result?.content ?? result;
-  if (typeof text === "string" && text) {
-    body.append(el("pre", { text: text.slice(0, 60000) }));
-    if (text.length > 60000) body.append(el("div", { class: "truncated", text: `… truncated (${text.length} chars)` }));
-  } else if (text !== undefined && text !== null && typeof text === "object") {
-    try {
-      body.append(el("pre", { text: JSON.stringify(text, null, 2).slice(0, 60000) }));
-    } catch {
-      body.append(el("div", { class: "truncated", text: "unserializable result" }));
-    }
-  } else if (!text) {
-    body.append(el("div", { class: "truncated", text: isError ? "no output" : "done" }));
-  }
+  // Inputs stay visible above the output (edit diffs, bash commands, …).
+  const inputs = inputNodes(card.toolName, card.toolArgs);
+  if (inputs.length) body.append(el("div", { class: "tool-section-label", text: "Input" }), ...inputs);
+
+  const outLabel = inputs.length ? el("div", { class: "tool-section-label", text: "Output" }) : null;
+
+  const out = outputNodes(result, outputMode);
+  if (outLabel) body.append(outLabel);
+  if (out.nodes.length) body.append(...out.nodes);
+  else if (out.unserializable) body.append(el("div", { class: "truncated", text: "unserializable result" }));
+  else if (out.empty) body.append(el("div", { class: "truncated", text: isError ? "no output" : "done" }));
 
   const pre = body.querySelector("pre");
   if (pre) pre.scrollTop = scrollTop;
@@ -135,7 +173,7 @@ export function finishToolCard(card, result, isError, { expand = false } = {}) {
     type: "button",
     text: "Copy output",
     style: "margin:6px 12px 8px",
-    onclick: () => copyText(typeof text === "string" ? text : JSON.stringify(text ?? "", null, 2)),
+    onclick: () => copyText(out.copyable),
   });
   body.append(copy);
 

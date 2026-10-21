@@ -156,8 +156,11 @@ export function createPicker(refs, actions) {
       }
     } catch (e) {
       // Still allow starting in a directory the file API cannot list (jail):
-      // the user asked for it explicitly.
+      // the user asked for it explicitly. Drop the previous listing so Tab
+      // completion and filtering cannot act on a stale directory.
       dir = path || dir;
+      dirEntries = [];
+      hi = 0;
       refs.path.value = dir || "";
       refs.start.textContent = dir ? `Start new session in ${shortCwd(dir)}` : "Start new session here";
       refs.dirs.replaceChildren(el("div", { class: "sb-empty", text: `Cannot list this directory: ${e.message}` }));
@@ -220,9 +223,9 @@ export function createPicker(refs, actions) {
         }
         hi = (hi + 1) % list.length; // nothing more to complete: cycle (zsh-style)
         renderDirs();
-      } else if (!typed.startsWith(here === "/" ? "/" : here + "/")) {
-        browse(refs.path.value.trim()); // typed left this listing: go there, like Enter
       }
+      // else: partial name with no match, or typed outside this listing —
+      // leave it alone (bash would beep; Enter is the way out).
       // else: partial name with no match — leave it alone (bash would beep)
     }
   });

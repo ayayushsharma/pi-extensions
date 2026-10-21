@@ -184,8 +184,8 @@ this section is the short version for a fresh session.
 
 ### Verified green
 
-- **Linux dev host:** Unit **73/73** (`--unit`), integration **94/94**,
-  E2E **170/170** in 12 groups; `--all` **336 checks (335 pass, 1 Firefox
+- **Linux dev host:** Unit **76/76** (`--unit`), integration **94/94**,
+  E2E **171/171** in 12 groups; `--all` **340 checks (339 pass, 1 Firefox
   SKIP)**. These are the committed gate counts.
 - **Termux (measured 2026-10-22):** the suite does **not** run as checked out
   (T1). With test-only portability fixes: unit **72/72 in 8.7 s**, integration
@@ -256,8 +256,7 @@ this section is the short version for a fresh session.
    file). This is the highest-impact open item; add the 250-file pin.
 2. **H8** finish H2: unindex TTL/spawn-failure closes, add a `closing` state,
    and make the retry wait instead of spawning a second writer.
-3. **H9** empty-delta guard so a pending coalesced batch cannot be skipped by
-   `lastSeq`.
+3. **H9 empty-delta guard** — done: empty deltas flush first; replay skips the coalescer ceiling.
 4. **H10** dialog broker: timeout, per-runner delivery, cap, cancel on
    disconnect (the current S9 "closed" claim is premature).
 5. **H11** export: generated `.html` name, lstat final component, no
@@ -268,9 +267,7 @@ this section is the short version for a fresh session.
 7. **T1/T2 Termux gate**: harness portability (`$TMPDIR`, lazy e2e import,
    unit file list, `PI_BIN` wrapper) and the Firefox/Selenium `PageDriver` +
    `termux-smoke` (CP3/CP4). The CLI `--dump-dom` backend stalls on this phone.
-8. **P4/R6 client cost**: stream as a text node until `message_end`; cap the
-   transcript DOM and stop full re-renders per `set()`.
-9. **H14/R7 small fixes**: flat-store fork/relocate, tab lookup key, preview
-   MIME allowlist, live-row X, welcome copy, picker races, remove `el({html})`.
+8. **P4/R6 client cost** — R6 done (300-node DOM cap + hidden-count note); P4 streaming-text-node still open.
+9. **H14/R7 small fixes** — done (flat-aware fork/relocate; R7 client batch).
 10. **Deployment/flip (P7)**: runit service, tunnel on :12045, remove tau-web
     from settings — **blocked by T1/T2** for a real Termux gate.

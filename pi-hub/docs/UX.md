@@ -218,7 +218,7 @@ this section is the short version for a fresh session.
   H2 bind serialization (shared in-flight spawn, unindex-on-close) and H5
   delivered-only `lastSeq` fixed, both pinned (integration H2/H2b/H2c/H2d,
   new `ws.test.ts`).
-- **Docs (this batch)**: round-2 findings H7–H14/R6–R7/T1–T3 recorded;
+- **Docs (`935088a`)**: round-2 findings H7–H14/R6–R7/T1–T3 recorded;
   S3/S9/S10 and H2/H5 downgraded to partial; Termux measurements and the
   Selenium POC documented; ADR-020/PLAN/testing/README counts corrected.
 - **Docs**: `docs/code-review.md` is the single home for findings and their

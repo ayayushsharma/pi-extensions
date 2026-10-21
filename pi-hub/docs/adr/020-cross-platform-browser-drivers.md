@@ -86,7 +86,8 @@ phone itself, without maintaining two suites.
 
 ## Update (2026-10-22) — POC result
 
-The Selenium recipe from `auto-mate` was verified against pi-hub on this phone:
+The Selenium recipe from `auto-mate` was verified against pi-hub on this phone
+(runbook: `docs/termux-browser-poc.md`):
 Firefox 158 + geckodriver 0.37.1 + selenium-webdriver 4.51.0 loaded `/hub/`,
 reached `body[data-ready="1"]`, reported `window.__errs = []`, listed and
 resumed the fixture, and captured a transcript screenshot. Timings: hub boot

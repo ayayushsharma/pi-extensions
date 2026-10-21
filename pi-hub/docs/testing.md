@@ -186,7 +186,8 @@ spec fn(page: PageDriver)
 
 #### 1.2.2 Verified Termux POC (2026-10-22)
 
-The auto-mate recipe was run against a real pi-hub on this phone:
+The auto-mate recipe was run against a real pi-hub on this phone. Full
+runbook, script and findings: `termux-browser-poc.md`.
 
 ```bash
 pkg install x11-repo firefox ttf-dejavu

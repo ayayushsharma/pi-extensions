@@ -160,35 +160,12 @@ was touched (tau-web is untouched).
   (`refreshSessionState`). Thinking levels come from
   `get_available_thinking_levels`, static list only as fallback.
 
-### Ordered queue — what is left to build
+### Older queue (superseded)
 
-1. **R-3 steer+queue double-send** (correctness, needs a decision first:
-   mid-run message should *steer* the current turn or *queue* for the next —
-   implement exactly one; today both happen).
-2. **R-10 dead-cwd resume** (correctness; decide silent fallback vs. a
-   visible "cwd missing → opened in ~" banner, then allow `bindHeadless` to
-   fall back to the hub default cwd).
-3. ~~R-12 one tab per session~~ — DONE (`runnerTabHint`, E36).
-4. **R-7 placement/sizing** — first pass DONE (double icon, tab-close hit
-   area, load-earlier alignment, 390 px composer, E37a–d). Remaining nits:
-   visible labels for header icons in wide layouts, settings/viewer headers.
-5. ~~R-11 hygiene~~ — DONE (`renderImages` stub, doubled `show`, tab fallback).
-6. **Tail-read history** (PLAN P3 budget): `readWindow()` still reads the
-   whole JSONL; needs a reverse chunk reader for 10k-entry files.
-7. **Test debt**: unit coverage now covers the wire helpers *and* the session
-   store; LRU/TTL/pool-cap are still integration-only; `tests/cases.json`
-   registry + meta-test missing; e2e should auto-discover a Playwright Chromium
-   when system Chrome is absent; the Playwright tier is 13 s at `-j4` (11
-   parallel groups) — the last gap to the 5 s target is per-group boot cost.
-8. **Stray session file per resumed bind (found while splitting the tests).**
-   pi creates a throwaway session file at child startup; the hub then calls
-   `switch_session` to the real one, leaving an empty `.jsonl` behind and, until
-   the `resume()` fix, an index/client entry pointing at it. Fix direction:
-   spawn the child with the session already open (`pi --session <abs>`) so no
-   switch and no stray file. (The `resume()` identity-event fix is in.)
-8. **Deployment / flip (P7)**: `deploy/runit/{run,log/run}` are ready —
-   install service, `sv down tau-web` → `sv up pi-hub`, verify tunnel on
-   :12045, remove tau-web from `~/.pi/agent/settings.json` packages.
+The R-3/R-10/R-12/R-11 items and the deployment note in that list were the P4/P5 queue; the rewrite closed or superseded them. The live queue is **Ordered
+queue** at the end of this section (H7-H14, R6-R7, T1-T2, P4, P7). Tail-read
+history shipped with the append-aware index. The stray-session-file note is not
+a gate; track it separately if it still reproduces.
 
 ### Fastest repro for each fixed class
 
@@ -207,15 +184,19 @@ this section is the short version for a fresh session.
 
 ### Verified green
 
-- Unit **72 tests + ISO store check** (`node tests/run.mjs --unit` reports 73/73,
-  ≈2 s; store index + Termux `/proc` pins included)
-- Integration **90/90** (HTTP/WS against a real `pi`, fake model, sandboxed store)
-- E2E **170/170** in **12 groups** (core, live, close, panels, tabs, models,
-  chrome, detail, deadcwd, steer, auth, images)
-- `--all` **328 checks (327 pass, 1 Firefox SKIP)** unless the system Firefox
-  can render headless
+- **Linux dev host:** Unit **73/73** (`--unit`), integration **94/94**,
+  E2E **170/170** in 12 groups; `--all` **336 checks (335 pass, 1 Firefox
+  SKIP)**. These are the committed gate counts.
+- **Termux (measured 2026-10-22):** the suite does **not** run as checked out
+  (T1). With test-only portability fixes: unit **72/72 in 8.7 s**, integration
+  **93/93 in 124 s** (`jobs=3`), E2E unavailable (T2). `pi --version` alone is
+  9.7 s and a hub boot 16.4 s; process startup is the floor.
+- **Selenium POC:** Firefox 158 + geckodriver 0.37.1 + selenium-webdriver
+  4.51 loaded pi-hub, reached `data-ready`, reported `__errs=[]`, resumed the
+  fixture and captured a screenshot (44 s end-to-end incl. hub boot). The
+  facade is not implemented (T2).
 - jiti loads every touched extension module; `node --check` covers edited
-  frontend files
+  frontend files.
 
 ### Where the work stands
 
@@ -237,6 +218,9 @@ this section is the short version for a fresh session.
   H2 bind serialization (shared in-flight spawn, unindex-on-close) and H5
   delivered-only `lastSeq` fixed, both pinned (integration H2/H2b/H2c/H2d,
   new `ws.test.ts`).
+- **Docs (this batch)**: round-2 findings H7–H14/R6–R7/T1–T3 recorded;
+  S3/S9/S10 and H2/H5 downgraded to partial; Termux measurements and the
+  Selenium POC documented; ADR-020/PLAN/testing/README counts corrected.
 - **Docs**: `docs/code-review.md` is the single home for findings and their
   status (P2/P3/F1 fixed, P4 open); README/PLAN/testing counts and claims
   were corrected to match.
@@ -268,18 +252,25 @@ this section is the short version for a fresh session.
 
 ### Ordered queue
 
-1. **H2** bind serialization (dying-runner reuse) — the X20 test currently
-   waits it out; real users can reopen a tab into a child mid-`SIGTERM`.
-2. **H1** cap over-eviction (mark closing, or evict one per bind).
-3. **H5** backpressure: do not advance `lastSeq` for a dropped frame.
-4. **H4** split text/thinking delta accumulators.
-5. **H6 decision**: per-IP keys collapse behind the tunnel (all clients are
+1. **H7** session-index cache cliff (>200 files ⇒ every listing rescans every
+   file). This is the highest-impact open item; add the 250-file pin.
+2. **H8** finish H2: unindex TTL/spawn-failure closes, add a `closing` state,
+   and make the retry wait instead of spawning a second writer.
+3. **H9** empty-delta guard so a pending coalesced batch cannot be skipped by
+   `lastSeq`.
+4. **H10** dialog broker: timeout, per-runner delivery, cap, cancel on
+   disconnect (the current S9 "closed" claim is premature).
+5. **H11** export: generated `.html` name, lstat final component, no
+   store-wide overwrite.
+6. **H6 decision**: per-IP keys collapse behind the tunnel (all clients are
    `127.0.0.1`). Needs an ADR line — trusted `X-Forwarded-For` behind a flag,
    or exempt loopback from the caps.
-6. **Test debt**: `tests/cases.json` + meta-test; spawn-throttle pin (needs
-   real children); drive-consent timeout leg (manual/unit only).
-7. **Tail-read history** (PLAN P3): `readWindow()` still reads whole files.
-8. **Stray session file per resumed bind**: spawn with `--session <abs>`
-   instead of `switch_session` after start.
-9. **Deployment/flip (P7)**: runit service, tunnel on :12045, remove tau-web
-   from settings.
+7. **T1/T2 Termux gate**: harness portability (`$TMPDIR`, lazy e2e import,
+   unit file list, `PI_BIN` wrapper) and the Firefox/Selenium `PageDriver` +
+   `termux-smoke` (CP3/CP4). The CLI `--dump-dom` backend stalls on this phone.
+8. **P4/R6 client cost**: stream as a text node until `message_end`; cap the
+   transcript DOM and stop full re-renders per `set()`.
+9. **H14/R7 small fixes**: flat-store fork/relocate, tab lookup key, preview
+   MIME allowlist, live-row X, welcome copy, picker races, remove `el({html})`.
+10. **Deployment/flip (P7)**: runit service, tunnel on :12045, remove tau-web
+    from settings — **blocked by T1/T2** for a real Termux gate.

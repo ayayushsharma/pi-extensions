@@ -1,29 +1,70 @@
 # pi-hub testing plan
 
-Extensive, layered, Playwright-first. Every capability (C1–C4) and every
-ADR decision has named cases; every case has one owning spec file. This
-document is the contract. `tests/cases.json` **is not in place yet** (see
-`PLAN.md` status and `code-review.md` D2), so nothing machine-checks that a
-row below is implemented: the matrix is enforced by review plus the suites'
-printed case names, not by a meta-test. When in doubt, grep the case ID in
-`tests/` — a row without a hit is a documentation bug, not a passing gate.
+Extensive, layered, Playwright-first on a dev host and Firefox/Selenium on
+Termux. Every capability (C1–C4) and every ADR decision has named cases; every
+case has one owning spec file. This document is the contract. `tests/cases.json`
+**is not in place yet** (see `PLAN.md` status and `code-review.md` D2), so
+nothing machine-checks that a row below is implemented: the matrix is enforced
+by review plus the suites' printed case names, not by a meta-test. When in
+doubt, grep the case ID in `tests/` — a row without a hit is a documentation
+bug, not a passing gate.
 
-### As built (2026-10-21)
+### 1.1 As built (2026-10-22)
 
-- Counts: **73 unit**, **94 integration**, **170 Playwright** (`--e2e`, 12
-groups: core, live, close, panels, tabs, models, chrome, detail, deadcwd,
-steer, auth, images). `--all` reports **336 checks** (335 pass, 1 documented
-skip — the Firefox CLI smoke when the host's Firefox cannot render headless).
+Two environments are in scope: the **Linux/beefier dev host** and **Termux/Android**.
+
+- **Linux/CI gate (reported):** **73 unit**, **94 integration**, **170
+  Playwright** (`--e2e`, 12 groups: core, live, close, panels, tabs, models,
+  chrome, detail, deadcwd, steer, auth, images). `--all` reports **336 checks**
+  (335 pass, 1 documented skip — the Firefox CLI smoke when the host's Firefox
+  cannot render headless). Timings reported on the dev box: unit 0.3 s ·
+  integration 3.0 s at `-j4` · Playwright 13 s at `-j4` · `--all` ≈ 13 s wall.
+- **Termux (measured 2026-10-22, Galaxy F12, Node 26.4, 7 cores/3.7 GB):** the
+  gate **does not run as checked out** (T1 in `code-review.md`). With test-only
+  portability fixes: **72/72 unit in 8.7 s**, **93/93 integration in 124 s**
+  (`jobs=3`; 165 s serial), Playwright **not runnable** (no Playwright-
+  compatible browser; T2). `pi --version` alone is 9.7 s; a hub boot is 16.4 s;
+  a headless child spawn is ~11 s. Those startup costs set the floor, not the
+  test bodies.
 - **Parallelism is a knob**: `-j N` / `--jobs N` (or `--serial`), default
   `min(4, cpus)`. Groups are independent (own hub, own store copy, own page),
   so they run concurrently: `-j1` for deterministic logs, higher on a fast box.
-  Measured on the dev phone: unit 0.3 s · integration 3.0 s at `-j4` ·
-  Playwright 13 s at `-j4` (12 groups at the time of writing) · `--all` ≈ 13 s wall.
+  On this phone, three integration groups at `jobs=3` take ~2 min; serial is
+  slower because the groups no longer overlap. The committed 3 s/13 s figures
+  are fast-host numbers (the original doc called them "dev phone"); this
+  Termux phone does not reproduce them.
 - `--e2e` replaces integration, `--unit` alone is unit-only; reuse `--all` for a
   full gate. `--integration --jobs 1` is the debugging mode.
-- **Tiers** (and why): unit = pure contracts, sub-second, run constantly;
-  integration = HTTP/WS contract over a real hub, seconds, run before a commit;
-  Playwright = real browser, the "fire once when the work is done" gate.
+- **Tiers** (and why): unit = pure contracts, sub-second on Linux / ~9 s on
+  Termux, run constantly; integration = HTTP/WS contract over a real hub,
+  seconds on Linux / ~2 min on Termux (process startup dominates), run before a
+  commit; Playwright = real browser, the "fire once when the work is done" gate
+  on a host with Chrome/Chromium.
+
+#### 1.1.1 Termux portability checklist (T1)
+
+The failures are in the harness, not the product:
+
+1. `run.mjs` statically imports `e2e.mjs`, which imports `playwright-core` — so
+   even `--unit` dies with `ERR_MODULE_NOT_FOUND` when the devDependency is not
+   installed. Import the browser suites lazily.
+2. `tests/unit/` (the argument in `run.mjs`) is rejected by Node 26 (`test at
+   tests/unit:1:1`). Pass explicit files or a glob.
+3. `/tmp` is hardcoded in `tests/unit/store.test.ts`, `tests/helpers.mjs`
+   (`mkdirSync("/tmp/pihub-fixtures")`), the fixture session header and several
+   e2e path assertions. Termux has no `/tmp`; use `os.tmpdir()`/`$TMPDIR` and
+   make the fixture cwd dynamic. `scripts/dev-hub.sh` also writes pid/log/dir
+   under `/tmp`.
+4. The `pi` shim is `#!/usr/bin/env node`; Termux has no `/usr/bin/env`, and
+   Node's `spawn` does not run `termux-exec`'s rewriter when `LD_PRELOAD` is
+   absent. Set `PI_BIN` to a wrapper that execs the absolute `node` and
+   `bundle/cli.js` (or launch the hub from a shell where `termux-exec` is
+   active). `findPi()` only checks `statSync().isFile()`, not executability.
+5. The `cli` Firefox backend (`--dump-dom`) stalls on this phone; use the
+   persistent Selenium session instead (§1.2.2).
+
+Measured minimum on this device with the harness fixed: **unit ~9 s**,
+**unit+integration ~2 min 5 s** (`--all` without a browser). E2E needs T2.
 
 ### Isolation (no more test sessions in the real store)
 
@@ -44,7 +85,15 @@ stub records every request: tests assert a message reached the model exactly
 once (`llmMentioning`, `llmCopiesInLastRequest`), and `POST /__hold {ms}`
 keeps a run open on purpose (steering tests).
 
----|---|---|---|
+### Layers (design) and as-built suites
+
+The L0–L4 matrix is the original design. As built today the runnable suites are
+unit, integration, Playwright E2E, Firefox CLI smoke and UI parity. There is no
+stub-hub suite, no `@playwright/test` projects/traces, and no Termux runner yet
+(T1/T2).
+
+| Layer | What | Runtime | Where |
+|---|---|---|---|
 | **L0 unit** (`node:test`) | pure logic: protocol guards, session parse, jails, fork naming, registry invariants with a recording fake child, ring replay, coalescer, env scrub | node | everywhere |
 | **L1 fakes** | scripted `pi --mode rpc` double + fake hub.sock mirror: slow start, no ack, late file, crash mid-run, ENOENT, stderr spam, huge output, CRLF, U+2028 | node | everywhere |
 | **L2 Playwright stub** | UI + protocol flows against a stub hub (deterministic WS/HTTP), DOM/ARIA/mobile | Chrome | CI |
@@ -54,20 +103,33 @@ keeps a run open on purpose (steering tests).
 | **L3 Playwright real** (`@real`) | full loop with real `pi`: new/resume/prompt/steer/abort/model/dialog/fork/relay | `pi` + Chrome | dev box / strict CI |
 | **L4 adversarial** | raw HTTP/WS probes (auth, rebinding, traversal, caps, CSP, XSS payload, dead frames) | node + Chrome | CI |
 
-Run:
+Run (as built):
 
 ```bash
-npm run test           # L0 + L1 + L2 (fast)
-npm run test:real      # L3 on a pi+Chrome host
-npm run test:all       # everything; any skip is a failure (CI mode)
+node tests/run.mjs --unit          # L0
+node tests/run.mjs --integration   # HTTP/WS over a real hub
+node tests/run.mjs --e2e           # Playwright client flows
+node tests/run.mjs --all           # all of the above + Firefox smoke
+npm run test:parity                # optional A/B screenshots
 ```
 
-Playwright: `@playwright/test`, projects `stub`, `phone` (390×844,
-`hasTouch`), `real` (grep `@real`), `adversarial`. `channel: "chrome"`
-with cached-chromium fallback; no browser download. Trace on first retry,
-screenshot + WS log dump on failure, no delayed screenshots on success.
+`npm run test` is **unit-only**, not L0+L1+L2. L1 fakes live inside unit and
+integration (`fake-llm`, recording child); the L2 stub-hub suite does not exist
+— E2E runs the shipped client against a real hub. L3/L4 are partly covered by
+integration/e2e; there are no `@real` / `adversarial` projects.
+
+Playwright as built: `playwright-core` + the custom `tests/run.mjs` /
+`tests/e2e.mjs` runner (12 groups, `-j N`), not `@playwright/test`. It uses
+system Chrome (`channel: "chrome"`, cached Chromium fallback, or
+`PI_HUB_CHROME_BIN`); no traces, projects or browser downloads.
 
 ### 1.2 Cross-platform browser drivers (ADR-020)
+
+> **Status 2026-10-22 — design + POC, not implemented.** ADR-020 is accepted in
+> principle, but no `PageDriver`/`PI_HUB_E2E_DRIVER` exists in `tests/`; the
+> committed E2E is Playwright-only. The Selenium recipe from `auto-mate` was
+> verified against pi-hub on this phone (§1.2.2). Porting the 170 Playwright
+> checks is T2, not a drop-in.
 
 Playwright proper cannot run on Termux/Android — its bundled Chromium needs
 glibc libs Android lacks. `auto-mate` on the phone proved the working
@@ -94,18 +156,21 @@ spec fn(page: PageDriver)
   prerequisite for readable screenshots.
 - `cli` backend: zero dependencies, `firefox --headless --dump-dom` for
   `data-ready`/content assertions and `--screenshot --window-size` for
-  captures (the `auto-mate` `shot.sh` pattern). Runs with no
-  `node_modules` at all.
+  captures (the `auto-mate` `shot.sh` pattern). Runs with no `node_modules` at
+  all. **Not viable on the current phone:** a cold `--dump-dom` probe stalls in
+  the renderer (SWGL; 30 s timeout) and `auto-mate` found per-shot cold starts
+  were the stall. Keep this as a fallback only where `--dump-dom` exits; do not
+  use CP2/CP6 as a Termux gate.
 - **Playwright-only capabilities** are declared per case
   (`requires: "playwright"`): `route()` interception, multiple browser
   contexts/tabs, touch gestures, traces, raw CDP/WS injection, and the
   `adversarial` layer. They SKIP on the Termux runner with a reason.
-- The `termux-smoke` profile runs the capability subset: boot + login,
-  C2 resume, C3 new session, C4 headless view, C1 preview banner,
+- The `termux-smoke` profile is planned to run the capability subset: boot +
+  login, C2 resume, C3 new session, C4 headless view, C1 preview banner,
   `__errs` empty, screenshots at 390×844 (phone), 768×1024, 1280×800.
-- Same spec functions run under `@playwright/test` (fixture wraps
-  `PageDriver`) and the Termux runner (`node:test` + Firefox backend),
-  so capability logic has one home.
+- In the design, the same spec functions run under `@playwright/test` (fixture
+  wraps `PageDriver`) and the Termux runner (`node:test` + Firefox backend), so
+  capability logic has one home. Today those spec functions do not exist yet.
 
 #### 1.2.1 UI testability contract (built into the app, P4)
 
@@ -118,6 +183,55 @@ spec fn(page: PageDriver)
   controls; assertions read those, never CSS classes.
 - `body[data-app-version]` for cache-bust assertions; screenshot helper
   waits for `data-ready` and `document.fonts.ready` before capture.
+
+#### 1.2.2 Verified Termux POC (2026-10-22)
+
+The auto-mate recipe was run against a real pi-hub on this phone:
+
+```bash
+pkg install x11-repo firefox ttf-dejavu
+# geckodriver 0.37.1 linux-aarch64 (auto-mate has it; keep it out of git)
+# npm i --no-save selenium-webdriver
+# not wired into run.mjs yet; see T2
+```
+
+Observed: hub boot 16.4 s, Firefox launch 9.6 s, first paint + `data-ready`
+1.3 s, browser-side smoke 23.2 s (≈44 s including hub boot and teardown).
+The driver reached `title: Pi Hub`, `window.__errs` was `[]`, the fixture row
+was listed and resumed, and a 66 KB screenshot showed the rendered transcript.
+A single persistent Selenium session is required; launching Firefox per shot
+is what made the CLI path stall. `auto-mate`'s `uishot.js` is a ~60-line
+screenshot/JS-error loop, not an assertion harness — it proves the driver
+stack, not a pi-hub E2E suite.
+
+Constraints confirmed:
+
+- One browser at a time on this 3.7 GB phone; Playwright's 4-group fan-out is
+  not available.
+- Selenium gives `get`, `executeScript`, find/click/fill, waits, screenshots
+  and window size — enough for the C1–C4 subset.
+- No `route()` interception, multiple browser contexts, CDP/WS injection,
+  tracing or real touch gestures. Those stay Playwright-only and must be
+  declared `requires: "playwright"`.
+- `window.__errs` and the `data-*` hooks make assertions portable; the app side
+  of the contract is already shipped.
+
+#### 1.2.3 Porting plan (T2)
+
+1. Add a `PageDriver` facade (`goto/eval/waitFor/click/fill/screenshot/errors/
+   close`) and move the shared assertions to it; do **not** port all 170 checks
+   first.
+2. First milestone is CP3 (stub hub) + CP4 (real hub) as `tests/termux-smoke.mjs`:
+   boot, C2 resume, C3 new session, C4 headless view, C1 preview banner, empty
+   `__errs`, three screenshots.
+3. Keep Playwright for the full CI gate and the Playwright-only cases; use
+   Selenium for the phone profile and skip the rest with an explicit reason.
+4. `selenium-webdriver` is an optional devDependency, `geckodriver` lives in
+   `tests/.bin/` (gitignored) or `PI_HUB_GECKODRIVER`; one browser per run.
+
+Expected wall time on this device: one hub boot (~16 s) + one Firefox launch
+(~10 s) + the suite body. A Termux smoke is therefore **minutes**, not 13 s;
+that is acceptable for a release gate, not for a per-edit loop.
 
 ## 2. Fixtures & doubles
 
@@ -341,6 +455,11 @@ WS is filtered only in layer-A cases.
 | CP5 | Playwright-only cases on the Termux runner | SKIP with the `requires: playwright` reason; never a silent pass |
 | CP6 | Driver unavailable | clear SKIP/failure naming the missing binary; `PI_HUB_STRICT=1` fails, default run does not |
 
+**Status 2026-10-22:** CP1–CP6 are design targets; none are wired into
+`tests/` yet. The POC covers page load + C2 resume only. CP2/CP6's CLI premise
+fails on this phone (the renderer stalls), so the Termux path is the persistent
+Selenium backend (§1.2.2), not `--dump-dom`.
+
 ### D — deployment (myserver)
 
 | ID | Scenario | Assertion |
@@ -356,7 +475,9 @@ WS is filtered only in layer-A cases.
 ## 5. Definition of done
 
 1. Every C/A/X/R/P/U/D case is implemented in its owning spec and passes
-   (L0–L2 everywhere; L3 on a pi+Chrome host; L4 in CI mode).
+   (L0–L2 everywhere; L3 on a pi+Chrome host; L4 in CI mode). On Termux, T1/T2
+   (`code-review.md` §4) must be closed before CP3/CP4 can be claimed; they are
+   open today.
 2. `npm run test:all` exits 0 with **zero silent skips**; skips require a
    documented reason and `PI_HUB_STRICT=1` fails on any.
 3. Budgets in `PLAN.md` §5 measured and recorded.

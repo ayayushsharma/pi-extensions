@@ -152,16 +152,20 @@ node tests/run.mjs --all        # + Firefox CLI smoke (cross-platform, ADR-020)
 node tests/run.mjs --all -j1    # serial, deterministic logs/timings
 ```
 
-Current: **73 unit + 94 integration + 170 Playwright checks green**; the Firefox
-CLI smoke SKIPs on hosts whose system Firefox cannot render headless (it is the
-Termux/Android backend — Playwright's bundled Chromium cannot run there).
+Current on the **Linux dev host**: **73 unit + 94 integration + 170 Playwright
+checks**; the Firefox CLI smoke SKIPs on hosts whose system Firefox cannot
+render headless. **On Termux the suite does not run as checked out** (T1 in
+`docs/code-review.md` §4): with test-only portability fixes it is 72/72 unit
+(≈9 s) and 93/93 integration (≈2 min), with E2E unavailable until the
+Firefox/Selenium facade lands (T2). A Selenium POC already loads the hub and
+resumes a fixture on this phone; see `docs/testing.md` §1.1–§1.2.
 Known unpinned items and open findings live in `docs/code-review.md` §4 — the
 matrix stays honest about what is automated and what is manual.
 
 ```bash
-npm test              # unit contracts only, sub-second (run constantly)
-npm run test:int      # + hub contract over HTTP/WS        (~3 s, parallel)
-npm run test:all      # + real browser + Firefox smoke     (fire once when done)
+npm test              # unit contracts — sub-second on Linux, ~9 s on Termux
+npm run test:int      # + hub contract over HTTP/WS — ~3 s Linux, ~2 min Termux
+npm run test:all      # + real browser + Firefox smoke (fire once when done)
 ```
 
 Every suite runs against a **sandboxed agent dir + session store** (nothing can

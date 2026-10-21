@@ -1,10 +1,13 @@
 # pi-hub — implementation plan
 
-Status: **implemented (P0–P6)** (2026-10-18 overnight; updated 2026-10-21).
-Current gate: **73 unit · 94 integration · 170 Playwright** checks green
-(including one real model round-trip with `PI_HUB_E2E_PROMPT=1`); `--firefox`
-adds the zero-dependency CLI smoke (skips where system Firefox cannot render
-headless). As-built deltas from the original plan: `playwright-core` + a small
+Status: **implemented (P0–P6)** (2026-10-18 overnight; updated 2026-10-22).
+Current gate on the Linux dev host: **73 unit · 94 integration · 170
+Playwright** checks green (including one real model round-trip with
+`PI_HUB_E2E_PROMPT=1`); `--firefox` adds the zero-dependency CLI smoke (skips
+where system Firefox cannot render headless). **On Termux the gate does not run
+as checked out** — see T1/T2 in `code-review.md` §4 and `testing.md` §1.1:
+with test-only patches, 72/72 unit (8.7 s) and 93/93 integration (124 s), no
+Playwright; the Selenium/Firefox POC works but is not wired into the suite. As-built deltas from the original plan: `playwright-core` + a small
 node runner instead of `@playwright/test` (same Chromium/system Chrome, no
 test-runner dependency); the selenium/Firefox backend is scaffolded as the CLI
 smoke only; the `tests/cases.json` registry is still not in place (results are
@@ -362,15 +365,25 @@ shape that fits the LoC rule.
 | ID | What | Status | Cheapest shape |
 |---|---|---|---|
 | H1 | Cap over-eviction: `enforceCap` loops while `close()` is async, evicts every idle runner | **Closed — accepted** (deliberate: aggressive eviction protects phone RAM; idle-only, never a run) | — |
-| H2 | No bind serialization: concurrent binds for one file spawn two children | **Fixed** (this change: per-file in-flight spawn shared; close unindexes up front; dead never reused) | Integration H2/H2b/H2c/H2d |
+| H2 | No bind serialization: concurrent binds for one file spawn two children | **Partially fixed** — explicit close/eviction paths unindex; TTL and spawn-failure paths do not, and unindex-before-exit permits a second writer during SIGTERM grace (H8) | Finish in H8 |
 | H4 | Delta coalescer merges text+thinking under the first template's type | **Closed — accepted** (cosmetic mislabel on the single-driver path; splitting the hot path is not worth it) | — |
-| H5 | Backpressure drop still advances `lastSeq`, gap never replayed | **Fixed** (this change: delivered-only `lastSeq`, binds start at head) | `ws.test.ts` (3 cases) |
+| H5 | Backpressure drop still advances `lastSeq`, gap never replayed | **Partially fixed** — delivered-only `lastSeq`; an empty delta still advances past a pending coalesced batch (H9) | One-line guard + `ws.test.ts` case |
 | H6 | Per-IP keys collapse behind the tunnel (all clients `127.0.0.1`) | **decision** (Med) | ADR first (trusted-proxy flag or loopback exemption), then a branch |
+| H7 | Session index thrashes when a store has >200 files (`INDEX_MAX` eviction by `lastAt`) — every listing rescans every file; P2 undone | **open** (High) | 250-file regression + size/protect eviction |
+| H8 | H2 holes: TTL/spawn-failure close without unindex; retry binds a dying child and drops prompts; unindex-before-exit allows a second writer | **open** (High) | `closing` state; unindex every close path; TTL/failure pin |
+| H9 | Empty delta advances `lastSeq` past a pending coalesced batch, which is lost if the flush drops | **open** (Med) | Guard + `ws.test.ts` |
+| H10 | Dialog broker unbounded/unscoped/no timeout; `Mirror.ask` hangs; S9 claim premature | **open** (Med) | Timeout + per-runner delivery + cap |
+| H11 | Export path escapes via final symlink / overwrites any store file; S3 only partially closed | **open** (Med) | Generated name + lstat + `.html` |
+| H14 | Flat-store fork/relocate write into a non-existent `<rootName>/` subdir | **open** (Med) | Use `isFlatDir` for the destination |
+| R6 | Browser transcript DOM unbounded; full re-render on every `set()` | **open** (Med) | Row cap + keyed append |
+| R7 | Client nits: tab lookup basename-only, preview MIME mismatch, live-row X, welcome copy, picker Tab, dead `el({html})` | **open** (Low) | One small client batch |
+| T1 | Termux gate not runnable as checked out (eager playwright import, `/tmp`, Node 26 unit dir, `pi` shebang) — measured 72/72 unit 8.7 s / 93/93 integration 124 s after test-only patches | **open** (High) | Four harness fixes in `code-review.md` T1 |
+| T2 | Firefox/Selenium backend design-only; POC works but no `PageDriver`/`E2E_DRIVER`; CLI backend stalls | **open** (Med) | `termux-smoke` CP3/CP4 first |
 | P4 | Streaming re-renders full markdown per frame in the browser (≈0.5 s CPU on 20k chars) | **open** (Med) | Stream as text node, render markdown once on `message_end` (`transcript.js`) |
 | D1 | Spawn throttle (20/min) has no pin — needs 21 real children | **manual** | Document-only; do not build a 21-child test |
-| D2 | `tests/cases.json` registry + meta-test absent; matrix enforced by review | **open** (Info) | Small JSON + one meta-test; pays by catching doc/test drift |
+| D2 | `tests/cases.json` registry + meta-test absent; matrix enforced by review | **open** (Info) | Small JSON + one meta-test; have it also check the counts in README/testing/UX |
 | M1–M4 | Deferred tau-web features (KaTeX math, highlighting, TTS, PWA SW) | **deferred** | Only if wanted; each must fit the LoC rule or stay deferred |
-| P7 | Flip: runit service still runs old 0.1.0 build; tau-web is still live | **manual** | Deploy today's build, phone smoke (`testing.md` §5.4), then swap with rollback noted |
+| P7 | Flip: runit service still runs old 0.1.0 build; tau-web is still live | **manual — blocked by T1/T2 on Termux** | Keep tau-web until the phone gate is runnable, then deploy, smoke, swap with rollback |
 | LoC | Server exceeds tau-web's server (5.2k vs 4.9k) | **open** (batches 1–2 done: −339 lines) | Keep unifying/dropping dead code; next candidates: app.js sections, CSS tokens; see §7 change log |
 
 Notes that used to live here and are now owned elsewhere:
@@ -382,13 +395,17 @@ Notes that used to live here and are now owned elsewhere:
   ring replays the gap (H10b, done).
 - Fork/rename/export/delete all have UI affordances (context menu); delete
   closes a running owner first, then unlinks (ADR-018 amendment, done).
-- The selenium/geckodriver backend is a CLI smoke only (interaction-heavy
-  browser cases still require Playwright) — environmental, not work.
+- The Selenium/geckodriver backend is **POC-verified** on the phone (page load,
+  fixture resume, screenshot) but not wired into `tests/`; the committed E2E is
+  Playwright API. The plain Firefox `--dump-dom` CLI path stalls here, so CP2
+  and CP6 are not a Termux gate (T2).
 
 ## 8. Open decisions (need sign-off)
 
-1. **Playwright**: `@playwright/test@1.64` as devDep, `channel: "chrome"`
-   (system Chrome; cached chromium fallback). No downloaded browsers needed.
+1. **Playwright**: as built, `playwright-core` + the custom `tests/run.mjs` /
+   `tests/e2e.mjs` runner (not `@playwright/test`), `channel: "chrome"` (system
+   Chrome; cached Chromium fallback, or `PI_HUB_CHROME_BIN`). No downloaded
+   browsers needed.
 2. **Drop the direct/hub-local channel**: the hub's own pi session is never
    a browser session (ADR-011); every session is headless or live.
 3. ~~**Self-hosted highlight.js + lazy KaTeX** instead of CDN (CSP + snappy).~~
@@ -401,6 +418,9 @@ Notes that used to live here and are now owned elsewhere:
 6. **Cross-platform browsers (ADR-020)**: `PI_HUB_E2E_DRIVER=auto` (default)
    prefers Playwright, falls back to system Firefox + geckodriver +
    selenium-webdriver on Termux, plus a zero-dep `cli` Firefox smoke. No
-   geckodriver vendored; optional devDep installed only where used.
+   geckodriver vendored; optional devDep installed only where used. **Status:**
+   POC verified 2026-10-22 (Selenium loads pi-hub and resumes a session); the
+   facade is not implemented. The `cli` backend is not viable on this phone
+   (renderer stalls) — use persistent Selenium.
 7. **Testability contract** (`body[data-ready]`, `window.__errs`,
    `data-*` hooks) adopted from `auto-mate` and shipped in the app from P4.

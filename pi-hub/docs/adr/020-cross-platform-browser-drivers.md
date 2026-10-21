@@ -1,7 +1,7 @@
 # ADR-020 — Cross-platform browser test drivers
 
-Status: **proposed** (2026-10-18, dialogue). Companion to ADR-019 and
-`docs/testing.md` §1.2.
+Status: **accepted in principle; POC verified 2026-10-22; implementation open
+(T2 in `code-review.md`)**. Companion to ADR-019 and `docs/testing.md` §1.2.
 
 ## Context
 
@@ -79,5 +79,32 @@ phone itself, without maintaining two suites.
 - The full Playwright run remains the CI gate; a driver or browser missing
   produces an explicit SKIP (failure under `PI_HUB_STRICT=1`), never a
   green run with untested UI.
-- The `cli` backend keeps a zero-dependency sanity path that works on a
-  bare Termux with only `firefox` + `ttf-dejavu` installed.
+- The `cli` backend keeps a zero-dependency sanity path on a host where
+  `firefox --headless --dump-dom` exits cleanly. On the current Termux phone it
+  **stalls** in the renderer, so it is not a gate there; the persistent
+  Selenium session is the working Termux path.
+
+## Update (2026-10-22) — POC result
+
+The Selenium recipe from `auto-mate` was verified against pi-hub on this phone:
+Firefox 158 + geckodriver 0.37.1 + selenium-webdriver 4.51.0 loaded `/hub/`,
+reached `body[data-ready="1"]`, reported `window.__errs = []`, listed and
+resumed the fixture, and captured a transcript screenshot. Timings: hub boot
+16.4 s, Firefox launch 9.6 s, first paint 1.3 s, browser-side smoke 23.2 s
+(≈44 s including hub boot and teardown). One persistent browser at a time.
+
+What this changes:
+
+- The **decision stands**: one facade, Playwright for the full/CI gate and
+  Selenium for Termux.
+- The **`cli` backend is not a Termux gate**: a per-shot cold Firefox start
+  stalls (the `auto-mate` session already identified this), and the plain
+  `--dump-dom` probe times out here. CP2/CP6 must not be claimed on this device.
+- **Implementation is still open**: there is no `PageDriver` or
+  `PI_HUB_E2E_DRIVER` in `tests/` yet; the committed E2E is Playwright API.
+  First milestone is CP3/CP4 (`tests/termux-smoke.mjs`), not a port of all 170
+  checks.
+- Selenium can do `get`, `executeScript`, find/click/fill, waits and
+  screenshots, which covers C1–C4. Route interception, multiple contexts,
+  CDP/WS injection, traces and real touch gestures stay Playwright-only and
+  must be declared `requires: "playwright"`.

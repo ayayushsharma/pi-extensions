@@ -43,28 +43,55 @@ tau-web code is copied or imported). It matches tau-web's visual language and
 UX while fixing known rough edges:
 
 - **Tab bar + home**: one tab per open session, dot states (live/working),
-  `Ctrl+K` picker, `Ctrl+Shift+P` home.
+  `Ctrl+K` picker, `Ctrl+Shift+P` home. Home tears the view down (no bound
+  runner, no `#s=` hash, composer hidden) — the strip itself is hidden on
+  phones (≤520px), where the sidebar + titlebar carry session identity.
 - **Sidebar**: current-session card with live state, *currently running tabs*,
   *running terminals* (Drive/Detach inline), project-grouped sessions with
   client-side filter plus full-text fallback (`GET /api/search`), favourites,
   and a context menu (favourite, rename, fork, export HTML, copy path, delete).
 - **Transcript**: DOM-built markdown (no `innerHTML` for model output),
-  collapsible thinking blocks, tool cards with status/diff/copy, usage and cost
-  lines, windowed history with *load earlier*, and a *jump to latest* control
-  when scrolled away.
-- **Composer**: slash palette, steer/queue pills while working, image
+  collapsible thinking blocks, tool cards with **Input above Output** (edit
+  diffs stay visible beside the result) plus status/copy, usage and cost lines,
+  windowed history with *load earlier*, a 300-node DOM cap with a
+  "N hidden" way back for long live runs, and a *jump to latest* control when
+  scrolled away.
+- **Composer**: slash palette, steer/queue pills while working (the pill
+  echoes on ack — headless pi reports `queue_update`, the live mirror forwards
+  no queue state — and clears when the text is delivered), image
   attachments, model + thinking menus, abort, optional Web Speech input, and a
   statusline with cwd, tokens, cost and context %.
-- **Server surfaces**: preview/drive banner, file panel jailed to the session
+- **Server surfaces**: preview/drive banner (a slim one-liner with a bold
+  lead — `Driving` / `Preview` — that wraps instead of clipping), file panel
+  jailed to the session
   cwd (up-button disables at the boundary), settings (side-rail sheet: twelve
-  light/dark themes with palette previews, chat prefs as switches, server +
-  process list,
+  light/dark themes with palette previews — **Clean is the default** — chat
+  prefs, server + process list,
   server info, process list with kill), extension-UI dialogs, toasts, login
   overlay, and a mobile drawer that closes on session pick.
 
 Picker starter prompts are sent after the fresh bind (tau-web dropped them);
 rename/delete/fork/export all round-trip through the backend (delete refuses a
 session owned by a running backend until it is closed).
+
+### Chat preferences (Settings → Chat)
+
+All of these are per-device (`pi-hub-prefs` in `localStorage`) and apply to
+open sessions immediately:
+
+| Pref | Default | Effect |
+|---|---|---|
+| Thinking blocks | on | Show the model's reasoning above each answer. |
+| Usage and cost | on | Token counts and spend under every assistant turn. |
+| Expand tool calls | off | Tool cards open with args/output instead of a summary line. |
+| Wrap message code | off | Wrap code blocks in messages rather than scrolling sideways. |
+| Wrap tool calls | off | Wrap tool card args/output (independent of the message setting). |
+| Tool output | readable text | Join the result's `text` blocks as plain output; **Raw JSON** keeps the full result blocks. |
+| Streaming replies | Format live | Markdown painted as it arrives (throttled once a reply grows past ~6k chars). **Format on completion** shows plain pre-wrapped text while streaming and formats once at `message_end` — the cheap choice for long replies/slow devices. |
+
+Theme is a separate Appearance pref; **Clean** is the default for a fresh
+device (Night on a dark `prefers-color-scheme`), and a saved choice always
+wins.
 
 Testability hooks: `body[data-ready="1"]` when booted, `window.__errs[]` for
 client errors, and stable `data-*` attributes (`data-session-file`,

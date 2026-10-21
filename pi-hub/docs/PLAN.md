@@ -367,19 +367,19 @@ shape that fits the LoC rule.
 | H1 | Cap over-eviction: `enforceCap` loops while `close()` is async, evicts every idle runner | **Closed — accepted** (deliberate: aggressive eviction protects phone RAM; idle-only, never a run) | — |
 | H2 | No bind serialization: concurrent binds for one file spawn two children | **Partially fixed** — explicit close/eviction paths unindex; TTL and spawn-failure paths do not, and unindex-before-exit permits a second writer during SIGTERM grace (H8) | Finish in H8 |
 | H4 | Delta coalescer merges text+thinking under the first template's type | **Closed — accepted** (cosmetic mislabel on the single-driver path; splitting the hot path is not worth it) | — |
-| H5 | Backpressure drop still advances `lastSeq`, gap never replayed | **Partially fixed** — delivered-only `lastSeq`; an empty delta still advances past a pending coalesced batch (H9) | One-line guard + `ws.test.ts` case |
+| H5 | Backpressure drop still advances `lastSeq`, gap never replayed | **Fixed** — delivered-only `lastSeq`, empty deltas flush first, replay skips the coalescer ceiling | `ws.test.ts` (4 cases) |
 | H6 | Per-IP keys collapse behind the tunnel (all clients `127.0.0.1`) | **decision** (Med) | ADR first (trusted-proxy flag or loopback exemption), then a branch |
 | H7 | Session index thrashes when a store has >200 files (`INDEX_MAX` eviction by `lastAt`) — every listing rescans every file; P2 undone | **open** (High) | 250-file regression + size/protect eviction |
 | H8 | H2 holes: TTL/spawn-failure close without unindex; retry binds a dying child and drops prompts; unindex-before-exit allows a second writer | **open** (High) | `closing` state; unindex every close path; TTL/failure pin |
-| H9 | Empty delta advances `lastSeq` past a pending coalesced batch, which is lost if the flush drops | **open** (Med) | Guard + `ws.test.ts` |
+| H9 | Empty delta advances `lastSeq` past a pending coalesced batch, which is lost if the flush drops | **fixed** (empty delta flushes first) | `ws.test.ts` |
 | H10 | Dialog broker unbounded/unscoped/no timeout; `Mirror.ask` hangs; S9 claim premature | **open** (Med) | Timeout + per-runner delivery + cap |
 | H11 | Export path escapes via final symlink / overwrites any store file; S3 only partially closed | **open** (Med) | Generated name + lstat + `.html` |
-| H14 | Flat-store fork/relocate write into a non-existent `<rootName>/` subdir | **open** (Med) | Use `isFlatDir` for the destination |
-| R6 | Browser transcript DOM unbounded; full re-render on every `set()` | **open** (Med) | Row cap + keyed append |
-| R7 | Client nits: tab lookup basename-only, preview MIME mismatch, live-row X, welcome copy, picker Tab, dead `el({html})` | **open** (Low) | One small client batch |
+| H14 | Flat-store fork/relocate write into a non-existent `<rootName>/` subdir | **fixed** (`isFlatDir` destination) | `store.test.ts` |
+| R6 | Browser transcript DOM unbounded; full re-render on every `set()` | **fixed** — 300-node window cap with a "N hidden" control wired to load-earlier (history was already paged) | manual long run |
+| R7 | Client nits: tab lookup basename-only, preview MIME mismatch, live-row X, welcome copy, picker Tab, dead `el({html})` | **fixed** — dirName-aware tab match, 4-mime preview, live X → fingerprinted kill, Tab never navigates, failed browse clears the list | full e2e |
 | T1 | Termux gate not runnable as checked out (eager playwright import, `/tmp`, Node 26 unit dir, `pi` shebang) — measured 72/72 unit 8.7 s / 93/93 integration 124 s after test-only patches | **open** (High) | Four harness fixes in `code-review.md` T1 |
 | T2 | Firefox/Selenium backend design-only; POC works but no `PageDriver`/`E2E_DRIVER`; CLI backend stalls | **open** (Med) | `termux-smoke` CP3/CP4 first |
-| P4 | Streaming re-renders full markdown per frame in the browser (≈0.5 s CPU on 20k chars) | **open** (Med) | Stream as text node, render markdown once on `message_end` (`transcript.js`) |
+| P4 | Streaming re-renders full markdown per frame in the browser (≈0.5 s CPU on 20k chars) | **narrowed** — "Format on completion" mode (plain text until `message_end`) plus a 150 ms throttle past ~6k chars in live mode; no incremental block segmentation yet | manual |
 | D1 | Spawn throttle (20/min) has no pin — needs 21 real children | **manual** | Document-only; do not build a 21-child test |
 | D2 | `tests/cases.json` registry + meta-test absent; matrix enforced by review | **open** (Info) | Small JSON + one meta-test; have it also check the counts in README/testing/UX |
 | M1–M4 | Deferred tau-web features (KaTeX math, highlighting, TTS, PWA SW) | **deferred** | Only if wanted; each must fit the LoC rule or stay deferred |

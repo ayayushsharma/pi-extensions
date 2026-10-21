@@ -128,7 +128,7 @@ system Chrome (`channel: "chrome"`, cached Chromium fallback, or
 > **Status 2026-10-22 — design + POC, not implemented.** ADR-020 is accepted in
 > principle, but no `PageDriver`/`PI_HUB_E2E_DRIVER` exists in `tests/`; the
 > committed E2E is Playwright-only. The Selenium recipe from `auto-mate` was
-> verified against pi-hub on this phone (§1.2.2). Porting the 170 Playwright
+> verified against pi-hub on this phone (§1.2.2). Porting the 171 Playwright
 > checks is T2, not a drop-in.
 
 Playwright proper cannot run on Termux/Android — its bundled Chromium needs
@@ -220,7 +220,7 @@ Constraints confirmed:
 #### 1.2.3 Porting plan (T2)
 
 1. Add a `PageDriver` facade (`goto/eval/waitFor/click/fill/screenshot/errors/
-   close`) and move the shared assertions to it; do **not** port all 170 checks
+   close`) and move the shared assertions to it; do **not** port all 171 checks
    first.
 2. First milestone is CP3 (stub hub) + CP4 (real hub) as `tests/termux-smoke.mjs`:
    boot, C2 resume, C3 new session, C4 headless view, C1 preview banner, empty
@@ -399,12 +399,12 @@ WS is filtered only in layer-A cases.
 |---|---|---|
 | P1 | `/api/runners` warm | < 30 ms; no full session parse |
 | P2 | History tail | < 50 ms for 10k-entry file; only tail read |
-| P3 | Stream | Server coalesces; client rAF; no per-token frames |
+| P3 | Stream | Server coalesces (~40 ms batches stamped with the max seq they cover); client paints on rAF, throttled to 150 ms past ~6k chars; "Format on completion" mode parses once at `message_end` |
 | P4 | Idle hub RSS | < 80 MB with zero children |
 | P5 | No polling | Network log shows zero periodic session-store requests while idle |
 | P6 | Client TTI | Warm local < 1 s; JS parse < 300 ms |
 | P7 | Phone scroll | 60 fps-ish on 390 px Chromium throttle; `contain` on rows |
-| P8 | Reconnect | Replay window bounded (200 events); no full refetch on flap |
+| P8 | Reconnect | Replay window bounded (200 events); no full refetch on flap; replays never repaint history frames (bind-head guard) or re-buffer coalesced deltas (`deltaSeq` ceiling) |
 
 ### U — UX & mobile
 
@@ -433,7 +433,7 @@ WS is filtered only in layer-A cases.
 | U21 | Live treatment | Live rows carry `.live-row` + live chip (R-4) |
 | U22 | Backend titles | Rows show session titles + full basename sub (R-5) |
 | U23 | Favourites once+star | No group dupes; star toggles without the menu; per-session keys (R-6, UX-7) |
-| U24 | Wrap pref | Toggle flips `data-wrap-code`; persists across reload (R-8, UX-6) |
+| U24 | Wrap prefs | Each toggle flips its own attribute (`data-wrap-code` / `data-wrap-tools`); both persist across reload (R-8, UX-6) |
 | U25 | Code copy | Fence header with lang + clipboard-verified Copy (R-9) |
 | U26 | Tool hint paths | Session-relative hints, full path on hover (UX-8) |
 | U27 | Compact nudge | Over-budget pill compacts via confirm; healthy pill inert (UX-9) |
@@ -444,6 +444,15 @@ WS is filtered only in layer-A cases.
 | U32 | Durable close | Card X closes the session: tab gone, hash cleared, reload stays on home (UX-14) |
 | U33 | One tab per session | Backend list + session list converge on one tab (R-12) |
 | U34 | Chrome details | One collapse icon, ≥20 px tab-close hit area, load-earlier aligned with the transcript column, phone composer without overflow (R-7, R-11) |
+| U35 | Drive/preview banner | One slim line with a bold lead (Driving/Preview); wraps rather than clipping; no session title or pid (UX-31) |
+| U36 | Phone tab strip | Strip hidden at ≤520 px, visible and scrollable on tablets (UX-30) |
+| U37 | Home detaches | Home clears the binding, the drive lock and `#s=`; tabs stay open (UX-33) |
+| U38 | Drive lock scope | Navigating away detaches; rebinding the same runner keeps driving (UX-34) |
+| U39 | One card per tool call | Start/end in either order yields a single card that finishes (UX-35) |
+| U40 | Stream dedupe | No duplicated text after replay/rebind; empty deltas flush the batch (UX-36, H9) |
+| U41 | Queue echo | Queued steer/follow-up pill appears on send while driving; clears on delivery/idle; model sees one copy (UX-37) |
+| U42 | Tool input + output | Finished cards show Input above Output; readable text vs raw JSON per pref (UX-38) |
+| U43 | Render prefs | Wrap toggles are independent (code vs tools); streaming mode persists; Clean is the default theme |
 
 ### CP — cross-platform drivers (ADR-020)
 
@@ -472,6 +481,7 @@ Selenium backend (§1.2.2), not `--dump-dom`.
 | D5 | Memory cap | 3 children + hub under available RAM; LMK untouched at idle |
 | D6 | Flip/rollback | `sv down tau-web; sv up pi-hub` verified; rollback one command |
 | D7 | Singleton (ADR-021) | second hub refuses while the advert claim is live (names owner pid/port/sock); stale claim reclaimed; no port bump — unit-pinned, manual: start hub twice |
+| D8 | Process scan per platform | Linux/Android via `/proc`; macOS via one `ps -ax` (same argv fingerprint, kill re-verified). Manual: Settings → Server lists a running TUI with Kill on a Mac; `parsePs` is unit-pinned |
 
 ## 5. Definition of done
 

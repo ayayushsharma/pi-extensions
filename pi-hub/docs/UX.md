@@ -65,6 +65,16 @@ fallback when no system Chrome exists).
 | UX-5 | Activating a tab **duplicated** it. `activateTab` on a tab with a runner rebound via `bindRunner`, which always minted a runner-keyed tab (`r:…`, bare-filename title, empty dirName → hash `#s=/file`) instead of updating the file tab. Found because E15b showed the right session under the wrong title/hash after the UX-1 fix. | `bindRunner` takes the calling tab and `applyBound` reuses its key/title/dirName. | E15b/E15c |
 | UX-27 | **A rejected send silently ate the attachment.** The composer cleared `images` before calling the hub and only restored the text on failure, so any error (or an attachment type the server refuses) lost the picked file. It also accepted every `image/*` (AVIF/HEIC/BMP/SVG) while the wire only allows PNG/JPEG/GIF/WebP. | Allowlist enforced at pick time with a specific toast; attachments restored on a failed send; oversized photos downscaled in-browser (WebP, JPEG fallback) into per-image/per-message base64 budgets that fit the 2 MB WS frame (a 3 MB photo used to close the socket with 1009); animated GIFs refused rather than re-encoded. | E42/E42b/E43, integration X10 |
 | UX-28 | **Legacy history images disappeared.** The new history validator required `mimeType` and raw base64, so image blocks without a mime (pi's own fallback is `image/png`) or stored as `data:` URLs stopped rendering — cases tau-web's hardened renderer explicitly handled. | `normalizeImage()` defaults a missing mime to png and parses `data:` URL headers (validating the inner mime + base64), still rejecting SVG/unknown/oversized blocks. | E41/E41b |
+| UX-29 | The home-screen live row put the `live` chip at the end of the **title** line, where it read as glued to the neighbouring **Drive** button instead of belonging to the row. | The chip is a direct child of `.welcome-live-row` beside Drive; the row's `align-items: center` lines both up vertically and the title gets its full width back. | — (visual, covered by E34) |
+| UX-30 | **The tab strip was unreachable on phones.** `.tab-strip` clipped at ~42vw with no room to scroll, so a second tab was cut off; the sidebar and titlebar already carry the same information there. | The strip is `display: none` at ≤520px only (tablets keep it). | E15e2 |
+| UX-31 | The drive/preview banner spent two lines restating what the titlebar already said (`Driving the live TUI on port 4669` + session title), taking a large vertical bite out of a phone transcript. | One slim line with a bold lead — **Driving** / **Preview** — that wraps instead of clipping; no session title or pid (the titlebar has both). The two-line title/sub shape stays for the states that need it (folder gone, session ended). | E8, E8e |
+| UX-32 | The welcome screen advertised keyboard hints that did nothing: `/` "focus input" (no handler at all), `Ctrl+T` "new session" (browsers reserve it) and `Esc` "stop" (only fired while the composer had focus, and is now gone entirely). | Removed the hint row, the dead handlers and the `Ctrl+T` title text. Working keys stay: `Ctrl+K` picker, `Ctrl+Shift+P` home, Esc closing menus/dialogs, and bash-like Tab completion in the picker. | — |
+| UX-33 | **Home left the session attached.** Clicking the Home (π) button switched the view but kept `bound`/`driving`, so the live preview banner and a stale hash stayed on the welcome screen and the URL still pointed at a session. | `goHome()` (Home button + `Ctrl+Shift+P`) tears down like Dismiss: clears `bound`/`driving`/`driverBusy`, sends `unbind`, clears `#s=`, keeps tabs open for one-click return. The banner's Dismiss clears the hash too. | — |
+| UX-34 | **A driven TUI stayed locked after you looked away.** The server lock is per runner and keyed by the browser socket, but the client tracked only one `driving` id and never detached on navigation — so another browser got `driver_busy` for a tab nobody was watching. | Navigation away releases it: `applyBound` detaches when the newly bound runner differs from the driven one (rebinding the same runner keeps driving), and Home/close-tab/Dismiss detach first. One lock per browser, always on the visible session. | E8/E8e (drive → detach cycle) |
+| UX-35 | **Tool calls displayed as two cards.** A `tool_execution_start` that arrived while no streaming message was alive painted a top-level card; the end-of-message render then created a *second* card for the same tool id, and only the second was finished — leaving a permanently `running` duplicate above a `done` one. | Cards are id-addressable: the end render adopts an existing card (refreshing its stashed args from the authoritative end message) and a duplicate start is ignored, so every tool call is one card in every arrival order. | full e2e (tool cards) |
+| UX-36 | **Duplicated streamed text.** Three causes, same symptom: (a) the hub stamped a coalesced delta batch with the *first* frame's seq while advancing `lastSeq` to the batch's max, so a replay redelivered applied deltas; (b) frames at/below the coalescer ceiling were redelivered on a replay although still buffered, double-counting their text; (c) after a bind, replayed frames repainted messages the fresh history window had already rendered. | (a) batches are stamped with the max seq they cover (`flushDeltas`); replay skips seqs `<= deltaSeq`; empty deltas flush the pending batch first (H9). (c) the client drops transcript painting for frames at/below the bind ack's `lastSeq` (in-flight partials heal at `message_end`); status/queue flags still update. | `ws.test.ts` (drop, healthy, dropped-flush, empty-delta), full e2e |
+| UX-37 | **Queued items never appeared while driving a live TUI.** The pills waited for pi's `queue_update` event, which a headless child emits but the mirror never forwards (it relays responses/dialogs/status only) — so steering looked like it vanished. | The pill echoes on send-ack (server truth still wins if `queue_update` arrives) and clears when pi delivers the text as its user message, when a live runner goes idle (no delivery messages exist on the mirrored path), via restore, or on abort. No double delivery: E38d/E38e still count exactly one copy in the model's conversation. | E38b, E38f |
+| UX-38 | Tool cards threw their inputs away: an opened `edit` showed only the result line (`Successfully replaced 1 block`), so the diff being reviewed vanished the moment the call finished. | Finished cards render **Input** above **Output** (edit/write diffs, bash command JSON, args for everything else) with small-caps labels; a call with no args looks exactly as before. | full e2e (tool cards) |
 
 ## 3. Verified already-good (asked about, confirmed in code + UI)
 
@@ -218,6 +228,12 @@ this section is the short version for a fresh session.
   H2 bind serialization (shared in-flight spawn, unindex-on-close) and H5
   delivered-only `lastSeq` fixed, both pinned (integration H2/H2b/H2c/H2d,
   new `ws.test.ts`).
+- **Committed (`9dd9db7`)**: **UI batch** — UX-29…UX-38 (banner slimming,
+  phone tab strip, Home teardown, drive-lock scope, one-card tool calls, stream
+  dedupe, queue echo, tool Input/Output, chat render prefs, Clean default) plus
+  server fixes H9/H14/F2 (macOS `ps` scan, flat-store fork/relocate, coalescer
+  replay guards). Pins: `ws.test.ts` empty-delta, `store.test.ts` flat H14,
+  `processes.test.ts` `parsePs`, e2e E15e2 + updated banner/label selectors.
 - **Docs (`935088a`)**: round-2 findings H7–H14/R6–R7/T1–T3 recorded;
   S3/S9/S10 and H2/H5 downgraded to partial; Termux measurements and the
   Selenium POC documented; ADR-020/PLAN/testing/README counts corrected.
@@ -243,8 +259,25 @@ this section is the short version for a fresh session.
 - Attachments are downscaled in-browser to fit the 2 MB WS frame; GIFs are
   never re-encoded.
 - Session reads are incremental (append-aware index, tail windows); the first
-  scan after start streams in 256 KB chunks. Client streaming render is still
-  per-frame markdown (P4, open).
+  scan after start streams in 256 KB chunks. Client streaming is throttled and
+  optionally plain-text until `message_end` (P4 narrowed, see below).
+- **One drive lock per browser, and only on the visible session.** Navigating
+  away detaches (`applyBound` on a different runner; Home/close/Dismiss
+  detach first). Rebinding the same runner keeps driving.
+- **Home means detached.** It clears the binding, the hash and the composer;
+  tabs stay open and one click rebinds (and re-attaches).
+- **Queue pills echo on ack**, because queue state is not relayed on the live
+  path: headless children emit `queue_update`, the mirror forwards no pi
+  events at all. A real `queue_update` still overrides the echo.
+- **Tool cards are keyed by tool-call id** and finish exactly once; the end
+  message is authoritative for args. Input renders above Output.
+- **Replay never repaints what history already shows:** frames at/below the
+  bind ack's `lastSeq` skip transcript painting, and the coalescer ceiling
+  (`deltaSeq`) keeps buffered deltas from being replayed.
+- **Theme default is Clean** (Night on a dark `prefers-color-scheme`); an
+  explicitly saved pref always wins, so existing installs are unchanged.
+- Chat render prefs (streaming mode, tool output shape, wrap toggles) are
+  per-device and independent — never coerce one from another.
 - pi-hub is wire-independent (ADR-022): its own client/dialect/routes are
   canonical, there are no tau-web aliases, and tau-web's harness is not a
   gate. Deferred tau-web features (math, highlighting, TTS, PWA SW) are
@@ -256,18 +289,20 @@ this section is the short version for a fresh session.
    file). This is the highest-impact open item; add the 250-file pin.
 2. **H8** finish H2: unindex TTL/spawn-failure closes, add a `closing` state,
    and make the retry wait instead of spawning a second writer.
-3. **H9 empty-delta guard** — done: empty deltas flush first; replay skips the coalescer ceiling.
-4. **H10** dialog broker: timeout, per-runner delivery, cap, cancel on
+3. **H10** dialog broker: timeout, per-runner delivery, cap, cancel on
    disconnect (the current S9 "closed" claim is premature).
-5. **H11** export: generated `.html` name, lstat final component, no
+4. **H11** export: generated `.html` name, lstat final component, no
    store-wide overwrite.
+5. **H12/H13** process fingerprint tightened to pi install roots; per-pid cap
+   on toggle-confirm waiters.
 6. **H6 decision**: per-IP keys collapse behind the tunnel (all clients are
    `127.0.0.1`). Needs an ADR line — trusted `X-Forwarded-For` behind a flag,
    or exempt loopback from the caps.
 7. **T1/T2 Termux gate**: harness portability (`$TMPDIR`, lazy e2e import,
    unit file list, `PI_BIN` wrapper) and the Firefox/Selenium `PageDriver` +
    `termux-smoke` (CP3/CP4). The CLI `--dump-dom` backend stalls on this phone.
-8. **P4/R6 client cost** — R6 done (300-node DOM cap + hidden-count note); P4 streaming-text-node still open.
-9. **H14/R7 small fixes** — done (flat-aware fork/relocate; R7 client batch).
-10. **Deployment/flip (P7)**: runit service, tunnel on :12045, remove tau-web
+8. **P4 client cost** — narrowed: "Format on completion" mode plus a 150 ms
+   throttle in live mode. Incremental block segmentation (parse only the new
+   tail) is the remaining win, and it is optional.
+9. **Deployment/flip (P7)**: runit service, tunnel on :12045, remove tau-web
     from settings — **blocked by T1/T2** for a real Termux gate.

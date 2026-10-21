@@ -20,8 +20,8 @@ suite cannot cheaply cover (singleton refusal, drive consent, frame caps).
 Suites are re-run after each batch; claims in this document are test-backed
 unless marked manual.
 
-Committed gate on the fast dev host: **73 unit · 94 integration · 170
-Playwright** green (`--all`: 336 checks: 335 pass, 1 Firefox SKIP), jiti load
+Committed gate on the fast dev host: **76 unit · 94 integration · 171
+Playwright** green (`--all`: 340 checks: 339 pass, 1 Firefox SKIP), jiti load
 of every touched module (see §6). **On Termux this gate does not run as
 checked out** — see T1; with test-only portability fixes the measured Termux
 result is 72/72 unit (8.7 s) and 93/93 integration (124 s, `jobs=3`), E2E
@@ -85,8 +85,9 @@ inside that shape, not another rewrite.
 | P1 | Low | Search read every session file per request; export download buffered the whole file | **Fixed** (file/budget caps, streamed download) | `store.test.ts`, X20 |
 | P2 | High | History and listing parsed the **whole** JSONL every time: a 39 MB session cost ~+120 MB hub RSS (HWM 479 MB on a 3.7 GB phone) and a cold 99 MB store listing +200 MB | **Fixed** (append-aware per-file index; windows read tail lines, first touch streams in 256 KB chunks) | `store.test.ts` (incremental/partial/truncate/deep) |
 | P3 | High | The actively-growing session was re-parsed on **every token**: the summary cache keyed `(mtime,size)`, so each append invalidated the entry | **Fixed** (index consumes appended bytes only; a 12 KB append reads 12 KB) | `store.test.ts` |
-| P4 | Med | Streaming re-renders the full markdown per frame in the **browser** (533 ms vs 2.6 ms for 20k chars as plain text) — client CPU, not hub RAM | **Open** (deferred; safe to do after the server fix) | — |
+| P4 | Med | Streaming re-renders the full markdown per frame in the **browser** (533 ms vs 2.6 ms for 20k chars as plain text) — client CPU, not hub RAM | **Narrowed.** Settings → Chat adds "Format on completion" (plain pre-wrapped text while streaming, one markdown paint at `message_end`); live mode still parses incrementally but throttles full paints to 150 ms once a reply passes ~6k chars. Dropping the per-frame parse entirely would need incremental block segmentation — not done. | manual (20k-char reply), full e2e |
 | F1 | Med | Process panel said "not supported on this platform" on the homeserver: Node reports `process.platform === "android"` on Termux, and pi's argv[0] is `node`/`sh`, never `pi` | **Fixed** (Linux+Android gate; argv/`exe` fingerprint: `pi-coding-agent` path, `bundle/cli.js`, `bin/pi`, `pi-node.sh`) | `processes.test.ts` |
+| F2 | Med | Process panel said the same on **macOS**: no `/proc`, so the scan bailed before it ran. | Darwin scans through one `ps -ax` call with the same argv fingerprint (RSS from `ps`, start time derived from elapsed, no cwd — per-pid `lsof` would stall a refresh); kill re-verifies through `ps`. | `processes.test.ts` (platform gate + `parsePs`) |
 | D1 | Info | Spawn throttle has no test (needs 21 real children) | **Open (manual)** | — |
 | D2 | Info | `tests/cases.json` registry + meta-test still absent, so the matrix is enforced by review, not by CI | **Open** | — |
 | D3 | Info | Firefox CLI smoke SKIPs on hosts whose system Firefox cannot render headless | **Environmental** | FC0 |
@@ -171,7 +172,8 @@ model; keep loopback bind and strong credentials off-loopback.
 | 7 | _(this change)_ | **H1/H4 accepted, H2 + H5 partially fixed (residuals H8/H9):** H1 aggressive eviction and H4 delta mislabel closed as deliberate trade-offs (documented rationales); H2 bind serialization — per-file in-flight spawn promise shared by concurrent resumes, `closeById`/`closeByPid`/eviction unindex the file up front, dead indexed runners never reused; H5 — `lastSeq` tracks delivered frames only (`send` boolean, flush commits on success, binds start at head, replay guard simplified). Pins: integration H2/H2b (one runner, one pid), H2c/H2d (retry-after-close spawns fresh and answers), new `ws.test.ts` (3 backpressure cases). Full gate green (73/94/170; `--all` 336). |
 | 8 | `935088a` | **Round-2 review + Termux/Selenium findings:** H7–H14, R6–R7, T1–T3 recorded; S3/S9/S10 and H2/H5 downgraded to partial; ADR-020, testing/PLAN/README/UX corrected; no product code changed. Linux gate unchanged (73/94/170); Termux gate open. |
 | 9 | `b70fb1b` | **Termux Firefox/Selenium POC runbook** (`termux-browser-poc.md`): setup, tested driver snippet, measured timings, capability limits, CP3/CP4 porting plan; linked from testing/ADR-020/T2. |
-| next | — | H7/H8/H9 first (P2/H2/H5 completion), then H10/H11; H6 (trusted proxy) decision in an ADR; `tests/cases.json` + meta-test; T1/T2 Termux gate; pick up M1–M4 if wanted; deploy/flip (P7). |
+| 10 | `9dd9db7` | **UI batch + three stream bugs.** Client: slim one-line drive/preview banners with a bold lead (no title repeat, wraps instead of clipping); `live` chip realigned beside Drive in the welcome row; tab strip hidden on phones (≤520px, tablets keep it); dead keyboard hints/handlers removed (`/`, `Esc`-stop, `Ctrl+T`) with Tab completion kept; Home now tears down (`unbind` + hash clear) and draft-lock release on navigate-away; tool cards render **Input above Output**; separate wrap toggles for message code vs tool cards; tool output readable-text vs raw JSON; new "Streaming replies" mode (live vs format-on-completion); **Clean** is the default theme. Server: macOS process scan via `ps` (F2); flat-store fork/relocate (H14); coalesced batches stamped with the max seq they cover; replay skips the coalescer ceiling and empty deltas flush first (H9) — together fixing duplicated streamed text; client drops transcript painting at/below the bind head. Pins: `ws.test.ts` empty-delta, `store.test.ts` flat H14, `processes.test.ts` `parsePs` + darwin gate, e2e E15e2, E8/E34 banner copy, E12c3 label. Docs: README chat-prefs table + counts, UX-29…UX-38, P4 narrowed, F2. Gate green (76 unit / 94 int / 171 e2e; `--all` 340 = 339 pass + 1 Firefox SKIP). |
+| next | — | H7/H8 first (P2/H2 completion), then H10/H11/H12/H13; H6 (trusted proxy) decision in an ADR; `tests/cases.json` + meta-test; T1/T2 Termux gate; P4 incremental block segmentation if wanted; deploy/flip (P7). |
 
 ## 8. Deferred scope & deliberate differences
 

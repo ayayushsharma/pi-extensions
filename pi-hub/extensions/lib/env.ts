@@ -54,6 +54,11 @@ export interface HubConfig {
   allowAnyHost: boolean;
   /** opt-in TUI confirmation per browser attach (shared deployments) */
   driveConfirm: boolean;
+  /** browser dialogs cannot hang a child/TUI forever (H10) */
+  dialogTimeoutMs: number;
+  dialogMaxPending: number;
+  /** trust X-Forwarded-For only from a loopback tunnel (H6) */
+  trustProxy: boolean;
   version: string;
 }
 
@@ -120,6 +125,15 @@ export function loadConfig(): HubConfig {
     ],
     allowAnyHost: envBool("PI_HUB_ALLOW_ANY_HOST") === true,
     driveConfirm: envBool("PI_HUB_DRIVE_CONFIRM") === true || settings.driveConfirm === true,
+    dialogTimeoutMs: Math.max(
+      1000,
+      Number(process.env.PI_HUB_DIALOG_TIMEOUT_MS || settings.dialogTimeoutMs) || 5 * 60_000,
+    ),
+    dialogMaxPending: Math.max(
+      1,
+      Number(process.env.PI_HUB_DIALOG_MAX || settings.dialogMaxPending) || 32,
+    ),
+    trustProxy: envBool("PI_HUB_TRUST_PROXY") === true || settings.trustProxy === true,
     version: process.env.PI_HUB_VERSION || "0.1.0",
   };
 }

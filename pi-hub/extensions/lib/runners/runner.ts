@@ -49,6 +49,9 @@ export abstract class Runner {
   isStreaming = false;
   /** {from,to} when the requested cwd vanished and the hub fell back (R-10) */
   cwdFallback: { from: string; to: string } | null = null;
+  /** set synchronously when a close starts; a new bind must wait for the
+   *  process to exit instead of spawning a second writer (H8) */
+  closing = false;
   model: string | null = null;
   thinkingLevel: string | null = null;
   lastActiveAt = Date.now();
@@ -143,4 +146,10 @@ export abstract class Runner {
 
   abstract command(cmd: any): void;
   abstract close(): void;
+
+  /** Resolve true once the runner can no longer write (process gone), or
+   *  false when the timeout expires first. Base runners stop synchronously. */
+  waitForExit(_timeoutMs = 3000): Promise<boolean> {
+    return Promise.resolve(this.state === "dead");
+  }
 }

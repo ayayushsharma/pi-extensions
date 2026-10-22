@@ -160,6 +160,18 @@ a { color: var(--accent-text); }
 .chip.live { background: var(--accent-soft); color: var(--accent-text); }
 .chip.headless { background: var(--hover); color: var(--text-2); }
 .chip.dead { background: rgba(210, 75, 75, 0.1); color: var(--danger); }
+/* WORKING is an active state, not another shade of idle: green + a slow
+   pulse/glow makes a running turn visible at a glance. The global
+   reduced-motion rule below drops the animation but keeps the color. */
+.chip.working {
+  background: rgba(52, 199, 89, 0.16);
+  color: var(--ok);
+  animation: chip-working 1.15s ease-in-out infinite;
+}
+@keyframes chip-working {
+  0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(52, 199, 89, 0); }
+  50% { opacity: 0.55; box-shadow: 0 0 0 3px rgba(52, 199, 89, 0.14); }
+}
 
 /* ── sidebar ─────────────────────────────────────────────────────────── */
 .sidebar {
@@ -260,6 +272,14 @@ a { color: var(--accent-text); }
 .sb-row .row-sub .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--text-4); flex: none; }
 .sb-row .row-sub .dot.on { background: var(--ok); }
 .sb-row .row-sub .dot.working { background: var(--accent); }
+/* The state word in the left pane ("headless", "working", "live") is a tiny
+   green pill, not plain muted text — it reads as a live backend at a glance. */
+.sb-row .row-sub .runner-pill {
+  display: inline-flex; align-items: center; flex: none;
+  padding: 0 6px; border-radius: var(--r-pill);
+  background: rgba(52, 199, 89, 0.12); color: var(--ok);
+  font-size: var(--fs-xs); font-weight: 600; line-height: 1.55;
+}
 .sb-row .row-actions {
   position: absolute; right: 4px; top: 6px; display: flex; gap: 2px;
   opacity: 0; pointer-events: none;

@@ -36,10 +36,12 @@ export function supportsProcessScan(platform: string = process.platform): boolea
   return platform === "linux" || platform === "android" || platform === "darwin";
 }
 
-/** Paths that only a pi install/wrapper produces (no bare "cli.js"). */
+/** Paths that only a pi install/wrapper produces. `bundle/cli.js` alone is
+ *  deliberately absent: any user project can contain that file, and the
+ *  process panel must not offer to kill it (H12). Real pi paths include the
+ *  `pi-coding-agent` package directory, or a `pi`/`pi-node.sh` shim. */
 const PI_PATH = [
   /(^|[/\\])pi-coding-agent([/\\]|$)/,
-  /(^|[/\\])bundle[/\\]cli\.js$/,
   /(^|[/\\])\.bin[/\\]pi$/,
   /(^|[/\\])bin[/\\]pi$/,
 ];
@@ -65,8 +67,8 @@ function argvOf(pid: number, procRoot: string): string[] {
 /**
  * Fail-closed fingerprint on an argv array. True when:
  *   - argv[0] is `pi` (compiled binary or installed shim), or
- *   - an argument points into a pi install (`pi-coding-agent/`, `bundle/cli.js`,
- *     `bin/pi`) — node, bun, deno or a shell wrapping the shim, or
+ *   - an argument points into a pi install (`pi-coding-agent/`, `bin/pi`,
+ *     `.bin/pi`) — node, bun, deno or a shell wrapping the shim, or
  *   - a `pi-node.sh` wrapper is on the command line (before it execs node).
  * A bare `node foo.js` never matches.
  */

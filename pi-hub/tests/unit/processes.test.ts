@@ -39,7 +39,7 @@ test("fingerprint matches pi's real argv shapes, never a random node", { skip },
   fake(102, ["/bin/sh", "/home/u/scripts/pi-node.sh", "-e", "."]); // wrapper before exec
   fake(103, ["node", "/srv/app/server.js", "--port", "3000"]); // unrelated node
   fake(104, ["python3", "/srv/pi.py"]); // substring "pi" is not enough
-  fake(105, ["node", "/opt/pi/bundle/cli.js"]);
+  fake(105, ["node", "/opt/pi/bundle/cli.js"]); // user project, not pi
   fake(106, ["/usr/bin/nodejs", "/opt/pi-coding-agent/dist/cli.js"]);
   fake(107, ["/bin/sh", "/srv/run.sh"], { exe: "/opt/pi" }); // exe fallback
   fake(108, ["bun", "/opt/pi-coding-agent/dist/cli.js", "--mode", "rpc"]);
@@ -50,7 +50,7 @@ test("fingerprint matches pi's real argv shapes, never a random node", { skip },
   assert.equal(proc.isPiProcess(102, PROC), true, "pi-node.sh wrapper");
   assert.equal(proc.isPiProcess(103, PROC), false, "plain node app");
   assert.equal(proc.isPiProcess(104, PROC), false, "pi.py is not pi");
-  assert.equal(proc.isPiProcess(105, PROC), true, "bundle/cli.js");
+  assert.equal(proc.isPiProcess(105, PROC), false, "bare bundle/cli.js is a user project");
   assert.equal(proc.isPiProcess(106, PROC), true, "nodejs + pi install");
   assert.equal(proc.isPiProcess(107, PROC), true, "exe basename pi");
   assert.equal(proc.isPiProcess(108, PROC), true, "bun + pi install");
@@ -63,7 +63,7 @@ test("scan lists only pi pids, labels hub children, skips self and init", { skip
   const out = proc.scanPiProcesses(new Set([101]), 101, PROC);
   assert.equal(out.unsupported, undefined);
   const pids = out.processes.map((p) => p.pid);
-  assert.deepEqual(pids, [100, 102, 105, 106, 107, 108, 109], "103/104 excluded, 101 is self");
+  assert.deepEqual(pids, [100, 102, 106, 107, 108, 109], "103/104/105 excluded, 101 is self");
   const child = out.processes.find((p) => p.pid === 100);
   assert.equal(child?.owner, "live");
   assert.equal(child?.rssKb, 4000, "statm pages -> KiB");

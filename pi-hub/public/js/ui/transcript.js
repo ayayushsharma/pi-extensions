@@ -59,7 +59,9 @@ export function createTranscript(container, opts = {}) {
   const settings = { showThinking: true, showCosts: true, expandTools: false, streamRender: "live", toolOutput: "text", ...opts };
   const toolCards = new Map();
   let sessionCwd = ""; // refreshed on every history load; shortens tool paths
-  const nodeForEntry = new Map();
+  /** top-level rendered node -> entry id, so a trim can also drop the entry
+   *  from the loaded state and let "load earlier" fetch it back from disk */
+  let nodeEntryIds = new WeakMap();
   let pending = null; // streaming assistant
   let flushQueued = false;
 
@@ -226,7 +228,7 @@ export function createTranscript(container, opts = {}) {
   /* ── history ─────────────────────────────────────────────────────── */
   function renderHistory(entries, meta) {
     toolCards.clear();
-    nodeForEntry.clear();
+    nodeEntryIds = new WeakMap();
     trimCount = 0;
     trimWrap = null;
     trimBtn = null;
@@ -236,7 +238,7 @@ export function createTranscript(container, opts = {}) {
     for (const entry of entries || []) {
       const node = entryNode(entry);
       if (node) {
-        nodeForEntry.set(entry.id, node);
+        if (entry.id) nodeEntryIds.set(node, entry.id);
         container.append(node);
       }
     }
@@ -258,14 +260,27 @@ export function createTranscript(container, opts = {}) {
     const wasAtBottom = atBottom();
     const before = scrollerEl().scrollHeight;
     const frag = document.createDocumentFragment();
+    let added = 0;
     for (const entry of entries || []) {
       const node = entryNode(entry);
       if (node) {
-        nodeForEntry.set(entry.id, node);
+        if (entry.id) nodeEntryIds.set(node, entry.id);
         frag.append(node);
+        added++;
       }
     }
     container.prepend(frag);
+    // Entries fetched before the visible oldest are exactly the ones this
+    // trim note counted; move the note down as they return from the file.
+    if (trimCount > 0 && added > 0) {
+      trimCount = Math.max(0, trimCount - added);
+      if (trimCount > 0) renderTrimNote();
+      else {
+        trimWrap?.remove();
+        trimWrap = null;
+        trimBtn = null;
+      }
+    }
     if (wasAtBottom) scrollToBottom();
     else scrollerEl().scrollTop += scrollerEl().scrollHeight - before;
   }
@@ -300,15 +315,36 @@ export function createTranscript(container, opts = {}) {
   function maybeTrim() {
     let removedH = 0;
     let removed = 0;
+    let hiddenEntries = 0;
+    const entryIds = [];
+    const toolCallIds = new Set();
     while (container.childElementCount > TRIM_CAP + (trimWrap ? 1 : 0)) {
       const first = trimWrap && container.firstChild === trimWrap ? trimWrap.nextSibling : container.firstChild;
       if (!first || first === pending?.node) break;
+      const entryId = nodeEntryIds.get(first);
+      if (entryId) entryIds.push(entryId);
+      // A tool result paints into its call's card, which may live in the
+      // removed assistant node. The state entry needs to go with the card,
+      // or "load earlier" would leave a duplicate behind.
+      let hidden = !!entryId;
+      for (const card of first.querySelectorAll?.("[data-tool-id]") || []) {
+        if (card.dataset.toolId) {
+          toolCallIds.add(card.dataset.toolId);
+          hidden = true;
+        }
+      }
+      for (const [id, card] of toolCards) if (first.contains(card)) toolCards.delete(id);
+      if (hidden) hiddenEntries++;
       removedH += first.offsetHeight || 0;
       first.remove();
       removed++;
     }
     if (!removed) return;
-    trimCount += removed;
+    // Only entry-backed nodes count as "hidden": a system notice or a
+    // transient marker has no row to fetch back, so showing it in the note
+    // would leave a button that can never reach zero.
+    trimCount += hiddenEntries;
+    if (entryIds.length || toolCallIds.size) opts.onTrim?.({ entryIds, toolCallIds: [...toolCallIds] });
     renderTrimNote();
     // Dropping nodes above the viewport would yank the reader upward: pay
     // back the removed height unless we pin to the bottom below anyway.
@@ -357,11 +393,14 @@ export function createTranscript(container, opts = {}) {
       case "message_start": {
         const msg = event.message;
         if (msg?.role === "user") {
-          container.append(userNode(msg));
+          const node = userNode(msg);
+          if (msg.id) nodeEntryIds.set(node, msg.id);
+          container.append(node);
         } else if (msg?.role === "assistant") {
           const node = el("div", { class: "msg assistant streaming" });
           const textWrap = el("div", { class: "bubble" });
           node.append(textWrap);
+          if (msg.id) nodeEntryIds.set(node, msg.id);
           container.append(node);
           pending = { node, textWrap, thinking: "", text: "", thinkDetails: null, thinkBody: null };
         }
@@ -398,7 +437,9 @@ export function createTranscript(container, opts = {}) {
             if (pending.thinkDetails) pending.thinkDetails.open = false;
             pending = null;
           } else {
-            container.append(assistantMessageNode(msg));
+            const node = assistantMessageNode(msg);
+            if (msg.id) nodeEntryIds.set(node, msg.id);
+            container.append(node);
           }
         } else if (msg?.role === "toolResult") {
           toolResultNode(msg);

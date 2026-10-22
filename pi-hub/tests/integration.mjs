@@ -8,7 +8,7 @@ import http from "node:http";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { runGroups } from "./groups.mjs";
-import { PKG_ROOT, cleanEnv, connectWs, findPi, fixtureSessionDir, freePort, jsonFetch, killTree, startHub, startMirror, tmpDir, waitFor } from "./helpers.mjs";
+import { PKG_ROOT, cleanEnv, connectWs, findPi, FIXTURE_CWD, fixtureSessionDir, freePort, jsonFetch, killTree, startHub, startMirror, tmpDir, waitFor } from "./helpers.mjs";
 
 export async function runIntegration({ log }) {
   return runGroups(
@@ -35,7 +35,7 @@ async function hubGroup({ check }) {
     const listed = await (await fetch(`${base}/api/sessions`)).json();
     const fixtureProject = listed.projects.find((p) => p.dirName === "--tmp-pihub-fixtures--");
     check("H2 fixture session listed", !!fixtureProject && fixtureProject.sessions.length === 1, JSON.stringify(listed.projects.map((p) => p.dirName)));
-    check("H2b cwd from header", fixtureProject?.cwd === "/tmp/pihub-fixtures", String(fixtureProject?.cwd));
+    check("H2b cwd from header", fixtureProject?.cwd === FIXTURE_CWD, String(fixtureProject?.cwd));
     check("H2c title from session_info", fixtureProject?.sessions[0]?.title === "Fixture session", String(fixtureProject?.sessions[0]?.title));
 
     // ── history window + paging (ADR-015/P3) ────────────────────────────
@@ -105,7 +105,7 @@ async function hubGroup({ check }) {
     // defaults next to the session file, inside the store).
     const wsX = await connectWs(`ws://127.0.0.1:${port}/ws`);
     await wsX.wait((m) => m.type === "hello", 10000, "hello");
-    wsX.send({ type: "bind", id: "bx", dirName: "--tmp-pihub-fixtures--", file: "2026-01-01T00-00-00Z_fixture.jsonl", cwd: "/tmp/pihub-fixtures" });
+    wsX.send({ type: "bind", id: "bx", dirName: "--tmp-pihub-fixtures--", file: "2026-01-01T00-00-00Z_fixture.jsonl", cwd: FIXTURE_CWD });
     const bx = await wsX.wait((m) => m.type === "bound" && m.id === "bx", 30000, "bind for export");
     wsX.send({ type: "command", id: "ex1", command: { type: "export_html", outputPath: "/etc/pi-hub-evil.html", id: "ex1" } });
     const exErr = await wsX.wait((m) => m.type === "error" && m.id === "ex1", 10000, "export jail error");
@@ -128,8 +128,8 @@ async function hubGroup({ check }) {
     await wsH2a.wait((m) => m.type === "hello", 10000, "hello (H2a)");
     const wsH2b = await connectWs(`ws://127.0.0.1:${port}/ws`);
     await wsH2b.wait((m) => m.type === "hello", 10000, "hello (H2b)");
-    wsH2a.send({ type: "bind", id: "h2a", dirName: "--tmp-pihub-fixtures--", file: "2026-01-01T00-00-00Z_fixture.jsonl", cwd: "/tmp/pihub-fixtures" });
-    wsH2b.send({ type: "bind", id: "h2b", dirName: "--tmp-pihub-fixtures--", file: "2026-01-01T00-00-00Z_fixture.jsonl", cwd: "/tmp/pihub-fixtures" });
+    wsH2a.send({ type: "bind", id: "h2a", dirName: "--tmp-pihub-fixtures--", file: "2026-01-01T00-00-00Z_fixture.jsonl", cwd: FIXTURE_CWD });
+    wsH2b.send({ type: "bind", id: "h2b", dirName: "--tmp-pihub-fixtures--", file: "2026-01-01T00-00-00Z_fixture.jsonl", cwd: FIXTURE_CWD });
     const [h2a, h2b] = await Promise.all([
       wsH2a.wait((m) => m.type === "bound" && m.id === "h2a", 30000, "H2a bound ack"),
       wsH2b.wait((m) => m.type === "bound" && m.id === "h2b", 30000, "H2b bound ack"),
@@ -142,7 +142,7 @@ async function hubGroup({ check }) {
     // require a live runner that answers get_state.
     wsH2a.send({ type: "close", id: "h2c", runnerId: h2a.runner.id });
     await wsH2a.wait((m) => m.type === "closed" && m.id === "h2c", 10000, "H2c closed ack");
-    wsH2b.send({ type: "bind", id: "h2d", dirName: "--tmp-pihub-fixtures--", file: "2026-01-01T00-00-00Z_fixture.jsonl", cwd: "/tmp/pihub-fixtures" });
+    wsH2b.send({ type: "bind", id: "h2d", dirName: "--tmp-pihub-fixtures--", file: "2026-01-01T00-00-00Z_fixture.jsonl", cwd: FIXTURE_CWD });
     const h2d = await wsH2b.wait((m) => m.type === "bound" && m.id === "h2d", 30000, "H2d rebind ack");
     check("H2c retry after close binds a new runner", h2d.runner.id !== h2a.runner.id, `${h2d.runner.id} vs ${h2a.runner.id}`);
     wsH2b.send({ type: "command", id: "h2e", command: { type: "get_state", id: "h2e" } });
@@ -156,7 +156,7 @@ async function hubGroup({ check }) {
     const hello = await ws.wait((m) => m.type === "hello", 10000, "hello");
     check("H6 hello frame", hello.mode === "hub" && Array.isArray(hello.features));
 
-    ws.send({ type: "bind", id: "b1", dirName: "--tmp-pihub-fixtures--", file: "2026-01-01T00-00-00Z_fixture.jsonl", cwd: "/tmp/pihub-fixtures" });
+    ws.send({ type: "bind", id: "b1", dirName: "--tmp-pihub-fixtures--", file: "2026-01-01T00-00-00Z_fixture.jsonl", cwd: FIXTURE_CWD });
     const bound = await ws.wait((m) => m.type === "bound", 30000, "bound ack");
     check("H7 bind resumes fixture", bound.runner.absFile.endsWith("2026-01-01T00-00-00Z_fixture.jsonl"), JSON.stringify(bound.runner.absFile));
     check("H7b bind reports basename", bound.runner.sessionFile === "2026-01-01T00-00-00Z_fixture.jsonl");
@@ -215,7 +215,7 @@ async function hubGroup({ check }) {
     await ws.close();
 
     // ── live relay (ADR-014) ────────────────────────────────────────────
-    const mirror = await startMirror({ sock: path.join(hub.dir, "hub.sock"), cwd: "/tmp/pihub-fixtures", sessionDir: sessions });
+    const mirror = await startMirror({ sock: path.join(hub.dir, "hub.sock"), cwd: FIXTURE_CWD, sessionDir: sessions });
     try {
       const instances = await waitFor(async () => {
         const out = await (await fetch(`${base}/api/instances`)).json();
@@ -264,7 +264,7 @@ async function hubGroup({ check }) {
     // mirrors into the running hub via the advert
     const lost = await startMirror({
       sock: path.join(tmpDir("pihub-lost-"), "gone.sock"),
-      cwd: "/tmp/pihub-fixtures",
+      cwd: FIXTURE_CWD,
       sessionDir: sessions,
       env: { PI_HUB_ADVERT_FILE: hub.advertPath },
     });
@@ -283,7 +283,7 @@ async function hubGroup({ check }) {
     fs.writeFileSync(deadSock, "");
     const stale = await startMirror({
       sock: deadSock,
-      cwd: "/tmp/pihub-fixtures",
+      cwd: FIXTURE_CWD,
       sessionDir: sessions,
       env: { PI_HUB_ADVERT_FILE: hub.advertPath },
     });
@@ -310,7 +310,7 @@ async function hubGroup({ check }) {
     // panel renders as "new process".
     const wsP = await connectWs(`ws://127.0.0.1:${port}/ws`);
     await wsP.wait((m) => m.type === "hello", 10000, "hello (proc title)");
-    const titleProbe = await startMirror({ sock: path.join(hub.dir, "hub.sock"), cwd: "/tmp/pihub-fixtures", sessionDir: sessions });
+    const titleProbe = await startMirror({ sock: path.join(hub.dir, "hub.sock"), cwd: FIXTURE_CWD, sessionDir: sessions });
     try {
       await waitFor(async () => {
         const out = await (await fetch(`${base}/api/processes`)).json();
@@ -337,7 +337,7 @@ async function hubGroup({ check }) {
     await wsP.close();
     // ── G1–G5 git branch probe (statusline) ─────────────────────────────
     // HEAD is read straight from disk: no git binary, no lock contention.
-    const repoRoot = path.join("/tmp/pihub-fixtures", `git-probe-${Date.now().toString(36)}`);
+    const repoRoot = path.join(FIXTURE_CWD, `git-probe-${Date.now().toString(36)}`);
     const repoDetached = `${repoRoot}-detached`;
     const repoWorktree = `${repoRoot}-wt`;
     const buildRepo = (root, head) => {

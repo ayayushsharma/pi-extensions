@@ -271,7 +271,11 @@ export function createSidebar(refs, actions) {
               el(
                 "span",
                 { class: "row-sub" },
-                el("span", { text: runner ? (runner.kind === "live" ? `live · pid ${runner.pid}` : runner.state === "working" ? "working" : "headless") : "headless" }),
+                el("span", {
+                  class: "runner-pill",
+                  text: !runner ? "headless" : runner.kind === "live" ? "live" : runner.state === "working" ? "working" : "headless",
+                }),
+                runner?.kind === "live" && runner.pid ? el("span", { text: `pid ${runner.pid}` }) : null,
               ),
               el(
                 "span",

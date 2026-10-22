@@ -50,6 +50,9 @@ export const state = {
   /* tabs / view */
   tabs: savedTabs.tabs || [], // [{ key, dirName, file, runnerId, title, kind }]
   activeKey: savedTabs.activeKey || null,
+  /** Explicit home beats "reopen the last tab" on reload; closing the last
+   *  tab or pressing Home sets it, activating any session clears it. */
+  home: savedTabs.home === true,
   view: "welcome", // welcome | session
 
   /* transcript */
@@ -99,7 +102,7 @@ export function savePrefs() {
 }
 
 export function saveTabs() {
-  writeJSON(TABS_KEY, { tabs: state.tabs, activeKey: state.activeKey });
+  writeJSON(TABS_KEY, { tabs: state.tabs, activeKey: state.activeKey, home: state.home });
 }
 
 /* ── tab helpers ─────────────────────────────────────────────────────── */
@@ -137,7 +140,7 @@ export function upsertTab(tab) {
   const idx = tabs.findIndex((t) => t.key === tab.key);
   if (idx >= 0) tabs[idx] = { ...tabs[idx], ...tab };
   else tabs.push(tab);
-  set({ tabs, activeKey: tab.key });
+  set({ tabs, activeKey: tab.key, home: false });
   saveTabs();
 }
 
@@ -150,7 +153,7 @@ export function updateTab(key, patch) {
 export function removeTab(key) {
   const tabs = state.tabs.filter((t) => t.key !== key);
   const activeKey = state.activeKey === key ? (tabs[tabs.length - 1]?.key ?? null) : state.activeKey;
-  set({ tabs, activeKey });
+  set({ tabs, activeKey, home: state.home || !activeKey });
   saveTabs();
   return activeKey;
 }

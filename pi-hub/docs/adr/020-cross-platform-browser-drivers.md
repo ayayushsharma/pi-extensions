@@ -1,7 +1,7 @@
 # ADR-020 — Cross-platform browser test drivers
 
-Status: **accepted in principle; POC verified 2026-10-22; implementation open
-(T2 in `code-review.md`)**. Companion to ADR-019 and `docs/testing.md` §1.2.
+Status: **accepted; Termux CP3/CP4 smoke implemented 2026-10-22; full
+Playwright parity remains the Linux/Chrome gate** (T2 in `code-review.md`). Companion to ADR-019 and `docs/testing.md` §1.2.
 
 ## Context
 
@@ -101,10 +101,12 @@ What this changes:
 - The **`cli` backend is not a Termux gate**: a per-shot cold Firefox start
   stalls (the `auto-mate` session already identified this), and the plain
   `--dump-dom` probe times out here. CP2/CP6 must not be claimed on this device.
-- **Implementation is still open**: there is no `PageDriver` or
-  `PI_HUB_E2E_DRIVER` in `tests/` yet; the committed E2E is Playwright API.
-  First milestone is CP3/CP4 (`tests/termux-smoke.mjs`), not a port of all 170
-  checks.
+- **Termux gate implemented**: `tests/termux-smoke.mjs` owns a small
+  `SeleniumPage` facade and TC1–TC6 (boot/no errors, fixture resume, reload,
+  screenshot, DOM cap); `npm run test:termux` runs it on the phone. The full 171-check
+  E2E stays Playwright API on Linux/Chrome; porting it is not a Termux gate.
+  A `PI_HUB_E2E_DRIVER` abstraction is therefore not needed for the current
+  scope (the smoke is a separate runner, not a fake Playwright).
 - Selenium can do `get`, `executeScript`, find/click/fill, waits and
   screenshots, which covers C1–C4. Route interception, multiple contexts,
   CDP/WS injection, traces and real touch gestures stay Playwright-only and

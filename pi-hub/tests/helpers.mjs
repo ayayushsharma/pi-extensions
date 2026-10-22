@@ -11,6 +11,11 @@ const WS = require("ws");
 
 export const PKG_ROOT = path.resolve(new URL("..", import.meta.url).pathname);
 export const FIXTURE_SESSIONS = path.join(PKG_ROOT, "tests", "fixtures", "sessions");
+/** Fixture sessions used to point their header cwd at /tmp. Termux has no
+ *  /tmp, so use the platform temp dir and rewrite the copied header instead
+ *  of forcing a fake root (T1). The project dirName stays the stable
+ *  `--tmp-pihub-fixtures--` name; only the header cwd is rewritten. */
+export const FIXTURE_CWD = path.join(os.tmpdir(), "pihub-fixtures");
 
 let cachedPi;
 export function findPi() {
@@ -24,13 +29,37 @@ export function findPi() {
   for (const c of candidates) {
     try {
       if (fs.statSync(c).isFile()) {
-        cachedPi = c;
-        return c;
+        cachedPi = piLauncher(c);
+        return cachedPi;
       }
     } catch {}
   }
   cachedPi = null;
   return null;
+}
+
+/** On a normal Linux host the npm `pi` shim is directly executable. On
+ *  Termux `/usr/bin/env` does not exist, so a `#!/usr/bin/env node` shim
+ *  fails before Node starts; return a tiny temp launcher with an absolute
+ *  shell + node path instead of requiring the termux-exec LD_PRELOAD (T1). */
+function piLauncher(candidate) {
+  if (process.platform !== "android" || fs.existsSync("/usr/bin/env")) return candidate;
+  let head = "";
+  try {
+    const fd = fs.openSync(candidate, "r");
+    const buf = Buffer.alloc(128);
+    const n = fs.readSync(fd, buf, 0, buf.length, 0);
+    fs.closeSync(fd);
+    head = buf.subarray(0, n).toString("utf8");
+  } catch {
+    return candidate;
+  }
+  if (!/^#!\/usr\/bin\/env\s+node/.test(head)) return candidate;
+  const target = fs.realpathSync(candidate);
+  const dir = tmpDir("pihub-pi-launcher-");
+  const wrapper = path.join(dir, "pi");
+  fs.writeFileSync(wrapper, `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(target)} "$@"\n`, { mode: 0o755 });
+  return wrapper;
 }
 
 export function tmpDir(prefix = "pihub-test-") {
@@ -41,6 +70,21 @@ export function tmpDir(prefix = "pihub-test-") {
 export function fixtureSessionDir() {
   const dir = tmpDir("pihub-sessions-");
   fs.cpSync(FIXTURE_SESSIONS, dir, { recursive: true });
+  fs.mkdirSync(FIXTURE_CWD, { recursive: true });
+  const fixtureDir = path.join(dir, "--tmp-pihub-fixtures--");
+  for (const name of fs.readdirSync(fixtureDir)) {
+    if (!name.endsWith(".jsonl")) continue;
+    const file = path.join(fixtureDir, name);
+    const lines = fs.readFileSync(file, "utf8").split("\n");
+    try {
+      const header = JSON.parse(lines[0]);
+      if (header?.type === "session") {
+        header.cwd = FIXTURE_CWD;
+        lines[0] = JSON.stringify(header);
+        fs.writeFileSync(file, lines.join("\n"));
+      }
+    } catch {}
+  }
   return dir;
 }
 
@@ -73,12 +117,31 @@ export async function waitFor(fn, { timeoutMs = 20000, intervalMs = 150, what = 
 
 export function killTree(proc) {
   if (!proc || !proc.pid) return;
+  // Safety rail for a phone that is also running the developer's pi: never
+  // signal this test process or any of its ancestors, even if a PID was
+  // reused or a caller passes the wrong handle. Only descendants of `proc`
+  // are collected, and the final kill is the exact child handle.
+  const protectedPids = new Set([process.pid]);
+  let parent = process.ppid;
+  while (parent && parent > 1 && !protectedPids.has(parent)) {
+    protectedPids.add(parent);
+    try {
+      const stat = fs.readFileSync(`/proc/${parent}/stat`, "utf8");
+      const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+      parent = Number(fields[1]) || null;
+    } catch {
+      break;
+    }
+  }
+  if (protectedPids.has(proc.pid)) return;
   const pids = [];
   const walk = (pid) => {
+    if (protectedPids.has(pid)) return;
     try {
       const children = fs.readFileSync(`/proc/${pid}/task/${pid}/children`, "utf8").trim();
       for (const child of children.split(/\s+/).filter(Boolean)) {
         const cpid = Number(child);
+        if (!Number.isInteger(cpid) || cpid <= 1 || protectedPids.has(cpid)) continue;
         walk(cpid);
         pids.push(cpid);
       }
@@ -86,6 +149,7 @@ export function killTree(proc) {
   };
   walk(proc.pid);
   for (const pid of pids.reverse()) {
+    if (protectedPids.has(pid)) continue;
     try {
       process.kill(pid, "SIGKILL");
     } catch {}
@@ -155,7 +219,7 @@ export function realStoreDiff(before) {
 }
 
 export async function startHub({ port, env = {}, sessionDir, llmUrl } = {}) {
-  fs.mkdirSync("/tmp/pihub-fixtures", { recursive: true }); // fixture session cwd
+  fs.mkdirSync(FIXTURE_CWD, { recursive: true }); // fixture session cwd
   const piBin = findPi();
   if (!piBin) throw Object.assign(new Error("pi binary not found (set PI_BIN or TAU_NO_PI=1)"), { skip: true });
   const dir = tmpDir();

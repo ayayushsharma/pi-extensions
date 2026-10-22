@@ -29,6 +29,9 @@ export class RunnerRegistry {
   private byPid = new Map<number, Runner>();
   private binding = new Map<unknown, string>();
   private pendingBinds = new Map<string, Promise<Runner>>();
+  /** Files whose previous child is still shutting down. A bind waits for the
+   *  exit (or fails honestly) instead of starting a second writer (H8). */
+  private closingByFile = new Map<string, Runner>();
   private timers = new Map<string, NodeJS.Timeout>();
   private changeListeners = new Set<(c: RegistryChange) => void>();
   private frameListeners = new Set<(f: RunnerFrame) => void>();
@@ -104,8 +107,10 @@ export class RunnerRegistry {
   private remove(runner: Runner): void {
     if (!this.runners.has(runner.id)) return;
     this.runners.delete(runner.id);
-    if (runner.absFile && this.byFile.get(resolve(runner.absFile)) === runner) {
-      this.byFile.delete(resolve(runner.absFile));
+    if (runner.absFile) {
+      const abs = resolve(runner.absFile);
+      if (this.byFile.get(abs) === runner) this.byFile.delete(abs);
+      if (this.closingByFile.get(abs) === runner) this.closingByFile.delete(abs);
     }
     if (runner.pid && this.byPid.get(runner.pid) === runner) this.byPid.delete(runner.pid);
     for (const [ws, id] of this.binding) if (id === runner.id) this.binding.delete(ws);
@@ -137,7 +142,9 @@ export class RunnerRegistry {
       await runner.ready();
       if (abs) await runner.resume(abs);
     } catch (e) {
-      runner.close();
+      // A half-initialized child is still a writer; close it through the
+      // registry so its file is unindexed and a retry waits for the exit.
+      this.closeRunner(runner);
       throw e;
     }
     return runner;
@@ -184,7 +191,26 @@ export class RunnerRegistry {
       }
     }
 
+    // H8: the old owner is unindexed as soon as close starts, but its child
+    // may still be running SIGTERM/SIGKILL. Wait for the actual exit before
+    // spawning a replacement; if it refuses to die, report it instead of
+    // violating the one-writer-per-file invariant.
+    if (abs) {
+      const closing = this.closingByFile.get(abs);
+      if (closing) {
+        const exited = await closing.waitForExit(3000);
+        if (!exited) throw new Error("session is still closing — retry in a moment");
+        if (this.closingByFile.get(abs) === closing) this.closingByFile.delete(abs);
+      }
+    }
+
     let runner = abs ? this.byFile.get(abs) : undefined;
+    if (runner?.closing) {
+      const exited = await runner.waitForExit(3000);
+      if (!exited) throw new Error("session is still closing — retry in a moment");
+      this.unindexFile(runner);
+      runner = undefined;
+    }
     if (runner && runner.kind !== "headless") {
       // A live TUI owns this file: never spawn a second writer behind it
       // (dual-write), and never hand its relay to a plain bind — driving a
@@ -207,6 +233,9 @@ export class RunnerRegistry {
       runner = await pending;
     } else if (!runner) {
       runner = await this.spawnHeadless(cwd, null, null);
+    }
+    if (runner.closing || runner.state === "dead") {
+      throw new Error("session closed while binding — retry");
     }
     if (cwdFallback) runner.cwdFallback = cwdFallback;
     this.bind(ws, runner);
@@ -263,22 +292,29 @@ export class RunnerRegistry {
   closeById(id: string): boolean {
     const runner = this.runners.get(id);
     if (!runner) return false;
-    this.unindexFile(runner);
-    runner.close();
+    this.closeRunner(runner);
     return true;
   }
 
   closeByPid(pid: number): boolean {
     const runner = this.byPid.get(pid);
     if (!runner) return false;
-    this.unindexFile(runner);
-    runner.close();
+    this.closeRunner(runner);
     return true;
   }
 
-  /** A closing runner stops owning its file at once: a retry binds fresh
-   *  instead of landing on a child mid-SIGTERM (H2). Exit still removes it
-   *  fully; the identity guard keeps a newer owner safe. */
+  /** A closing runner stops owning its file at once: a retry waits for the
+   *  process exit instead of landing on a child mid-SIGTERM (H8). Exit still
+   *  removes it fully; the identity guard keeps a newer owner safe. */
+  private closeRunner(runner: Runner): void {
+    if (runner.closing) return;
+    this.unindexFile(runner);
+    const abs = runner.absFile ? resolve(runner.absFile) : null;
+    runner.closing = true;
+    if (abs) this.closingByFile.set(abs, runner);
+    runner.close();
+  }
+
   private unindexFile(runner: Runner): void {
     if (runner.absFile && this.byFile.get(resolve(runner.absFile)) === runner) {
       this.byFile.delete(resolve(runner.absFile));
@@ -290,10 +326,12 @@ export class RunnerRegistry {
     const max = this.opts.maxHeadless || 0;
     if (max <= 0) return;
     const headless = () =>
-      [...this.runners.values()].filter((r) => r.kind === "headless" && r.state !== "dead");
+      [...this.runners.values()].filter(
+        (r) => r.kind === "headless" && r.state !== "dead" && !r.closing,
+      );
     while (headless().length > max) {
       const candidates = headless().filter(
-        (r) => r.id !== protectId && r.state !== "working",
+        (r) => r.id !== protectId && r.state !== "working" && !r.closing,
       );
       if (!candidates.length) {
         hubLog(`pool cap ${max}: all runners are working — not evicting`);
@@ -302,8 +340,7 @@ export class RunnerRegistry {
       candidates.sort((a, b) => a.viewers() - b.viewers() || a.lastActiveAt - b.lastActiveAt);
       const victim = candidates[0];
       hubLog(`pool cap ${max}: evicting ${victim.id}`);
-      this.unindexFile(victim);
-      victim.close();
+      this.closeRunner(victim);
     }
   }
 
@@ -313,7 +350,9 @@ export class RunnerRegistry {
     if (this.timers.has(runner.id)) return;
     const t = setTimeout(() => {
       this.timers.delete(runner.id);
-      if (runner.viewers() === 0 && runner.state !== "working") runner.close();
+      if (runner.viewers() === 0 && runner.state !== "working" && !runner.closing) {
+        this.closeRunner(runner);
+      }
     }, this.opts.ttlMs);
     t.unref?.();
     this.timers.set(runner.id, t);
@@ -323,12 +362,15 @@ export class RunnerRegistry {
     this.pendingBinds.clear();
     for (const r of this.runners.values()) {
       try {
-        r.close();
+        this.closeRunner(r);
       } catch {}
     }
     this.runners.clear();
     this.byFile.clear();
     this.byPid.clear();
     this.binding.clear();
+    this.closingByFile.clear();
+    for (const t of this.timers.values()) clearTimeout(t);
+    this.timers.clear();
   }
 }

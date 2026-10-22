@@ -176,6 +176,8 @@ class RpcSession extends EventEmitter {
 export class HeadlessRunner extends Runner {
   readonly rpc: RpcSession;
   private dead = false;
+  private exitPromise: Promise<void>;
+  private resolveExit!: () => void;
 
   constructor(opts: {
     id?: string;
@@ -192,6 +194,9 @@ export class HeadlessRunner extends Runner {
     }
     this.rpc = new RpcSession({ bin: opts.bin, cwd: opts.cwd, env: opts.env });
     this.pid = this.rpc.pid;
+    this.exitPromise = new Promise<void>((resolve) => {
+      this.resolveExit = resolve;
+    });
     this.rpc.on("frame", (frame: any) => this.onRpcFrame(frame));
     this.rpc.on("exit", (code: number | null) => this.retire(code));
   }
@@ -254,7 +259,29 @@ export class HeadlessRunner extends Runner {
   }
 
   close(): void {
+    this.closing = true;
     this.rpc.kill();
+  }
+
+  /** H8: close is asynchronous (SIGTERM, then SIGKILL after 2s). A bind
+   *  must be able to wait for the actual exit before spawning a fresh child. */
+  waitForExit(timeoutMs = 3000): Promise<boolean> {
+    if (this.dead) return Promise.resolve(true);
+    return new Promise<boolean>((resolve) => {
+      let settled = false;
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        resolve(false);
+      }, Math.max(1, timeoutMs));
+      timer.unref?.();
+      void this.exitPromise.then(() => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(true);
+      });
+    });
   }
 
   get isDead(): boolean {
@@ -266,6 +293,7 @@ export class HeadlessRunner extends Runner {
     this.dead = true;
     this.state = "dead";
     this.isStreaming = false;
+    this.resolveExit();
     this.emitEvent({ type: "runner_exit", code });
   }
 }

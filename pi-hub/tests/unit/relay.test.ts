@@ -53,3 +53,14 @@ test("disconnected pid resolves false immediately", async () => {
   assert.equal(sent.length, 1, "request still sent before the failure surfaced");
   assert.equal(relay.pendingConfirmCount(), 0, "waiter released");
 });
+
+test("a flood of attach consents is capped instead of growing waiters (H13)", async () => {
+  const { relay, sent } = harness();
+  const pending = Array.from({ length: 8 }, () => relay.requestDriveConfirm(123, 20));
+  assert.equal(sent.length, 8);
+  assert.equal(relay.pendingConfirmCount(), 8);
+  assert.equal(await relay.requestDriveConfirm(123, 20), false, "ninth request fails closed");
+  assert.equal(sent.length, 8, "no ninth prompt reaches the TUI");
+  assert.deepEqual(await Promise.all(pending), Array(8).fill(false), "all waiters time out");
+  assert.equal(relay.pendingConfirmCount(), 0);
+});

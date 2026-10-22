@@ -17,6 +17,7 @@ import {
   sessionsDir,
 } from "../../store/sessions.js";
 import type { RunnerRegistry } from "../../runners/registry.js";
+import { clientIp } from "../auth.js";
 import { browseRoots, jailPath, listDir, makeDir, readContent, readPreview } from "../../store/files.js";
 import { gitInfo } from "../../store/git.js";
 import { BODY_SMALL, createRateLimiter, readJson, sendError, sendJson, type Route } from "../http.js";
@@ -102,7 +103,7 @@ export function sessionRoutes(deps: SessionDeps): Route[] {
         } catch {
           throw Object.assign(new Error("export not found"), { status: 404 });
         }
-        if (!real.endsWith(".html")) throw Object.assign(new Error("only .html exports can be downloaded"), { status: 400 });
+        if (!real.toLowerCase().endsWith(".html")) throw Object.assign(new Error("only .html exports can be downloaded"), { status: 400 });
         const roots = [path.resolve(sessionsDir()), path.resolve(os.tmpdir())];
         const ok = roots.some((r) => real === r || real.startsWith(r + path.sep));
         if (!ok) throw Object.assign(new Error("export path outside allowed roots"), { status: 403 });
@@ -131,7 +132,7 @@ export function sessionRoutes(deps: SessionDeps): Route[] {
       path: "/api/search",
       auth: true,
       handler: ({ req, res, url }) => {
-        const ip = req.socket.remoteAddress || "unknown";
+        const ip = clientIp(req, config.trustProxy);
         if (!searchAllowed(ip)) return sendError(res, 429, "search rate limit exceeded");
         const q = url.searchParams.get("q") || "";
         return sendJson(res, 200, { query: q, hits: searchSessions(q, 30) });

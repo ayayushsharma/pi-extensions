@@ -38,6 +38,9 @@ interface Client {
   lastSeq: number;
   deltaText: string;
   deltaThinking: string;
+  /** first buffered seq and highest buffered seq: the coalescer's closed
+   *  range. A later frame is contiguous only past deltaSeq, not lastSeq. */
+  deltaStart: number;
   deltaSeq: number;
   deltaTpl: any;
   deltaTimer: NodeJS.Timeout | null;
@@ -99,7 +102,7 @@ export class WsHub {
       socket.destroy();
       return;
     }
-    const ip = req.socket?.remoteAddress || "unknown";
+    const ip = this.deps.auth.clientIp(req);
     const held = this.wsCountByIp.get(ip) || 0;
     if (held >= WsHub.MAX_WS_PER_IP) {
       hubLog(`ws upgrade refused: ${ip} holds ${held} sockets`);
@@ -144,6 +147,18 @@ export class WsHub {
     for (const c of this.clients) this.send(c, frame);
   }
 
+  /** Send a runner-scoped frame only to clients bound to that runner. Live
+   *  dialogs are driver-only; headless dialogs go to every viewer (first
+   *  answer wins, the rest are closed by the broker). */
+  sendToRunner(runnerId: string, frame: any, opts: { driverOnly?: boolean } = {}): void {
+    const driver = opts.driverOnly ? this.driverByRunner.get(runnerId) : undefined;
+    for (const c of this.clients) {
+      if (c.boundId !== runnerId) continue;
+      if (opts.driverOnly && c !== driver) continue;
+      this.send(c, frame);
+    }
+  }
+
   /** false when the frame was dropped (slow consumer), so the caller can
    *  leave lastSeq alone and let the next frame replay the gap (H5). */
   private send(c: Client, frame: any): boolean {
@@ -159,50 +174,89 @@ export class WsHub {
 
   /** Flush coalesced deltas before any non-delta frame so order is intact.
    *  A dropped flush keeps lastSeq behind: the batch is discarded and the
-   *  ring replays it on the next frame (H5). */
-  private flushDeltas(c: Client): void {
+   *  ring replays it on the next frame (H5/H9). The return value is part of
+   *  the contract: callers may only advance past the empty delta when the
+   *  preceding batch actually reached the socket. */
+  private flushDeltas(c: Client): boolean {
     if (c.deltaTimer) {
       clearTimeout(c.deltaTimer);
       c.deltaTimer = null;
     }
+    let ok = true;
     if (c.deltaTpl && (c.deltaText || c.deltaThinking)) {
       const ev = JSON.parse(JSON.stringify(c.deltaTpl.event));
       ev.assistantMessageEvent.delta = c.deltaText || c.deltaThinking;
       // Stamp the batch with the max seq it covers, not the first frame's:
       // the client records lastSeen from this seq, and a replay from an
       // understated seq would redeliver (and duplicate) applied deltas.
-      if (this.send(c, { type: "event", ...c.deltaTpl, seq: c.deltaSeq, event: ev })) {
-        c.lastSeq = Math.max(c.lastSeq, c.deltaSeq);
-      }
+      ok = this.send(c, { type: "event", ...c.deltaTpl, seq: c.deltaSeq, event: ev });
+      if (ok) c.lastSeq = c.deltaSeq;
     }
     c.deltaText = "";
     c.deltaThinking = "";
+    c.deltaStart = 0;
+    c.deltaSeq = 0;
+    c.deltaTpl = null;
+    return ok;
+  }
+
+  /** Drop a pending delta batch without delivering it. Called when the
+   *  client changes runner/unbinds: its seqs belong to the old stream and
+   *  must never be flushed into the new binding (H9). */
+  private resetDeltas(c: Client): void {
+    if (c.deltaTimer) {
+      clearTimeout(c.deltaTimer);
+      c.deltaTimer = null;
+    }
+    c.deltaText = "";
+    c.deltaThinking = "";
+    c.deltaStart = 0;
     c.deltaSeq = 0;
     c.deltaTpl = null;
   }
 
+  /** The seq through which this client is either delivered or coalesced.
+   *  lastSeq alone is behind while a delta batch is accumulating. */
+  private frontier(c: Client): number {
+    return c.deltaTpl ? c.deltaSeq : c.lastSeq;
+  }
+
   private deliver(c: Client, frame: any): void {
+    const seq = frame.seq;
+    if (!Number.isInteger(seq) || seq <= 0) return;
+    if (seq <= c.lastSeq) return; // duplicate delivery
+    // A coalesced delta still includes its own range; never append it again
+    // if a replay loop asks for it while the batch is pending.
+    if (c.deltaTpl && seq >= c.deltaStart && seq <= c.deltaSeq) return;
+    // Do not leap a gap. fanOut replays it first; if that replay itself hit
+    // backpressure, this frame is left in the ring for the next trigger.
+    if (seq > this.frontier(c) + 1) return;
+
     const delta = streamDelta(frame);
     if (delta) {
       if (!delta.delta) {
-        // An empty delta still advances the frame: flush any pending batch
-        // first, or the ring would replay past its seqs and skip them (H9).
-        this.flushDeltas(c);
-        c.lastSeq = Math.max(c.lastSeq, frame.seq);
+        // An empty delta is a barrier: flush the pending batch first, and
+        // advance lastSeq only when the flush actually reached the socket.
+        // Otherwise the next replay would skip the batch (H9).
+        if (this.flushDeltas(c) && seq === c.lastSeq + 1) c.lastSeq = seq;
         return;
       }
-      if (!c.deltaTpl) c.deltaTpl = frame;
+      if (!c.deltaTpl) {
+        c.deltaTpl = frame;
+        c.deltaStart = seq;
+      }
       if (delta.kind === "text") c.deltaText += delta.delta;
       else c.deltaThinking += delta.delta;
-      c.deltaSeq = Math.max(c.deltaSeq, frame.seq);
+      c.deltaSeq = Math.max(c.deltaSeq, seq);
       if (!c.deltaTimer) {
         c.deltaTimer = setTimeout(() => this.flushDeltas(c), 40);
         (c.deltaTimer as any).unref?.();
       }
       return;
     }
-    this.flushDeltas(c);
-    if (this.send(c, { type: "event", ...frame })) c.lastSeq = Math.max(c.lastSeq, frame.seq);
+    if (!this.flushDeltas(c)) return;
+    if (seq !== c.lastSeq + 1) return;
+    if (this.send(c, { type: "event", ...frame })) c.lastSeq = seq;
   }
 
   private fanOut(frame: any): void {
@@ -219,15 +273,17 @@ export class WsHub {
     }
     for (const c of this.clients) {
       if (c.boundId !== frame.runnerId) continue;
-      if (frame.seq > c.lastSeq + 1) {
+      if (frame.seq > this.frontier(c) + 1) {
         // The triggering frame is already in the ring (emitEvent pushes
         // before notifying); replay only the gap, it is delivered below.
         // No lastSeq>0 guard: binds start at the head, so seq 0 can only
         // mean "nothing delivered yet" and the gap is real (H5).
-        // Frames at/below the coalescer ceiling are already buffered, not
+        // Frames in the coalescer's range are already buffered, not
         // delivered — redelivering them would double-count their text.
         for (const missed of runner.replayFrom(c.lastSeq)) {
-          if (missed.seq < frame.seq && missed.seq > c.deltaSeq) this.deliver(c, missed);
+          if (missed.seq >= frame.seq) continue;
+          if (c.deltaTpl && missed.seq >= c.deltaStart && missed.seq <= c.deltaSeq) continue;
+          this.deliver(c, missed);
         }
       }
       hubDebug(`ws[${c.id}] <- ${frame.runnerId} seq=${frame.seq} ${frame.event?.type || "?"}`);
@@ -244,6 +300,7 @@ export class WsHub {
       lastSeq: 0,
       deltaText: "",
       deltaThinking: "",
+      deltaStart: 0,
       deltaSeq: 0,
       deltaTpl: null,
       deltaTimer: null,
@@ -265,7 +322,7 @@ export class WsHub {
   private cleanup(client: Client): void {
     if (!this.clients.has(client)) return;
     this.clients.delete(client);
-    if (client.deltaTimer) clearTimeout(client.deltaTimer);
+    this.resetDeltas(client);
     if (client.boundId) this.deps.registry.unbind(client.ws);
     for (const [runnerId, driver] of this.driverByRunner) {
       if (driver === client) {
@@ -303,15 +360,21 @@ export class WsHub {
           return this.handleDetach(client, id);
         case "unbind": {
           if (client.boundId) this.deps.registry.unbind(client.ws);
+          this.resetDeltas(client);
           client.boundId = null;
           client.lastSeq = 0;
           return this.ack(client, id, { type: "unbound" });
         }
         case "close":
           return this.handleClose(client, id, msg);
-        case "extension_ui_response":
-          this.deps.dialogs.resolve(msg.id || id, msg);
+        case "extension_ui_response": {
+          const ok = this.deps.dialogs.resolve(msg.id || id, msg, {
+            runnerId: client.boundId,
+            isDriver: (runnerId) => this.driverByRunner.get(runnerId) === client,
+          });
+          if (!ok) this.send(client, { type: "error", id, message: "dialog is not pending for this runner" });
           return this.ack(client, id, { type: "ack" });
+        }
         default:
           return this.send(client, { type: "error", message: `unknown message type: ${msg.type}` });
       }
@@ -337,6 +400,7 @@ export class WsHub {
       const cwd = String(msg.cwd || this.deps.defaultCwd);
       runner = await this.deps.registry.bindHeadless(client.ws, { cwd, absFile: null, fallbackCwd: this.deps.defaultCwd });
     }
+    this.resetDeltas(client);
     client.boundId = runner.id;
     // A rebinding client may resume from its last seen seq: the runner's
     // 200-event ring replays the gap on the next frame (never behind the
@@ -367,7 +431,7 @@ export class WsHub {
       // unchecked. Validated (and absolutized) here; without outputPath the
       // child exports next to the session file, already inside the store.
       try {
-        command = { ...command, outputPath: validateExportPath(command.outputPath) };
+        command = { ...command, outputPath: validateExportPath(command.outputPath, runner.absFile) };
       } catch (e: any) {
         this.send(client, { type: "error", id, message: e?.message || "invalid export path" });
         return;

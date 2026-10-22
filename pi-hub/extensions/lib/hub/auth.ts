@@ -5,6 +5,7 @@
  */
 import * as crypto from "node:crypto";
 import type * as http from "node:http";
+import * as net from "node:net";
 
 const COOKIE = "pi_hub_auth";
 const DEFAULT_TTL_MS = 30 * 24 * 3600 * 1000;
@@ -18,6 +19,21 @@ const BASIC_FAILS_BEFORE_LIMIT = 20;
 
 export type AuthVerdict = "ok" | "denied" | "limited";
 
+/** Rate-limit / socket-cap key. A tunnel makes every peer loopback, which
+ *  would collapse all clients into one bucket. Only an explicit opt-in trusts
+ *  X-Forwarded-For, and only when the immediate peer is loopback (the local
+ *  tunnel process); direct clients can never spoof the chain. */
+export function clientIp(req: http.IncomingMessage, trustProxy = false): string {
+  const peer = req.socket?.remoteAddress || "unknown";
+  if (!trustProxy) return peer;
+  if (peer !== "127.0.0.1" && peer !== "::1" && peer !== "::ffff:127.0.0.1") return peer;
+  const raw = req.headers["x-forwarded-for"];
+  const first = (Array.isArray(raw) ? raw[0] : String(raw || "")).split(",")[0].trim();
+  if (!first) return peer;
+  const bare = first.replace(/^\[|\]$/g, "");
+  return net.isIP(bare) ? bare : peer;
+}
+
 export class Auth {
   private user: string;
   private pass: string;
@@ -26,6 +42,7 @@ export class Auth {
   private allowAnyHost: boolean;
   private ownHosts: string[];
   private ttlMs: number;
+  private trustProxy: boolean;
   private tokens = new Map<string, { exp: number; at: number }>();
   private failures = new Map<string, { fails: number; until: number }>();
 
@@ -37,6 +54,7 @@ export class Auth {
     allowAnyHost: boolean,
     ownHosts: string[] = [],
     ttlMs: number = DEFAULT_TTL_MS,
+    trustProxy = false,
   ) {
     this.user = user;
     this.pass = pass;
@@ -45,6 +63,7 @@ export class Auth {
     this.allowAnyHost = allowAnyHost;
     this.ownHosts = ownHosts.map((h) => h.toLowerCase());
     this.ttlMs = ttlMs;
+    this.trustProxy = trustProxy;
   }
 
   get enabled(): boolean {
@@ -143,7 +162,12 @@ export class Auth {
   }
 
   private ipOf(req: http.IncomingMessage): string {
-    return req.socket?.remoteAddress || "unknown";
+    return clientIp(req, this.trustProxy);
+  }
+
+  /** Public key for routes that throttle without going through login. */
+  clientIp(req: http.IncomingMessage): string {
+    return this.ipOf(req);
   }
 
   private basicBackoffMs(fails: number): number {

@@ -27,11 +27,12 @@
   },
   "scripts": {
     "test": "node tests/run.mjs --unit",
-    "test:unit": "node --import ./tests/unit/ts-resolve.mjs --test tests/unit/",
+    "test:unit": "node tests/run.mjs --unit",
     "test:int": "node tests/run.mjs --integration",
     "test:e2e": "node tests/run.mjs --e2e",
     "test:all": "node tests/run.mjs --all",
-    "test:parity": "node tests/ui-parity.mjs"
+    "test:parity": "node tests/ui-parity.mjs",
+    "test:termux": "node tests/run.mjs --termux"
   },
   "devDependencies": {
     "playwright-core": "^1.64.1"

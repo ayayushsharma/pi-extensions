@@ -13,18 +13,18 @@ bug, not a passing gate.
 
 Two environments are in scope: the **Linux/beefier dev host** and **Termux/Android**.
 
-- **Linux/CI gate (reported):** **76 unit**, **94 integration**, **171
-  Playwright** (`--e2e", 12 groups: core, live, close, panels, tabs, models,
-  chrome, detail, deadcwd, steer, auth, images). `--all` reports **340 checks**
-  (339 pass, 1 documented skip — the Firefox CLI smoke when the host's Firefox
-  cannot render headless). Timings reported on the dev box: unit 0.3 s ·
-  integration 3.0 s at `-j4` · Playwright 13 s at `-j4` · `--all` ≈ 13 s wall.
-- **Termux (measured 2026-10-22, Galaxy F12, Node 26.4, 7 cores/3.7 GB):** the
-  gate **does not run as checked out** (T1 in `code-review.md`). With test-only
-  portability fixes: **72/72 unit in 8.7 s**, **93/93 integration in 124 s**
-  (`jobs=3`; 165 s serial), Playwright **not runnable** (no Playwright-
-  compatible browser; T2). `pi --version` alone is 9.7 s; a hub boot is 16.4 s;
-  a headless child spawn is ~11 s. Those startup costs set the floor, not the
+- **Current measured gate (Termux, 2026-10-22):** **93 unit** in ~9.5 s,
+  **94 integration** in ~79 s (`jobs=3`, including the ISO leak check). The
+  **171 Playwright** checks are unchanged and remain the Linux/Chrome gate;
+  Playwright cannot run on this phone. The Termux browser gate is
+  `npm run test:termux` (Selenium/geckodriver): **6/6** in ~38 s.
+- **Linux/CI gate (reported, pre-batch):** **76 unit**, **94 integration**,
+  **171 Playwright** (`--e2e`, 12 groups: core, live, close, panels, tabs,
+  models, chrome, detail, deadcwd, steer, auth, images). Timings reported on
+  the dev box: unit 0.3 s · integration 3.0 s at `-j4` · Playwright 13 s at
+  `-j4`. The current batch adds unit pins but does not change the E2E count.
+- **Termux floor:** `pi --version` alone is 9.7 s; a hub boot is 16.4 s; a
+  headless child spawn is ~11 s. Those startup costs set the floor, not the
   test bodies.
 - **Parallelism is a knob**: `-j N` / `--jobs N` (or `--serial`), default
   `min(4, cpus)`. Groups are independent (own hub, own store copy, own page),
@@ -43,30 +43,32 @@ Two environments are in scope: the **Linux/beefier dev host** and **Termux/Andro
 
 #### 1.1.1 Termux portability checklist (T1)
 
-The failures are in the harness, not the product:
+These failures were in the harness, not the product. The fixes are committed;
+the checklist remains as the rationale:
 
-1. `run.mjs` statically imports `e2e.mjs`, which imports `playwright-core` — so
-   even `--unit` dies with `ERR_MODULE_NOT_FOUND` when the devDependency is not
-   installed. Import the browser suites lazily.
-2. `tests/unit/` (the argument in `run.mjs`) is rejected by Node 26 (`test at
-   tests/unit:1:1`). Pass explicit files or a glob.
-3. `/tmp` is hardcoded in `tests/unit/store.test.ts`, `tests/helpers.mjs`
-   (`mkdirSync("/tmp/pihub-fixtures")`), the fixture session header and several
-   e2e path assertions. Termux has no `/tmp`; use `os.tmpdir()`/`$TMPDIR` and
-   make the fixture cwd dynamic. `scripts/dev-hub.sh` also writes pid/log/dir
-   under `/tmp`.
-4. The `pi` shim is `#!/usr/bin/env node`; Termux has no `/usr/bin/env`, and
-   Node's `spawn` does not run `termux-exec`'s rewriter when `LD_PRELOAD` is
-   absent. Set `PI_BIN` to a wrapper that execs the absolute `node` and
-   `bundle/cli.js` (or launch the hub from a shell where `termux-exec` is
-   active). `findPi()` only checks `statSync().isFile()`, not executability.
-5. The `cli` Firefox backend (`--dump-dom`) stalls on this phone; use the
-   persistent Selenium session instead (§1.2.2).
+1. **Lazy e2e/firefox imports** — `--unit` no longer needs `playwright-core`.
+2. **Explicit unit files** — Node 26 rejects `--test tests/unit/`.
+3. **`os.tmpdir()`/`$TMPDIR`** — store tests, helpers, fixture cwd/headers,
+   e2e paths and `scripts/dev-hub.sh` no longer assume `/tmp`.
+4. **Android `pi` launcher** — when the shim starts with `#!/usr/bin/env node`
+   and `/usr/bin/env` is absent, the harness creates a tiny absolute-node
+   launcher in `$TMPDIR`; no termux-exec `LD_PRELOAD` or manual `PI_BIN`
+   wrapper is required.
+5. **Selenium smoke, not CLI** — the persistent Firefox session is the Termux
+   browser gate; the `--dump-dom` backend stalls on this phone.
 
-Measured minimum on this device with the harness fixed: **unit ~9 s**,
-**unit+integration ~2 min 5 s** (`--all` without a browser). E2E needs T2.
+Measured after the fixes: **unit 93/93 in 9.5 s**, **integration 94/94 in
+79 s** (`jobs=3`), **Selenium smoke 6/6 in 38 s**.
 
 ### Isolation (no more test sessions in the real store)
+
+Harness safety: the suites never use `pkill`/`killall` or signal by name.
+`killTree()` collects only descendants of the exact child it spawned and
+refuses to signal this test process or any of its ancestors, so other pi
+sessions, the service hub and the agent running the tests are untouched. The
+browser smoke launches one private hub + Firefox and closes only those
+handles; set `PI_HUB_SKIP_TRIM_TEST=1` to skip its synthetic 340-message DOM
+cap check on a memory-tight phone.
 
 Every pi process a test spawns gets `PI_CODING_AGENT_DIR` and
 `PI_CODING_AGENT_SESSION_DIR` pointing inside a temp sandbox
@@ -88,9 +90,9 @@ keeps a run open on purpose (steering tests).
 ### Layers (design) and as-built suites
 
 The L0–L4 matrix is the original design. As built today the runnable suites are
-unit, integration, Playwright E2E, Firefox CLI smoke and UI parity. There is no
-stub-hub suite, no `@playwright/test` projects/traces, and no Termux runner yet
-(T1/T2).
+unit, integration, Playwright E2E, Firefox CLI smoke, the Selenium Termux smoke
+and UI parity. There is no stub-hub suite and no `@playwright/test`
+projects/traces.
 
 | Layer | What | Runtime | Where |
 |---|---|---|---|
@@ -110,6 +112,7 @@ node tests/run.mjs --unit          # L0
 node tests/run.mjs --integration   # HTTP/WS over a real hub
 node tests/run.mjs --e2e           # Playwright client flows
 node tests/run.mjs --all           # all of the above + Firefox smoke
+npm run test:termux                # Selenium CP3/CP4 smoke (Termux)
 npm run test:parity                # optional A/B screenshots
 ```
 
@@ -125,11 +128,11 @@ system Chrome (`channel: "chrome"`, cached Chromium fallback, or
 
 ### 1.2 Cross-platform browser drivers (ADR-020)
 
-> **Status 2026-10-22 — design + POC, not implemented.** ADR-020 is accepted in
-> principle, but no `PageDriver`/`PI_HUB_E2E_DRIVER` exists in `tests/`; the
-> committed E2E is Playwright-only. The Selenium recipe from `auto-mate` was
-> verified against pi-hub on this phone (§1.2.2). Porting the 171 Playwright
-> checks is T2, not a drop-in.
+> **Status 2026-10-22 — Termux gate implemented; full parity remains
+> Playwright.** `tests/termux-smoke.mjs` owns a small `SeleniumPage` facade and
+> the CP3/CP4 smoke (TC1–TC6), runnable with `npm run test:termux`. The
+> committed 171-check E2E stays Playwright-only on Linux/Chrome; porting all of
+> it is not a drop-in and is not planned as a Termux gate (T2).
 
 Playwright proper cannot run on Termux/Android — its bundled Chromium needs
 glibc libs Android lacks. `auto-mate` on the phone proved the working
@@ -193,11 +196,16 @@ runbook, script and findings: `termux-browser-poc.md`.
 pkg install x11-repo firefox ttf-dejavu
 # geckodriver 0.37.1 linux-aarch64 (auto-mate has it; keep it out of git)
 # npm i --no-save selenium-webdriver
-# not wired into run.mjs yet; see T2
+PI_HUB_SELENIUM=$PWD/node_modules/selenium-webdriver \
+GECKODRIVER=$PWD/tests/.bin/geckodriver npm run test:termux
 ```
 
-Observed: hub boot 16.4 s, Firefox launch 9.6 s, first paint + `data-ready`
-1.3 s, browser-side smoke 23.2 s (≈44 s including hub boot and teardown).
+The committed smoke (`tests/termux-smoke.mjs`) measured **6/6 checks in
+~38 s** on this phone. TC6 uses a hash/sessionStorage-gated
+`window.__piHubTest` seam (authenticated page only; no server surface) to
+drive 340 synthetic transcript events and assert the DOM cap. The initial manual POC observed hub boot 16.4 s,
+Firefox launch 9.6 s, first paint + `data-ready` 1.3 s, browser-side smoke
+23.2 s (≈44 s including hub boot and teardown).
 The driver reached `title: Pi Hub`, `window.__errs` was `[]`, the fixture row
 was listed and resumed, and a 66 KB screenshot showed the rendered transcript.
 A single persistent Selenium session is required; launching Firefox per shot
@@ -219,16 +227,16 @@ Constraints confirmed:
 
 #### 1.2.3 Porting plan (T2)
 
-1. Add a `PageDriver` facade (`goto/eval/waitFor/click/fill/screenshot/errors/
-   close`) and move the shared assertions to it; do **not** port all 171 checks
-   first.
-2. First milestone is CP3 (stub hub) + CP4 (real hub) as `tests/termux-smoke.mjs`:
-   boot, C2 resume, C3 new session, C4 headless view, C1 preview banner, empty
-   `__errs`, three screenshots.
+1. The minimal facade is `SeleniumPage` in `tests/termux-smoke.mjs`
+   (`goto/js/waitFor/click/text/screenshot`); it is deliberately not a second
+   Playwright API.
+2. The shipped CP3/CP4 smoke boots the real hub, resumes the fixture, reloads
+   the transcript and checks `window.__errs`; it is the phone gate.
 3. Keep Playwright for the full CI gate and the Playwright-only cases; use
    Selenium for the phone profile and skip the rest with an explicit reason.
-4. `selenium-webdriver` is an optional devDependency, `geckodriver` lives in
-   `tests/.bin/` (gitignored) or `PI_HUB_GECKODRIVER`; one browser per run.
+4. `selenium-webdriver` is an optional runner dependency (set
+   `PI_HUB_SELENIUM`); `geckodriver` comes from `GECKODRIVER` or `PATH`; one
+   browser per run.
 
 Expected wall time on this device: one hub boot (~16 s) + one Firefox launch
 (~10 s) + the suite body. A Termux smoke is therefore **minutes**, not 13 s;
@@ -460,15 +468,18 @@ WS is filtered only in layer-A cases.
 |---|---|---|
 | CP1 | Same spec fn under Playwright and Firefox backends (stub hub) | identical pass/fail; facade parity |
 | CP2 | `cli` backend smoke (no npm) | `--dump-dom` sees `data-ready="1"`; `--screenshot` produces a non-blank PNG with ttf-dejavu installed |
-| CP3 | Termux smoke profile on the phone (stub) | C1–C4 subset green, `__errs` empty, 3 sizes captured |
-| CP4 | Termux smoke with real `pi` hub | new + resume + prompt round-trip through Firefox; one browser at a time |
+| CP3 | Termux smoke profile on the phone (stub) | **Partial:** boot/no JS errors + fixture resume/reload at one phone viewport; 3-size matrix not ported |
+| CP4 | Termux smoke with real `pi` hub | **Partial:** resume through Firefox with one browser; new/prompt round-trip stays the Linux Playwright gate |
 | CP5 | Playwright-only cases on the Termux runner | SKIP with the `requires: playwright` reason; never a silent pass |
 | CP6 | Driver unavailable | clear SKIP/failure naming the missing binary; `PI_HUB_STRICT=1` fails, default run does not |
 
-**Status 2026-10-22:** CP1–CP6 are design targets; none are wired into
-`tests/` yet. The POC covers page load + C2 resume only. CP2/CP6's CLI premise
-fails on this phone (the renderer stalls), so the Termux path is the persistent
-Selenium backend (§1.2.2), not `--dump-dom`.
+**Status 2026-10-22:** CP3/CP4 are **partially** implemented by
+`tests/termux-smoke.mjs` (TC1–TC6: boot/no JS errors, fixture resume, reload,
+screenshot, DOM cap; ~38 s). CP1's shared-spec facade is not built (the full
+suite stays Playwright), CP5 is a reasoned SKIP rather than a runner, and CP2
+fails on this phone (renderer stalls) — the Termux path is persistent Selenium
+(§1.2.2), not `--dump-dom`. New-session/prompt and the 3-size matrix remain
+Playwright-only rather than being silently claimed here.
 
 ### D — deployment (myserver)
 

@@ -12,6 +12,8 @@ import type { HubSocketServer } from "../mirror/socket.js";
 
 /** Answered well before the browser's own attach timeout (30 s). */
 export const DRIVE_CONFIRM_TIMEOUT_MS = 25000;
+/** A flood of attach requests must not grow the waiter map without bound. */
+const MAX_CONFIRM_WAITERS = 8;
 
 export class Relay {
   private deps: {
@@ -105,6 +107,9 @@ export class Relay {
    * mirror that never answers — fail-closed, never fail-open.
    */
   requestDriveConfirm(pid: number, timeoutMs = DRIVE_CONFIRM_TIMEOUT_MS): Promise<boolean> {
+    // Fail closed before sending: the TUI is not asked to answer a queue of
+    // consents an attacker can grow at will (H13).
+    if (this.confirmWaiters.size >= MAX_CONFIRM_WAITERS) return Promise.resolve(false);
     return new Promise((resolve) => {
       const id = randId("confirm");
       const timer = setTimeout(() => {

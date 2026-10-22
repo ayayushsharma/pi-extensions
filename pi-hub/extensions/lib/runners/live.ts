@@ -52,11 +52,13 @@ export class LiveRunner extends Runner {
   }
 
   close(): void {
+    this.closing = true;
     this.kill("closed from hub");
   }
 
   kill(reason: string): void {
     if (this.dead) return;
+    this.closing = true;
     this.dead = true;
     this.state = "dead";
     this.emitEvent({ type: "runner_exit", reason });

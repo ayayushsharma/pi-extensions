@@ -54,6 +54,8 @@ export class Hub {
       // without it a hub bound to a LAN IP (dev-hub.sh) would refuse its
       // own clients, while anything else non-loopback stays default-deny.
       [config.host],
+      undefined,
+      config.trustProxy,
     );
   }
 
@@ -81,11 +83,14 @@ export class Hub {
       ttlMs: this.config.ttlMs,
       maxHeadless: this.config.maxHeadless,
     });
-    const dialogs = new DialogBroker({
-      broadcast: (f) => this.ws?.broadcast(f),
-      registry: this.registry,
-      sendMirror: (pid, f) => this.socket?.sendToPid(pid, f) ?? false,
-    });
+    const dialogs = new DialogBroker(
+      {
+        sendToRunner: (runnerId, frame, opts) => this.ws?.sendToRunner(runnerId, frame, opts),
+        registry: this.registry,
+        sendMirror: (pid, f) => this.socket?.sendToPid(pid, f) ?? false,
+      },
+      { timeoutMs: this.config.dialogTimeoutMs, maxPending: this.config.dialogMaxPending },
+    );
     this.ws = new WsHub({
       auth: this.auth,
       registry: this.registry,

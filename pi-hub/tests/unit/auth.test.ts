@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-const { Auth } = await import("../../extensions/lib/hub/auth.ts");
+const { Auth, clientIp } = await import("../../extensions/lib/hub/auth.ts");
 
 const req = (headers: Record<string, string> = {}, ip = "9.9.9.9"): any => ({
   headers,
@@ -11,8 +11,8 @@ const req = (headers: Record<string, string> = {}, ip = "9.9.9.9"): any => ({
 });
 const basic = (u: string, p: string) => `Basic ${Buffer.from(`${u}:${p}`).toString("base64")}`;
 
-const auth = (opts: { allowed?: string[]; anyHost?: boolean; own?: string[]; ttl?: number } = {}) =>
-  new Auth("u", "p", true, opts.allowed || [], opts.anyHost || false, opts.own || [], opts.ttl);
+const auth = (opts: { allowed?: string[]; anyHost?: boolean; own?: string[]; ttl?: number; proxy?: boolean } = {}) =>
+  new Auth("u", "p", true, opts.allowed || [], opts.anyHost || false, opts.own || [], opts.ttl, opts.proxy);
 
 test("login mints HttpOnly cookies, Secure only over TLS", () => {
   const a = auth();
@@ -87,4 +87,16 @@ test("failure map is capped", () => {
   const a = auth();
   for (let i = 0; i < 1010; i++) a.recordFailure(`10.9.${i >> 8}.${i & 255}`);
   assert.ok((a as any).failures.size <= 1000, `size ${(a as any).failures.size}`);
+});
+
+test("clientIp trusts X-Forwarded-For only from a loopback proxy, opt-in (H6)", () => {
+  const xff = { "x-forwarded-for": "203.0.113.5, 10.0.0.2" };
+  assert.equal(clientIp(req(xff, "127.0.0.1")), "127.0.0.1", "default: never trust the header");
+  assert.equal(clientIp(req(xff, "127.0.0.1"), true), "203.0.113.5", "loopback tunnel: first hop");
+  assert.equal(clientIp(req(xff, "::1"), true), "203.0.113.5");
+  assert.equal(clientIp(req(xff, "10.0.0.9"), true), "10.0.0.9", "non-loopback peer cannot spoof");
+  assert.equal(clientIp(req({ "x-forwarded-for": "not-an-ip" }, "127.0.0.1"), true), "127.0.0.1");
+  assert.equal(clientIp(req({ "x-forwarded-for": "[2001:db8::1]" }, "127.0.0.1"), true), "2001:db8::1");
+  const a = auth({ proxy: true });
+  assert.equal(a.clientIp(req(xff, "127.0.0.1")), "203.0.113.5", "the Auth instance uses the same key");
 });

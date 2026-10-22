@@ -31,8 +31,17 @@ function hubWithRunner(frames: any[]) {
   const sock = {
     readyState: WebSocket.OPEN,
     bufferedAmount: 0,
+    /** Tests can make one specific frame fail, e.g. a non-delta after a
+     *  successful flush, without faking the whole socket implementation. */
+    failNext: null as null | ((frame: any) => boolean),
     send(d: any) {
-      sent.push(String(d));
+      const text = String(d);
+      const body = JSON.parse(text);
+      if (sock.failNext?.(body)) {
+        sock.failNext = null;
+        throw new Error("send failed");
+      }
+      sent.push(text);
     },
     on() {},
     close() {},
@@ -42,6 +51,13 @@ function hubWithRunner(frames: any[]) {
   client.boundId = "r1";
   sent.length = 0; // drop the hello + runners frames
   return { hub, client, sock, sent };
+}
+
+function delta(seq: number, text: string) {
+  return { runnerId: "r1", seq, event: { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: text } } };
+}
+function note(seq: number) {
+  return { runnerId: "r1", seq, event: { type: "note", n: seq } };
 }
 
 const frame = (seq: number, type = "note") => ({ runnerId: "r1", seq, event: { type, n: seq } });
@@ -109,4 +125,80 @@ test("a dropped coalesced flush replays its deltas on the next frame", () => {
   const bodies = sent.map((s) => JSON.parse(s));
   assert.ok(bodies.some((b: any) => b.event?.assistantMessageEvent?.delta === "hello"), "deltas replayed and re-coalesced");
   assert.equal(client.lastSeq, 4);
+});
+
+test("an empty delta after a failed flush does not advance lastSeq (H9)", () => {
+  const frames: any[] = [];
+  const { hub, client, sock, sent } = hubWithRunner(frames);
+  const d1 = delta(1, "hel");
+  const d2 = delta(2, "lo");
+  const empty = delta(3, "");
+  frames.push(d1);
+  (hub as any).fanOut(d1);
+  frames.push(d2);
+  (hub as any).fanOut(d2);
+  sock.bufferedAmount = MAX_BUFFERED + 1; // the flush of 1..2 drops
+  frames.push(empty);
+  (hub as any).fanOut(empty);
+  assert.equal(client.lastSeq, 0, "empty delta must not skip a dropped batch");
+  sock.bufferedAmount = 0;
+  const more = note(4);
+  frames.push(more);
+  (hub as any).fanOut(more);
+  const bodies = sent.map((s) => JSON.parse(s));
+  assert.ok(bodies.some((b: any) => b.event?.assistantMessageEvent?.delta === "hello"), "batch eventually arrives");
+  assert.equal(client.lastSeq, 4);
+});
+
+test("a dropped non-delta after a flush replays it without losing the batch", () => {
+  const frames: any[] = [];
+  const { hub, client, sock, sent } = hubWithRunner(frames);
+  const d1 = delta(1, "hel");
+  const d2 = delta(2, "lo");
+  const done = note(3);
+  frames.push(d1);
+  (hub as any).fanOut(d1);
+  frames.push(d2);
+  (hub as any).fanOut(d2);
+  sock.failNext = (body) => body.type === "event" && body.seq === 3;
+  frames.push(done);
+  (hub as any).fanOut(done);
+  assert.equal(client.lastSeq, 2, "flush committed, the non-delta did not");
+  const more = note(4);
+  frames.push(more);
+  (hub as any).fanOut(more);
+  const bodies = sent.map((s) => JSON.parse(s));
+  assert.deepEqual(bodies.map((b: any) => b.seq), [2, 3, 4]);
+  assert.equal(client.lastSeq, 4);
+});
+
+test("a gap before a delta is replayed before the delta is buffered", () => {
+  // Frame 1 was lost (e.g. a reconnect boundary), then a delta arrives.
+  // It must not be buffered at seq 2 and silently skip seq 1.
+  const frames: any[] = [];
+  const { hub, client, sent } = hubWithRunner(frames);
+  const one = note(1);
+  const two = delta(2, "x");
+  const three = note(3);
+  frames.push(one, two);
+  (hub as any).fanOut(two);
+  assert.equal(client.lastSeq, 1, "missing frame 1 replayed first");
+  frames.push(three);
+  (hub as any).fanOut(three);
+  const bodies = sent.map((s) => JSON.parse(s));
+  assert.deepEqual(bodies.map((b: any) => b.seq), [1, 2, 3]);
+  assert.equal(client.lastSeq, 3);
+});
+
+test("a buffered delta is not replayed merely because lastSeq is behind", () => {
+  const frames: any[] = [];
+  const { hub, client, sent } = hubWithRunner(frames);
+  // Keep the 40ms timer out of the way; these fanOut calls are synchronous.
+  const a = delta(1, "a");
+  const b = delta(2, "b");
+  frames.push(a, b);
+  (hub as any).fanOut(a);
+  (hub as any).fanOut(b);
+  assert.equal(client.lastSeq, 0);
+  assert.equal(sent.length, 0);
 });

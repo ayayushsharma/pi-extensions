@@ -55,7 +55,12 @@ export interface WindowMeta {
 const READ_CHUNK = 256 * 1024;
 const OFFSET_RING = 4096;
 const MAX_LINE_BYTES = 8 * 1024 * 1024;
-const INDEX_MAX = 200;
+/** H7: this cache is an LRU, not a working-set cliff. A 200-entry cap made
+ *  every listing of a >200-session store rebuild all entries (twice the
+ *  full-scan cost on each refresh). 4096 covers a large personal store; the
+ *  byte budget still bounds worst-case memory for many large sessions. */
+const INDEX_MAX = 4096;
+const INDEX_BUDGET_BYTES = 32 * 1024 * 1024;
 const FP_BYTES = 4096;
 
 interface Agg {
@@ -85,6 +90,42 @@ interface FileIndex extends Agg {
 }
 
 const indexCache = new Map<string, FileIndex>();
+
+/** Approximate heap held by one index (offset ring dominates); only used
+ *  for the byte budget, so a small constant per entry is enough. */
+function indexCost(idx: FileIndex): number {
+  return (
+    512 +
+    idx.offsets.length * 8 +
+    (idx.cwd?.length || 0) +
+    (idx.model?.length || 0) +
+    (idx.thinkingLevel?.length || 0) +
+    (idx.sessionName?.length || 0) +
+    (idx.title?.length || 0)
+  );
+}
+
+function cacheDelete(abs: string): void {
+  if (indexCache.delete(abs)) trimIndexCache();
+}
+
+/** Evict oldest entries until both the entry and byte budgets fit. The
+ *  just-used entry is protected so a single large session is still servable. */
+function trimIndexCache(protect?: string): void {
+  let bytes = 0;
+  for (const idx of indexCache.values()) bytes += indexCost(idx);
+  let count = indexCache.size;
+  if (count <= INDEX_MAX && bytes <= INDEX_BUDGET_BYTES) return;
+  const oldest = [...indexCache.entries()]
+    .filter(([k]) => k !== protect)
+    .sort((a, b) => a[1].lastAt - b[1].lastAt);
+  for (const [k, idx] of oldest) {
+    if (count <= INDEX_MAX && bytes <= INDEX_BUDGET_BYTES) break;
+    indexCache.delete(k);
+    count--;
+    bytes -= indexCost(idx);
+  }
+}
 
 /** Diagnostics for tests and /api/server: proves reads are incremental. */
 export const sessionStoreStats = {
@@ -321,6 +362,7 @@ function getIndex(abs: string, st: fs.Stats): FileIndex {
         fd = fs.openSync(abs, "r");
         if (intact(fd, hit, st.size)) {
           consume(fd, hit, st.size, hit.size);
+          trimIndexCache(abs);
           return hit;
         }
       } catch {
@@ -336,10 +378,7 @@ function getIndex(abs: string, st: fs.Stats): FileIndex {
   }
   const idx = buildIndex(abs, st);
   indexCache.set(abs, idx);
-  if (indexCache.size > INDEX_MAX) {
-    const oldest = [...indexCache.entries()].sort((a, b) => a[1].lastAt - b[1].lastAt).slice(0, 50);
-    for (const [k] of oldest) indexCache.delete(k);
-  }
+  trimIndexCache(abs);
   return idx;
 }
 
@@ -381,7 +420,7 @@ function cachedSummary(dirName: string, file: string): SessionSummary | null {
 }
 
 function invalidateSession(abs: string): void {
-  indexCache.delete(abs);
+  cacheDelete(abs);
 }
 
 export function listSessionDirs(): Array<{ dirName: string; sessions: SessionSummary[] }> {
@@ -683,25 +722,65 @@ export function searchSessions(query: string, limit = 30): SearchHit[] {
 }
 
 /**
- * S3: export_html outputPath is client-controlled. Constrain it to the
- * session store: a string-prefix jail plus a realpath check of an existing
- * parent (a symlinked dir inside the store must not redirect the write
- * outside). Returns the absolute path; throws with status 400/403.
+ * S3/H11: export_html outputPath is client-controlled. Keep the write inside
+ * the session store and, when the bound session is known, require the exact
+ * server-side export name next to that session. Also refuse a final symlink
+ * or hard link (the old check only resolved the parent, so an attacker could
+ * pre-create `x.export.html -> ~/.ssh/authorized_keys` and overwrite it).
+ * Returns the absolute path; throws with status 400/403.
  */
-export function validateExportPath(raw: string): string {
+export function validateExportPath(raw: string, sessionAbs?: string | null): string {
   const abs = path.resolve(String(raw || ""));
   const root = path.resolve(SESSIONS_DIR);
-  if (abs !== root && !abs.startsWith(root + path.sep)) {
+  if (abs === root || !abs.startsWith(root + path.sep)) {
     throw Object.assign(new Error("export path must be inside the session store"), { status: 403 });
   }
-  try {
-    const parentReal = fs.realpathSync(path.dirname(abs));
-    if (parentReal !== root && !parentReal.startsWith(root + path.sep)) {
-      throw Object.assign(new Error("export path must be inside the session store"), { status: 403 });
+  if (!abs.toLowerCase().endsWith(".html")) {
+    throw Object.assign(new Error("export path must end in .html"), { status: 400 });
+  }
+
+  if (sessionAbs) {
+    const session = path.resolve(String(sessionAbs));
+    if (path.dirname(abs) !== path.dirname(session)) {
+      throw Object.assign(new Error("export path must be next to its session file"), { status: 403 });
     }
-  } catch (e: any) {
-    if (e?.status === 403) throw e;
-    // Parent missing: the child fails cleanly; the prefix jail above stands.
+    const stem = path.basename(session).replace(/\.jsonl$/i, "");
+    const expected = `${stem}.export.html`;
+    if (path.basename(abs) !== expected) {
+      throw Object.assign(new Error(`export path must be named ${expected}`), { status: 403 });
+    }
+  }
+
+  const parentReal = (() => {
+    try {
+      return fs.realpathSync(path.dirname(abs));
+    } catch {
+      throw Object.assign(new Error("export directory does not exist"), { status: 400 });
+    }
+  })();
+  if (parentReal !== root && !parentReal.startsWith(root + path.sep)) {
+    throw Object.assign(new Error("export path must be inside the session store"), { status: 403 });
+  }
+
+  let st: fs.Stats | null = null;
+  try {
+    st = fs.lstatSync(abs);
+  } catch {
+    // A new export file is fine; the parent jail above is the anchor.
+  }
+  if (st) {
+    if (st.isSymbolicLink() || !st.isFile() || st.nlink > 1) {
+      throw Object.assign(new Error("export path must be a regular, unlinked file"), { status: 403 });
+    }
+    try {
+      const finalReal = fs.realpathSync(abs);
+      if (finalReal !== root && !finalReal.startsWith(root + path.sep)) {
+        throw Object.assign(new Error("export path must be inside the session store"), { status: 403 });
+      }
+    } catch (e: any) {
+      if (e?.status) throw e;
+      throw Object.assign(new Error("export path is not accessible"), { status: 403 });
+    }
   }
   return abs;
 }

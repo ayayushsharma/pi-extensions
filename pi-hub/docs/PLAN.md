@@ -1,17 +1,15 @@
 # pi-hub — implementation plan
 
 Status: **implemented (P0–P6)** (2026-10-18 overnight; updated 2026-10-22).
-Current gate on the Linux dev host: **76 unit · 94 integration · 171
-Playwright** checks green (including one real model round-trip with
-`PI_HUB_E2E_PROMPT=1`); `--firefox` adds the zero-dependency CLI smoke (skips
-where system Firefox cannot render headless). **On Termux the gate does not run
-as checked out** — see T1/T2 in `code-review.md` §4 and `testing.md` §1.1:
-with test-only patches, 72/72 unit (8.7 s) and 93/93 integration (124 s), no
-Playwright; the Selenium/Firefox POC works but is not wired into the suite. As-built deltas from the original plan: `playwright-core` + a small
-node runner instead of `@playwright/test` (same Chromium/system Chrome, no
-test-runner dependency); the selenium/Firefox backend is scaffolded as the CLI
-smoke only; the `tests/cases.json` registry is still not in place (results are
-printed by name — see `code-review.md` D2). Since P6: ADR-021 singleton
+Current measured gate on Termux: **93 unit · 94 integration · 6-check
+Selenium smoke** (2026-10-22; `--e2e` remains 171 Playwright checks on a
+Linux/Chrome host and was not run here). The Termux harness now runs as
+checked out (T1); the Selenium CP3/CP4 smoke is wired into `npm run
+test:termux` (T2). As-built deltas from the original plan: `playwright-core` +
+a small node runner instead of `@playwright/test` (same Chromium/system
+Chrome, no test-runner dependency); the Firefox CLI smoke remains optional;
+the `tests/cases.json` registry is still not in place (results are printed by
+name — see `code-review.md` D2). Since P6: ADR-021 singleton
 enforcement, live-command parity + server-enforced single driver, the security
 hardening batch, and the review fixes R1–R5 — all logged with pins in
 `docs/code-review.md` §4/§7. **ADR-022 makes pi-hub independent:** its own
@@ -365,25 +363,27 @@ shape that fits the LoC rule.
 | ID | What | Status | Cheapest shape |
 |---|---|---|---|
 | H1 | Cap over-eviction: `enforceCap` loops while `close()` is async, evicts every idle runner | **Closed — accepted** (deliberate: aggressive eviction protects phone RAM; idle-only, never a run) | — |
-| H2 | No bind serialization: concurrent binds for one file spawn two children | **Partially fixed** — explicit close/eviction paths unindex; TTL and spawn-failure paths do not, and unindex-before-exit permits a second writer during SIGTERM grace (H8) | Finish in H8 |
+| H2 | No bind serialization: concurrent binds for one file spawn two children | **fixed** — pending binds share one spawn; close/TTL/cap/spawn-failure go through one close path and a rebind waits for real exit (H8) | integration H2/H2b–H2d, `registry.test.ts` |
 | H4 | Delta coalescer merges text+thinking under the first template's type | **Closed — accepted** (cosmetic mislabel on the single-driver path; splitting the hot path is not worth it) | — |
-| H5 | Backpressure drop still advances `lastSeq`, gap never replayed | **Fixed** — delivered-only `lastSeq`, empty deltas flush first, replay skips the coalescer ceiling | `ws.test.ts` (4 cases) |
-| H6 | Per-IP keys collapse behind the tunnel (all clients `127.0.0.1`) | **decision** (Med) | ADR first (trusted-proxy flag or loopback exemption), then a branch |
-| H7 | Session index thrashes when a store has >200 files (`INDEX_MAX` eviction by `lastAt`) — every listing rescans every file; P2 undone | **open** (High) | 250-file regression + size/protect eviction |
-| H8 | H2 holes: TTL/spawn-failure close without unindex; retry binds a dying child and drops prompts; unindex-before-exit allows a second writer | **open** (High) | `closing` state; unindex every close path; TTL/failure pin |
-| H9 | Empty delta advances `lastSeq` past a pending coalesced batch, which is lost if the flush drops | **fixed** (empty delta flushes first) | `ws.test.ts` |
-| H10 | Dialog broker unbounded/unscoped/no timeout; `Mirror.ask` hangs; S9 claim premature | **open** (Med) | Timeout + per-runner delivery + cap |
-| H11 | Export path escapes via final symlink / overwrites any store file; S3 only partially closed | **open** (Med) | Generated name + lstat + `.html` |
+| H5 | Backpressure drop still advances `lastSeq`, gap never replayed | **Fixed** — delivered-only `lastSeq`, empty deltas flush first, replay skips the coalescer ceiling | `ws.test.ts` (8 cases) |
+| H6 | Per-IP keys collapse behind the tunnel (all clients `127.0.0.1`) | **fixed** — opt-in `PI_HUB_TRUST_PROXY`, loopback-only XFF | `auth.test.ts` |
+| H7 | Session index thrashes when a store has >200 files (`INDEX_MAX` eviction by `lastAt`) — every listing rescans every file; P2 undone | **fixed** — 4096-entry/32 MB LRU; 260-file second listing scans 0 | `store.test.ts` |
+| H8 | H2 holes: TTL/spawn-failure close without unindex; retry binds a dying child and drops prompts; unindex-before-exit allows a second writer | **fixed** — `closing` + exit wait + one close path | `registry.test.ts`, integration H2c/d |
+| H9 | Empty delta advances `lastSeq` past a pending coalesced batch, which is lost if the flush drops | **fixed** — delta range, gap guard, delivered-flush barrier | `ws.test.ts` (8 cases) |
+| H10 | Dialog broker unbounded/unscoped/no timeout; `Mirror.ask` hangs; S9 claim premature | **fixed** — scoped delivery/answers, cap, timeout, cancellation | `dialogs.test.ts` |
+| H11 | Export path escapes via final symlink / overwrites any store file; S3 only partially closed | **fixed** — generated name + lstat + `.html` + link checks | `store.test.ts`, X20 |
+| H12 | Process fingerprint matches a user project's bare `bundle/cli.js` | **fixed** — install-root/shim fingerprint only | `processes.test.ts` |
+| H13 | Relay drive-confirm waiters uncapped for 25 s | **fixed** — cap 8, fail closed | `relay.test.ts` |
 | H14 | Flat-store fork/relocate write into a non-existent `<rootName>/` subdir | **fixed** (`isFlatDir` destination) | `store.test.ts` |
-| R6 | Browser transcript DOM unbounded; full re-render on every `set()` | **fixed** — 300-node window cap with a "N hidden" control wired to load-earlier (history was already paged) | manual long run |
-| R7 | Client nits: tab lookup basename-only, preview MIME mismatch, live-row X, welcome copy, picker Tab, dead `el({html})` | **fixed** — dirName-aware tab match, 4-mime preview, live X → fingerprinted kill, Tab never navigates, failed browse clears the list | full e2e |
-| T1 | Termux gate not runnable as checked out (eager playwright import, `/tmp`, Node 26 unit dir, `pi` shebang) — measured 72/72 unit 8.7 s / 93/93 integration 124 s after test-only patches | **open** (High) | Four harness fixes in `code-review.md` T1 |
-| T2 | Firefox/Selenium backend design-only; POC works but no `PageDriver`/`E2E_DRIVER`; CLI backend stalls | **open** (Med) | `termux-smoke` CP3/CP4 first |
+| R6 | Browser transcript DOM unbounded; full re-render on every `set()` | **fixed** — 300-node cap, trimmed entries rehydrate via load-earlier; live entries tracked | `termux-smoke.mjs` TC6 |
+| R7 | Client nits: tab lookup basename-only, preview MIME mismatch, live-row X, welcome copy, picker Tab, dead `el({html})` | **fixed** — earlier nits plus stop title, output scroll restore, Home persists | TC1/TC3 |
+| T1 | Termux gate not runnable as checked out (eager playwright import, `/tmp`, Node 26 unit dir, `pi` shebang) | **fixed** — lazy imports, explicit unit files, `$TMPDIR`, Android launcher; 93/94 run here | `npm test`, `npm run test:int` |
+| T2 | Firefox/Selenium backend design-only; POC works but no `PageDriver`/`E2E_DRIVER`; CLI backend stalls | **closed for Termux gate** — `SeleniumPage` + TC1–TC6 smoke; full 171 stays Playwright-only | `npm run test:termux` |
 | P4 | Streaming re-renders full markdown per frame in the browser (≈0.5 s CPU on 20k chars) | **narrowed** — "Format on completion" mode (plain text until `message_end`) plus a 150 ms throttle past ~6k chars in live mode; no incremental block segmentation yet | manual |
 | D1 | Spawn throttle (20/min) has no pin — needs 21 real children | **manual** | Document-only; do not build a 21-child test |
 | D2 | `tests/cases.json` registry + meta-test absent; matrix enforced by review | **open** (Info) | Small JSON + one meta-test; have it also check the counts in README/testing/UX |
 | M1–M4 | Deferred tau-web features (KaTeX math, highlighting, TTS, PWA SW) | **deferred** | Only if wanted; each must fit the LoC rule or stay deferred |
-| P7 | Flip: runit service still runs old 0.1.0 build; tau-web is still live | **manual — blocked by T1/T2 on Termux** | Keep tau-web until the phone gate is runnable, then deploy, smoke, swap with rollback |
+| P7 | Flip: runit service still runs old 0.1.0 build; tau-web is still live | **manual — ready for deploy/flip** | Deploy, smoke, swap with rollback; H7/H8/H9/H10/H11 are closed |
 | LoC | Server exceeds tau-web's server (5.2k vs 4.9k) | **open** (batches 1–2 done: −339 lines) | Keep unifying/dropping dead code; next candidates: app.js sections, CSS tokens; see §7 change log |
 
 Notes that used to live here and are now owned elsewhere:
@@ -395,9 +395,9 @@ Notes that used to live here and are now owned elsewhere:
   ring replays the gap (H10b, done).
 - Fork/rename/export/delete all have UI affordances (context menu); delete
   closes a running owner first, then unlinks (ADR-018 amendment, done).
-- The Selenium/geckodriver backend is **POC-verified** on the phone (page load,
-  fixture resume, screenshot) but not wired into `tests/`; the committed E2E is
-  Playwright API. The plain Firefox `--dump-dom` CLI path stalls here, so CP2
+- The Selenium/geckodriver backend is wired into `tests/termux-smoke.mjs`
+  (TC1–TC6) and `npm run test:termux`; the full E2E remains Playwright API on
+  Linux/Chrome. The plain Firefox `--dump-dom` CLI path stalls here, so CP2
   and CP6 are not a Termux gate (T2).
 
 ## 8. Open decisions (need sign-off)
@@ -419,8 +419,8 @@ Notes that used to live here and are now owned elsewhere:
    prefers Playwright, falls back to system Firefox + geckodriver +
    selenium-webdriver on Termux, plus a zero-dep `cli` Firefox smoke. No
    geckodriver vendored; optional devDep installed only where used. **Status:**
-   POC verified 2026-10-22 (Selenium loads pi-hub and resumes a session); the
-   facade is not implemented. The `cli` backend is not viable on this phone
+   POC verified 2026-10-22; the `SeleniumPage` smoke is implemented and wired
+   as `npm run test:termux`. The `cli` backend is not viable on this phone
    (renderer stalls) — use persistent Selenium.
 7. **Testability contract** (`body[data-ready]`, `window.__errs`,
    `data-*` hooks) adopted from `auto-mate` and shipped in the app from P4.

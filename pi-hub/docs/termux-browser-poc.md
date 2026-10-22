@@ -1,7 +1,8 @@
 # Termux browser POC — Firefox + geckodriver + Selenium
 
-Status: **POC verified 2026-10-22; not wired into the test suite** (T2 in
-`code-review.md`). Companion to `testing.md` §1.2 and ADR-020.
+Status: **POC verified and the CP3/CP4 smoke is implemented** (T2 in
+`code-review.md`; `npm run test:termux`). Companion to `testing.md` §1.2 and
+ADR-020.
 
 ## Why
 
@@ -131,23 +132,28 @@ dependency.
    screenshot/JS-error loop that injects localStorage credentials and captures
    a PNG. It proves the driver stack; it does not provide assertions, fixtures
    or a test runner.
-7. **Not wired in yet.** The committed pi-hub E2E is Playwright-API-only; there
-   is no `PageDriver`/`PI_HUB_E2E_DRIVER` in `tests/` (T2). The first milestone
-   is CP3/CP4: `tests/termux-smoke.mjs` against a stub hub and a real hub
-   (boot, C2 resume, C3 new session, C4 headless view, C1 preview banner, empty
-   `__errs`, screenshots at 390×844 / 768×1024 / 1280×800).
+7. **Wired in.** `tests/termux-smoke.mjs` now ships a minimal `SeleniumPage`
+   facade and TC1–TC6 (boot/no JS errors, fixture resume, reload, screenshot, DOM cap; CP3/CP4 subset)
+   against a real hub. `npm run test:termux` runs it; measured 6/6 in ~38 s.
+   Full 171-check Playwright parity is still Linux/Chrome-only by decision.
 
-## Porting plan
+## Running the implemented smoke
 
-1. Add one `PageDriver` facade (`goto/eval/waitFor/click/fill/screenshot/
-   errors/close`) and move shared assertions onto it. Do not port all 170
-   checks first.
-2. Implement the Termux smoke profile (CP3/CP4) with the persistent Selenium
-   session; keep Playwright for the full CI gate and Playwright-only cases.
-3. Resolve the driver stack from `PI_HUB_GECKODRIVER`, `tests/.bin/geckodriver`
-   or `$PATH`; load `selenium-webdriver` from an optional local install.
-4. Require `ttf-dejavu`; wait for `data-ready` and `document.fonts.ready`
-   before screenshots.
+```bash
+# optional deps only on the phone/host that runs the smoke
+npm i --no-save selenium-webdriver
+PI_HUB_SELENIUM=$PWD/node_modules/selenium-webdriver \
+GECKODRIVER=/path/to/geckodriver \
+FIREFOX_BIN=firefox \
+npm run test:termux
+```
+
+The runner resolves `GECKODRIVER`/`PATH` and `PI_HUB_SELENIUM` (absolute
+package path) and skips with a reason if either is absent. One browser per run;
+`ttf-dejavu` is required for legible screenshots. The smoke owns its hub and
+Firefox handles only — it never signals other pi processes — and
+`PI_HUB_SKIP_TRIM_TEST=1` skips the synthetic DOM-cap check on a memory-tight
+phone. Full Playwright parity stays on the Linux/Chrome gate.
 
 ## Related
 

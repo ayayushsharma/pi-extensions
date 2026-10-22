@@ -150,7 +150,8 @@ export function finishToolCard(card, result, isError, { expand = false, outputMo
   if (status) status.textContent = isError ? "error" : "done";
   const body = card.querySelector(".tool-body");
   if (!body) return;
-  const scrollTop = body.querySelector("pre")?.scrollTop || 0;
+  const previousPres = body.querySelectorAll("pre");
+  const scrollTop = previousPres[previousPres.length - 1]?.scrollTop || 0;
   body.replaceChildren();
 
   // Inputs stay visible above the output (edit diffs, bash commands, …).
@@ -165,8 +166,9 @@ export function finishToolCard(card, result, isError, { expand = false, outputMo
   else if (out.unserializable) body.append(el("div", { class: "truncated", text: "unserializable result" }));
   else if (out.empty) body.append(el("div", { class: "truncated", text: isError ? "no output" : "done" }));
 
-  const pre = body.querySelector("pre");
-  if (pre) pre.scrollTop = scrollTop;
+  const pres = body.querySelectorAll("pre");
+  const outputPre = pres[pres.length - 1];
+  if (outputPre) outputPre.scrollTop = scrollTop;
 
   const copy = el("button", {
     class: "btn small",

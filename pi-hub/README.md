@@ -162,6 +162,9 @@ display sizes because it is outline art, not strokes.
 | `PI_HUB_DISABLED` / `PI_HUB_ROLE` | — / inferred | inert role; force `hub\|mirror` |
 | `PI_HUB_ALLOWED_HOSTS` / `PI_HUB_ALLOW_ANY_HOST` | — | DNS-rebinding allowlist (exact hosts; loopback + own bind always allowed) |
 | `PI_HUB_DRIVE_CONFIRM` | off | Native TUI approval per browser attach (fail-closed) |
+| `PI_HUB_DIALOG_TIMEOUT_MS` | `300000` (5 min) | browser extension-dialog timeout; the owner gets a cancellation |
+| `PI_HUB_DIALOG_MAX` | `32` | max pending browser dialogs (oldest is cancelled) |
+| `PI_HUB_TRUST_PROXY` | off | trust `X-Forwarded-For` **only from a loopback tunnel** for per-IP limits |
 | `PI_HUB_LOG_FILE` / `PI_HUB_DEBUG` | `~/.pi/pi-hub/pi-hub.log` | file-only logging (never stdout) |
 
 Deprecation-free coexistence with an installed `tau-web`: pi-hub only reads
@@ -179,19 +182,17 @@ node tests/run.mjs --all        # + Firefox CLI smoke (cross-platform, ADR-020)
 node tests/run.mjs --all -j1    # serial, deterministic logs/timings
 ```
 
-Current on the **Linux dev host**: **76 unit + 94 integration + 171 Playwright
-checks**; the Firefox CLI smoke SKIPs on hosts whose system Firefox cannot
-render headless. **On Termux the suite does not run as checked out** (T1 in
-`docs/code-review.md` §4): with test-only portability fixes it is 72/72 unit
-(≈9 s) and 93/93 integration (≈2 min), with E2E unavailable until the
-Firefox/Selenium facade lands (T2). A Selenium POC already loads the hub and
-resumes a fixture on this phone; see `docs/testing.md` §1.1–§1.2.
-Known unpinned items and open findings live in `docs/code-review.md` §4 — the
-matrix stays honest about what is automated and what is manual.
+Current on **Termux**: **93 unit** (~9.5 s), **94 integration** (~79 s at
+`jobs=3`) and a **6-check Selenium browser smoke** (~38 s). The **171
+Playwright** checks remain the Linux/Chrome gate; Playwright cannot run on this
+phone, so they are not claimed here. The Firefox CLI smoke SKIPs on hosts whose
+system Firefox cannot render headless. See `docs/testing.md` §1.1–§1.2 and
+`docs/termux-browser-poc.md`; known gaps are tracked in `docs/code-review.md`.
 
 ```bash
 npm test              # unit contracts — sub-second on Linux, ~9 s on Termux
-npm run test:int      # + hub contract over HTTP/WS — ~3 s Linux, ~2 min Termux
+npm run test:int      # hub contract over HTTP/WS — ~3 s Linux, ~80 s Termux
+npm run test:termux   # Selenium CP3/CP4 smoke on the phone (optional deps)
 npm run test:all      # + real browser + Firefox smoke (fire once when done)
 ```
 
@@ -219,7 +220,8 @@ parent PID; every browser case fails on a page error or a non-empty
   session's cwd (ADR-017), browsing to configured roots, session relocate
   targets jailed to the browse roots, and the **only**
   mutation is a single-level `mkdir` under `$HOME` (ADR-018) — no delete,
-  no rename, no write.
+  no rename, no write. HTML exports are restricted to the bound session's
+  generated `.export.html` name and refuse symlink/hardlink finals (H11).
 - Strict CSP, `nosniff`, frame denial; markdown/transcripts are built with
   DOM APIs (no `innerHTML`), images are mime/base64 validated on the wire
   and in history rendering. Attachments are downscaled in the browser to
@@ -231,8 +233,11 @@ parent PID; every browser case fails on a page error or a non-empty
   (preview sockets read, drive verbs are refused); the hub never injects
   into a foreign process except through an explicit attach or the
   process-kill switch (ADR-013/014: argv/`exe` fingerprint, re-checked at
-  kill time, never self, never pid ≤ 1; works on Linux, Android/Termux and macOS). `PI_HUB_DRIVE_CONFIRM=1` adds native
+  kill time, never self, never pid ≤ 1; works on Linux, Android/Termux and macOS; bare `bundle/cli.js` is not a match). `PI_HUB_DRIVE_CONFIRM=1` adds native
   TUI approval per attach for shared deployments (deny/timeout fail closed).
+  Browser dialogs are scoped to their runner, capped and timed out; set
+  `PI_HUB_TRUST_PROXY=1` only when a loopback tunnel terminates the connection,
+  and the per-IP limits use its `X-Forwarded-For` first hop.
 
 ## Docs
 

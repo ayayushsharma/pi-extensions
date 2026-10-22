@@ -130,14 +130,17 @@ verified run.
 
 ### Verified green
 
-- Unit **6/6** (`npm run test:unit` or `node tests/run.mjs --unit`, ≈0.2 s) —
-  Node strips the `.ts` types, so `tests/unit/protocol.test.ts` imports the lib directly
-- Integration **45/45** (`node tests/run.mjs`, ≈6 s)
-- E2E **74/74** (`PI_HUB_CHROME_BIN=… node tests/run.mjs --e2e`, ≈30 s;
-  `--e2e` replaces integration, so run both for a full gate)
-- `--all` 126 checks / ≈64 s (unit + integration + e2e + firefox smoke; firefox SKIPs without system Firefox)
-- Live dev hub: `http://192.168.1.6:8292` (pid in `/tmp/pi-hub-dev-8292/`),
-  started with `tail -f /dev/null | env TAU_DISABLED=1 PI_HUB_PORT=8292 … pi -e pi-hub --mode rpc`.
+- Unit **93/93** (`npm run test:unit` or `node tests/run.mjs --unit`; ~9.5 s on
+  Termux, sub-second on the Linux host) — Node strips the `.ts` types, so the
+  tests import the lib directly.
+- Integration **94/94** (`node tests/run.mjs`; ~79 s on Termux, ~3 s on Linux).
+- E2E **171/171** (`PI_HUB_CHROME_BIN=… node tests/run.mjs --e2e`, Linux/Chrome
+  only); `--e2e` replaces integration, so run both for a full gate.
+- Termux browser smoke **6/6** (`npm run test:termux`; Selenium/Firefox, ~38 s).
+- `--all` includes unit + integration + E2E + the Firefox CLI smoke (the CLI
+  smoke SKIPs without system Firefox); the phone uses the Selenium smoke.
+- Live dev hub: start with `scripts/dev-hub.sh start` (pid/log under
+  `$TMPDIR/pi-hub-dev-8292/`).
   Client-only changes need no restart — the shell stamps a fresh `?v=`.
 
 ### Uncommitted working tree (needs review + commit)
@@ -187,24 +190,22 @@ a gate; track it separately if it still reproduces.
 | Pills show the old model | no `model_select` over RPC | E22c |
 | Live TUI not visible | filtered out when tabbed | E34d |
 
-## 7. Current handoff (2026-10-21)
+## 7. Current handoff (2026-10-22)
 
 Review/finding state is owned by `docs/code-review.md` (H/R/P IDs with pins);
 this section is the short version for a fresh session.
 
 ### Verified green
 
-- **Linux dev host:** Unit **76/76** (`--unit`), integration **94/94**,
-  E2E **171/171** in 12 groups; `--all` **340 checks (339 pass, 1 Firefox
-  SKIP)**. These are the committed gate counts.
-- **Termux (measured 2026-10-22):** the suite does **not** run as checked out
-  (T1). With test-only portability fixes: unit **72/72 in 8.7 s**, integration
-  **93/93 in 124 s** (`jobs=3`), E2E unavailable (T2). `pi --version` alone is
-  9.7 s and a hub boot 16.4 s; process startup is the floor.
-- **Selenium POC:** Firefox 158 + geckodriver 0.37.1 + selenium-webdriver
-  4.51 loaded pi-hub, reached `data-ready`, reported `__errs=[]`, resumed the
-  fixture and captured a screenshot (44 s end-to-end incl. hub boot). The
-  facade is not implemented (T2).
+- **Termux (measured 2026-10-22):** Unit **93/93 in 9.5 s**, integration
+  **94/94 in 79 s** (`jobs=3`), Selenium smoke **6/6 in 38 s**. The full
+  **171** Playwright checks remain the Linux/Chrome gate and were not run on
+  this phone. `pi --version` alone is 9.7 s and a hub boot 16.4 s; process
+  startup is the floor.
+- **Selenium smoke:** Firefox 158 + geckodriver 0.37.1 + selenium-webdriver
+  4.51 loads pi-hub, reaches `data-ready`, reports `__errs=[]`, resumes the
+  fixture, survives reload, captures a screenshot and keeps the transcript under its DOM cap (`npm run test:termux`);
+  the full E2E is not ported (T2).
 - jiti loads every touched extension module; `node --check` covers edited
   frontend files.
 
@@ -285,6 +286,18 @@ this section is the short version for a fresh session.
 
 ### Ordered queue
 
+1. **H6/H7–H13** — closed in the overnight batch: index LRU, close waits,
+   dialog scope/cap/timeout, generated export path, tightened process
+   fingerprint, confirm cap, trusted-proxy opt-in. See `code-review.md` §4.
+2. **R6/R7** — transcript trim, stop title, output scroll and Home-on-reload
+   fixed; the long-session trim path still wants an automated browser pin.
+3. **T1/T2** — Termux harness runs as checked out; `npm run test:termux`
+   provides the CP3/CP4 browser smoke. Full 171-check parity stays Playwright.
+4. **P4 client cost** — narrowed: "Format on completion" mode plus a 150 ms
+   throttle in live mode. Incremental block segmentation is optional.
+5. **Deployment/flip (P7)** — ready for a deploy/flip; the Termux gate is
+   runnable. Remaining: runit deploy, tunnel smoke, swap with rollback.
+
 1. **H7** session-index cache cliff (>200 files ⇒ every listing rescans every
    file). This is the highest-impact open item; add the 250-file pin.
 2. **H8** finish H2: unindex TTL/spawn-failure closes, add a `closing` state,
@@ -295,14 +308,13 @@ this section is the short version for a fresh session.
    store-wide overwrite.
 5. **H12/H13** process fingerprint tightened to pi install roots; per-pid cap
    on toggle-confirm waiters.
-6. **H6 decision**: per-IP keys collapse behind the tunnel (all clients are
-   `127.0.0.1`). Needs an ADR line — trusted `X-Forwarded-For` behind a flag,
-   or exempt loopback from the caps.
-7. **T1/T2 Termux gate**: harness portability (`$TMPDIR`, lazy e2e import,
-   unit file list, `PI_BIN` wrapper) and the Firefox/Selenium `PageDriver` +
-   `termux-smoke` (CP3/CP4). The CLI `--dump-dom` backend stalls on this phone.
+6. **H6** fixed: `PI_HUB_TRUST_PROXY=1` trusts `X-Forwarded-For` only from a
+   loopback tunnel; per-IP limits and the WS cap use the first hop.
+7. **T1/T2 Termux gate** fixed: harness portability is committed; `npm test`,
+   `npm run test:int` and `npm run test:termux` run here. The CLI `--dump-dom`
+   backend stalls; use the persistent Selenium smoke.
 8. **P4 client cost** — narrowed: "Format on completion" mode plus a 150 ms
    throttle in live mode. Incremental block segmentation (parse only the new
-   tail) is the remaining win, and it is optional.
+   tail) is the remaining optional win.
 9. **Deployment/flip (P7)**: runit service, tunnel on :12045, remove tau-web
-    from settings — **blocked by T1/T2** for a real Termux gate.
+   from settings — ready for a deploy/flip; the Termux gate is runnable.

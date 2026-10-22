@@ -9,14 +9,15 @@
 # and browsers no longer converge on one hub, which is the point.
 #
 # Binds to the machine's primary LAN IPv4 (not 0.0.0.0), serves the UI with
-# auth disabled, and keeps a pid + log under /tmp. Use `PI_HUB_ALLOW_ANY_HOST=1`
+# auth disabled, and keeps a pid + log under $TMPDIR (Termux has no /tmp). Use `PI_HUB_ALLOW_ANY_HOST=1`
 # only if the UI must be reachable by hostname.
 set -u
 PORT="${2:-8292}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-PIDFILE="/tmp/pi-hub-dev-$PORT.pid"
-OUTFILE="/tmp/pi-hub-dev-$PORT.log"
-HUBDIR="/tmp/pi-hub-dev-$PORT"
+TMP="${TMPDIR:-/tmp}"
+PIDFILE="$TMP/pi-hub-dev-$PORT.pid"
+OUTFILE="$TMP/pi-hub-dev-$PORT.log"
+HUBDIR="$TMP/pi-hub-dev-$PORT"
 PI_BIN="${PI_BIN:-$HOME/.pi/agent/bin/pi}"
 
 lan_ip() {

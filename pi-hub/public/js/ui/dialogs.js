@@ -9,8 +9,15 @@ import { icon } from "../core/icons.js";
 
 export function createDialogs(container, sendResponse, actions = {}) {
   const seen = new Set();
+  let currentId = null;
 
-  const close = () => clear(container);
+  /** Close the modal. With an id, only that request may close it; a
+   *  dialog_cancelled for another runner must not dismiss a local confirm. */
+  const close = (id) => {
+    if (id && currentId !== id) return;
+    currentId = null;
+    clear(container);
+  };
 
   function answer(id, response) {
     close();
@@ -36,6 +43,7 @@ export function createDialogs(container, sendResponse, actions = {}) {
     if (!request?.id || seen.has(request.id)) return;
     seen.add(request.id);
     const { method, id } = request;
+    currentId = id;
 
     if (method === "select") {
       const list = el("div", { class: "dialog-options" });
@@ -130,5 +138,5 @@ export function createDialogs(container, sendResponse, actions = {}) {
       return choice(title, message, { confirmLabel: "Confirm", danger: true });
     },
     close,
-}
+  };
 }

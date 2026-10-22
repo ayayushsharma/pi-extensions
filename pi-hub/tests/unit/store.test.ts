@@ -16,7 +16,9 @@ const store = await import("../../extensions/lib/store/sessions.ts");
 
 const PROJECT = "--tmp-unit-project--";
 const FILE = "2026-01-01T00-00-00Z_unit.jsonl";
-const CWD = "/tmp/unit-project";
+// Keep every writable path under os.tmpdir(): Android/Termux has no /tmp.
+const CWD = path.join(ROOT, "unit-project");
+fs.mkdirSync(CWD, { recursive: true });
 
 function writeSession({ dirName = PROJECT, file = FILE, cwd = CWD, entries = [] } = {}) {
   const dir = path.join(ROOT, dirName);
@@ -47,6 +49,23 @@ test("listSessions reports header cwd, title and cwdExists", () => {
   assert.equal(summary.cwd, CWD);
   assert.equal(summary.cwdExists, true);
   assert.equal(summary.messageCount, 1);
+});
+
+test("listing >200 sessions does not fall off an index-cache cliff (H7)", () => {
+  const dirName = "--tmp-unit-many--";
+  const dir = path.join(ROOT, dirName);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.mkdirSync(CWD, { recursive: true });
+  const header = { type: "session", version: 3, id: "many", timestamp: "2026-01-01T00:00:00.000Z", cwd: CWD };
+  for (let i = 0; i < 260; i++) {
+    const body = JSON.stringify({ ...header, id: `many-${i}` });
+    fs.writeFileSync(path.join(dir, `2026-01-01T00-00-${String(i).padStart(2, "0")}Z_${i}.jsonl`), `${body}\n`);
+  }
+  store.listSessions(dirName); // warm every index
+  const before = store.sessionStoreStats.fullScans;
+  const sessions = store.listSessions(dirName);
+  assert.equal(sessions.length, 260);
+  assert.equal(store.sessionStoreStats.fullScans, before, "second listing is served from cache");
 });
 
 test("cwdExists is false when the recorded folder vanished (R-10)", () => {
@@ -236,6 +255,40 @@ test("validateExportPath keeps exports inside the session store (S3)", () => {
   }
 });
 
+test("export paths use the session's generated name and refuse links (H11)", () => {
+  const session = writeSession();
+  const stem = FILE.replace(/\.jsonl$/, "");
+  const dest = path.join(ROOT, PROJECT, `${stem}.export.html`);
+  assert.equal(store.validateExportPath(dest, session), dest);
+  // The session file itself is not an export target.
+  assert.throws(() => store.validateExportPath(session, session), /end in \.html/);
+  // A client cannot pick another file in the same dir or another project.
+  assert.throws(() => store.validateExportPath(path.join(ROOT, PROJECT, "other.export.html"), session), /named/);
+  assert.throws(() => store.validateExportPath(path.join(ROOT, `${stem}.export.html`), session), /next to/);
+  if (process.platform !== "win32") {
+    const outside = path.join(ROOT, "outside.html");
+    fs.writeFileSync(outside, "x");
+    try {
+      fs.symlinkSync(outside, dest);
+      assert.throws(() => store.validateExportPath(dest, session), /regular, unlinked/);
+    } finally {
+      try { fs.unlinkSync(dest); } catch {}
+    }
+    try {
+      try {
+        fs.linkSync(outside, dest);
+      } catch (e: any) {
+        if (e?.code === "EACCES" || e?.code === "EPERM" || e?.code === "EXDEV") return;
+        throw e;
+      }
+      assert.throws(() => store.validateExportPath(dest, session), /regular, unlinked/);
+    } finally {
+      try { fs.unlinkSync(dest); } catch {}
+      try { fs.unlinkSync(outside); } catch {}
+    }
+  }
+});
+
 test("resolveSessionPath jails paths to the sessions dir", () => {
   assert.throws(() => store.resolveSessionPath(PROJECT, "../../etc/passwd"));
   assert.throws(() => store.resolveSessionPath("../..", FILE));
@@ -280,7 +333,7 @@ test("titleForSessionFile resolves real titles and hides stem placeholders", () 
   assert.equal(store.titleForSessionFile(prompted), "please summarise the logs");
 
   assert.equal(store.titleForSessionFile(""), null);
-  assert.equal(store.titleForSessionFile("/tmp/not-in-store.jsonl"), null);
+  assert.equal(store.titleForSessionFile(path.join(os.tmpdir(), "not-in-store.jsonl")), null);
   // A same-named file outside the store must not borrow an in-store title.
   const elsewhere = path.join(os.tmpdir(), "pihub-unit-elsewhere", path.basename(named));
   fs.mkdirSync(path.dirname(elsewhere), { recursive: true });

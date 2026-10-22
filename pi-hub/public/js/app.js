@@ -224,7 +224,37 @@ const transcript = createTranscript(refs.messages, {
   toolOutput: state.prefs.toolOutput,
   onOpenFile: (path) => files.view(path),
   onLoadEarlier: () => loadEarlier().catch((e) => toast(e.message, { kind: "error" })),
+  // R6: trimming drops the node *and* the loaded entry. "Show earlier"
+  // then pages it back from the file (the event/order is still on disk);
+  // keeping removed entries here would leak them across the trim.
+  onTrim: ({ entryIds, toolCallIds }) => {
+    const ids = new Set(entryIds);
+    const calls = new Set(toolCallIds);
+    if (!ids.size && !calls.size) return;
+    set({
+      entries: state.entries.filter((entry) =>
+        !ids.has(entry.id) &&
+        !(entry.message?.role === "toolResult" && calls.has(entry.message.toolCallId)),
+      ),
+    });
+    renderLoadEarlier();
+  },
 });
+
+/* Hash/session-gated test seam: the Selenium smoke can append synthetic
+ * transcript events without exporting internals on normal pages. No
+ * auth/security surface changes — an authenticated browser could already run
+ * its own JS. */
+function testSeamEnabled() {
+  try {
+    return location.hash === "#test" || sessionStorage.getItem("pi-hub-test") === "1";
+  } catch {
+    return false;
+  }
+}
+if (testSeamEnabled()) {
+  window.__piHubTest = { transcript };
+}
 
 const files = createFiles(
   {
@@ -864,7 +894,7 @@ async function continueMissingCwd(session, project) {
 function activateTab(key) {
   const tab = state.tabs.find((t) => t.key === key);
   if (!tab) return;
-  set({ activeKey: key });
+  set({ activeKey: key, home: false });
   saveTabs();
   if (tab.runnerId) return bindRunner(tab.runnerId, state.runners.get(tab.runnerId), tab);
   if (tab.file) return bindSession({ dirName: tab.dirName, file: tab.file, title: tab.title, cwd: tab.cwd }, null);
@@ -1011,7 +1041,7 @@ const bannerActions = {
    stay open; activating one rebinds. */
 function goHome() {
   if (state.driving) detach();
-  set({ view: "welcome", activeKey: null, bound: null, boundId: null, driving: null, driverBusy: null });
+  set({ view: "welcome", activeKey: null, home: true, bound: null, boundId: null, driving: null, driverBusy: null });
   rawSend({ type: "unbind" });
   updateHash(null);
   saveTabs();
@@ -1202,7 +1232,12 @@ async function exportSession(session, project) {
       toast("Export is not available while a live TUI owns the session", { kind: "error" });
       return;
     }
-    const outputPath = state.sessionsDir ? `${state.sessionsDir}/${session.file.replace(/\.jsonl$/, "")}.export.html` : undefined;
+    // H11: exports live next to their session. Using the store root here
+    // put every export in the flat root and would be rejected for nested
+    // project dirs now that the server enforces the generated name.
+    const abs = state.bound?.absFile || "";
+    const cut = Math.max(abs.lastIndexOf("/"), abs.lastIndexOf("\\"));
+    const outputPath = cut > 0 ? `${abs.slice(0, cut)}/${session.file.replace(/\.jsonl$/, "")}.export.html` : undefined;
     const out = await commandRequest({ type: "export_html", ...(outputPath ? { outputPath } : {}) }, 45000);
     const p = out?.data?.path;
     if (!p) throw new Error("export did not return a path");
@@ -1290,7 +1325,7 @@ function handleFrame(msg) {
       dialogs.handleEvent(msg.request);
       break;
     case "dialog_cancelled":
-      dialogs.close();
+      dialogs.close(msg.id);
       break;
     case "error":
       if (msg.id && pendingCommands.has(msg.id)) {
@@ -1332,6 +1367,28 @@ function rebindIfRunnerChanged(runners) {
   } else if (bound) {
     set({ bound });
   }
+}
+
+/** Keep the loaded view's entry list in step with live messages. The
+ *  transcript trims DOM nodes, and loadEarlier() pages from the first loaded
+ *  entry; without this, live messages newer than history would not be
+ *  recoverable by "Show earlier" (R6). */
+function rememberLiveEntry(event) {
+  const msg = event?.message;
+  if (!msg?.id) return;
+  if (event.type === "message_start" && msg.role !== "user") return;
+  if (event.type !== "message_start" && event.type !== "message_end") return;
+  if (!["user", "assistant", "toolResult"].includes(msg.role)) return;
+  const entry = { type: "message", id: msg.id, parentId: msg.parentId, timestamp: msg.timestamp, message: msg };
+  const idx = state.entries.findIndex((e) => e.id === msg.id);
+  if (idx >= 0) {
+    const entries = [...state.entries];
+    entries[idx] = entry;
+    set({ entries });
+  } else {
+    set({ entries: [...state.entries, entry] });
+  }
+  renderLoadEarlier();
 }
 
 function handleRunnerEvent(event, frame) {
@@ -1408,6 +1465,7 @@ function handleRunnerEvent(event, frame) {
     && typeof frame.seq === "number" && frame.seq <= bindHeadSeq
     && state.bound?.kind !== "live";
   if (!stale) transcript.handleEvent(event);
+  if (!stale) rememberLiveEntry(event);
   if (event.type === "message_start" && event.message?.role === "user") dequeueDelivered(event.message);
   if (event.type === "agent_start") set({ streaming: true, connState: "working" });
   if (event.type === "agent_end") {
@@ -1449,7 +1507,7 @@ function connect() {
           await bindSession({ dirName: pinned.dirName, file: pinned.file, title: found?.title, cwd: found?.cwd }, null);
         } else if (pinned?.runnerId) {
           await bindRunner(pinned.runnerId, state.runners.get(pinned.runnerId));
-        } else if (state.tabs.length) {
+        } else if (state.tabs.length && !state.home) {
           await activateTab(state.tabs[state.tabs.length - 1].key);
         }
       } catch {

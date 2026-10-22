@@ -8,7 +8,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 const hubRoot = () => path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 import { runGroups } from "./groups.mjs";
-import { PKG_ROOT, findPi, fixtureSessionDir, freePort, jsonFetch, llmCopiesInLastRequest, llmMentioning, setLlmHold, startHub, startMirror, waitFor } from "./helpers.mjs";
+import { PKG_ROOT, findPi, FIXTURE_CWD, fixtureSessionDir, freePort, jsonFetch, llmCopiesInLastRequest, llmMentioning, setLlmHold, startHub, startMirror, waitFor } from "./helpers.mjs";
 
 const ready = (page, timeout = 30000) =>
   page.waitForFunction(() => document.body.dataset.ready === "1", null, { timeout });
@@ -91,7 +91,7 @@ async function bootCore({ log } = {}) {
     route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ branch: "feature/hub-branch", root: "/tmp/pihub-fixtures", detached: false }),
+      body: JSON.stringify({ branch: "feature/hub-branch", root: FIXTURE_CWD, detached: false }),
     }),
   );
   await page.goto(`${hub.url}/hub/`, { waitUntil: "domcontentloaded" });
@@ -365,7 +365,7 @@ async function liveGroup({ check, log }) {
   const { hub, browser, page, sessions, pageErrors, close } = await bootCore({ log });
   try {
     // ── E8 live TUI preview → drive → detach (C1) ───────────────────────
-    const mirror = await startMirror({ sock: path.join(hub.dir, "hub.sock"), cwd: "/tmp/pihub-fixtures", sessionDir: sessions });
+    const mirror = await startMirror({ sock: path.join(hub.dir, "hub.sock"), cwd: FIXTURE_CWD, sessionDir: sessions });
     try {
       await page.waitForSelector('#live-section .sb-row[data-runner-kind="live"]', { timeout: 30000 });
       await page.locator('#live-section .sb-row[data-runner-kind="live"]').first().click();
@@ -391,7 +391,7 @@ async function liveGroup({ check, log }) {
     check("E8f dead mirror removed from the sidebar", (await page.locator('#live-section .sb-row[data-runner-kind="live"]').count()) === 0);
 
     // ── E24 live runners carry the live treatment (R-4) ───────────────
-    const mirror2 = await startMirror({ sock: path.join(hub.dir, "hub.sock"), cwd: "/tmp/pihub-fixtures", sessionDir: sessions });
+    const mirror2 = await startMirror({ sock: path.join(hub.dir, "hub.sock"), cwd: FIXTURE_CWD, sessionDir: sessions });
     try {
       await page.waitForSelector('#live-section .sb-row[data-runner-kind="live"].live-row', { timeout: 30000 });
       const liveChips = await page.locator('#live-section .sb-row[data-runner-kind="live"] .chip.live').count();
@@ -489,7 +489,7 @@ async function panelsGroup({ check, log }) {
     // and any root without nested roots (e.g. the session cwd itself) read as
     // "no way up" even though the server allows it.
     const probeDir = `up-probe-${Date.now().toString(36)}`;
-    fs.mkdirSync(`/tmp/pihub-fixtures/${probeDir}`, { recursive: true });
+    fs.mkdirSync(path.join(FIXTURE_CWD, probeDir), { recursive: true });
     await page.click("#file-close");
     await page.click("#files-btn");
     await page.waitForSelector("#file-panel:not(.hidden)", { timeout: 10000 });
@@ -503,7 +503,7 @@ async function panelsGroup({ check, log }) {
     }));
     check("E12d up is enabled inside the project tree", deepState.disabled === false && /parent/i.test(deepState.title), JSON.stringify(deepState));
     await page.click("#file-up");
-    await page.waitForFunction(() => (document.querySelector("#file-path")?.textContent || "") === "/tmp/pihub-fixtures", null, { timeout: 10000 });
+    await page.waitForFunction((cwd) => (document.querySelector("#file-path")?.textContent || "") === cwd, FIXTURE_CWD, { timeout: 10000 });
     const backState = await page.evaluate(() => ({
       disabled: document.querySelector("#file-up").disabled,
       title: document.querySelector("#file-up").title,
@@ -513,7 +513,7 @@ async function panelsGroup({ check, log }) {
     check("E12e up disables again at the root and stays put",
       backState.disabled === true && settled === true && /project root/i.test(backState.title),
       JSON.stringify({ ...backState, settled }));
-    fs.rmSync(`/tmp/pihub-fixtures/${probeDir}`, { recursive: true, force: true });
+    fs.rmSync(path.join(FIXTURE_CWD, probeDir), { recursive: true, force: true });
     await page.click("#file-close");
     await page.click("#settings-btn");
     await page.waitForSelector("#settings:not(.hidden)", { timeout: 10000 });
@@ -1158,7 +1158,7 @@ async function detailGroup({ check, log }) {
     // E31 companion: an edit toolCall whose absolute path the card must shorten.
     const toolLine = JSON.stringify({
       type: "message", id: `e31-${Date.now().toString(36)}`, parentId: fenceId, timestamp: new Date().toISOString(),
-      message: { role: "assistant", content: [{ type: "toolCall", id: "call-e31", name: "edit", arguments: { path: "/tmp/pihub-fixtures/e31-target.ts" } }], timestamp: Date.now() },
+      message: { role: "assistant", content: [{ type: "toolCall", id: "call-e31", name: "edit", arguments: { path: path.join(FIXTURE_CWD, "e31-target.ts") } }], timestamp: Date.now() },
     });
     fs.appendFileSync(path.join(sessions, "--tmp-pihub-fixtures--", "2026-01-01T00-00-00Z_fixture.jsonl"), `${fenceLine}\n${toolLine}\n`);
     await page.evaluate(() => window.location.reload());
@@ -1275,7 +1275,7 @@ async function detailGroup({ check, log }) {
       `card=${titleCard} tab=${titleTab}`);
 
     // ── E34 the live TUI block is on the home screen, on top (UX-13) ──
-    const mirror34 = await startMirror({ sock: path.join(hub.dir, "hub.sock"), cwd: "/tmp/pihub-fixtures", sessionDir: sessions });
+    const mirror34 = await startMirror({ sock: path.join(hub.dir, "hub.sock"), cwd: FIXTURE_CWD, sessionDir: sessions });
     try {
       await page.locator("#home-btn").click();
       await page.waitForFunction(() => document.body.dataset.view === "welcome", null, { timeout: 15000 });
@@ -1749,7 +1749,7 @@ async function imagesGroup({ check, log }) {
     const project = "--tmp-pihub-fixtures--";
     const file = "images-normalize.jsonl";
     const lines = [
-      JSON.stringify({ type: "session", version: 3, id: "img-1", timestamp: new Date().toISOString(), cwd: "/tmp/pihub-fixtures" }),
+      JSON.stringify({ type: "session", version: 3, id: "img-1", timestamp: new Date().toISOString(), cwd: FIXTURE_CWD }),
       JSON.stringify({
         type: "message",
         id: "im1",

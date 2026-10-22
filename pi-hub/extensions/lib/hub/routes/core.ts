@@ -57,7 +57,7 @@ export function coreRoutes(deps: CoreDeps): Route[] {
       path: "/api/login",
       auth: false,
       handler: async ({ req, res }) => {
-        const ip = req.socket.remoteAddress || "unknown";
+        const ip = auth.clientIp(req);
         const backoff = auth.backoffMs(ip);
         if (backoff) await sleep(backoff);
         let body: any;
@@ -97,7 +97,7 @@ export function coreRoutes(deps: CoreDeps): Route[] {
       path: "/api/client-error",
       auth: true,
       handler: async ({ req, res }) => {
-        const ip = req.socket?.remoteAddress || "unknown";
+        const ip = auth.clientIp(req);
         if (!clientErrorAllowed(ip)) {
           res.writeHead(429);
           res.end();

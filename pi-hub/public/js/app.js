@@ -606,7 +606,9 @@ function renderTitlebar() {
   refs.tbTitle.textContent = tab.title || tab.file || "session";
   const runner = tab.runnerId ? state.runners.get(tab.runnerId) : null;
   refs.tbChip.textContent = runner?.kind === "live" ? "live tui" : runner ? runner.state : "session";
-  refs.tbChip.className = `chip ${runner?.kind === "live" ? "live" : runner?.state === "dead" ? "dead" : "headless"}`;
+  const chipKind = runner?.kind === "live" ? "live" : runner?.state === "working" ? "working" : runner?.state === "dead" ? "dead" : "headless";
+  refs.tbChip.className = `chip ${chipKind}`;
+  refs.tbChip.title = chipKind === "working" ? "Working — currently executing" : "";
 }
 
 /* git branch for the open session's directory (fetched once per cwd) */

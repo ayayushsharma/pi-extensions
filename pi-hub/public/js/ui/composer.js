@@ -388,10 +388,17 @@ export function createComposer(refs, actions) {
   }
 
   /* ── send ─────────────────────────────────────────────────────────── */
+  // Enter fires the textarea's keydown handler and (on some desktop
+  // browsers/IMEs) the implicit form submit too. Both used to reach send()
+  // in the same turn, so a single steer appeared as two queue pills (and a
+  // normal prompt could be sent twice). One in-flight send is enough.
+  let sending = false;
   async function send({ followUp = false } = {}) {
+    if (sending) return;
     const text = refs.input.value.trim();
     if (!text && !images.length) return;
     if (state_.binding) return;
+    sending = true;
     const payloadImages = images.slice();
     images = [];
     renderImageChips();
@@ -421,6 +428,8 @@ export function createComposer(refs, actions) {
         renderImageChips();
       }
       autoGrow();
+    } finally {
+      sending = false;
     }
   }
 

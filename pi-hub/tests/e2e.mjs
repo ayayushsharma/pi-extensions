@@ -1594,9 +1594,14 @@ async function steerGroup({ check, log }) {
       await waitFor(async () => (await llmMentioning("START-E38")).length >= 1, { timeoutMs: 20000, what: "first model call" });
 
       await page.fill("#input", "STEER-E38");
-      await page.click("#send-btn");
+      // Enter, not the button: a desktop keydown plus implicit form submit
+      // used to reach send() twice and paint two identical pills for one steer.
+      await page.press("#input", "Enter");
       await page.waitForSelector(".queue .q-pill.steer", { timeout: 10000 });
-      check("E38b steering pill appears right on send", ((await page.textContent(".queue .q-pill.steer")) || "").includes("STEER-E38"));
+      const steerPills = await page.locator(".queue .q-pill.steer").count();
+      check("E38b steering pill appears once on Enter",
+        steerPills === 1 && ((await page.textContent(".queue .q-pill.steer")) || "").includes("STEER-E38"),
+        `pills=${steerPills}`);
       await page.fill("#input", "LATER-E38");
       await page.keyboard.press("Alt+Enter");
       await page.waitForSelector(".queue .q-pill.later", { timeout: 10000 });

@@ -397,11 +397,12 @@ const composer = createComposer(
     prompt: (message, images) => commandRequest({ type: "prompt", message, ...(images.length ? { images } : {}) }, 30000),
     steer: (message, images) => commandRequest({ type: "steer", message, ...(images.length ? { images } : {}) }, 30000),
     followUp: (message, images) => commandRequest({ type: "follow_up", message, ...(images.length ? { images } : {}) }, 30000),
-    // The pill shows immediately on ack (pi reports no queue state back —
-    // `queue_update` is handled if it ever arrives and then wins as server
-    // truth). It clears when pi delivers the text as its user message.
-    // Abort behaves like pi's Esc: queued text goes back to the editor instead
-    // of being delivered after the run.
+    // Headless children emit `queue_update` (server truth), so don't also
+    // echo locally — the two can race into duplicate pills. Live mirrors do
+    // not forward that event, so their pill still echoes on ack. The pill
+    // clears when pi delivers the text as its user message. Abort behaves
+    // like pi's Esc: queued text goes back to the editor instead of being
+    // delivered after the run.
     abort: async () => {
       restoreToEditor(await clearQueue());
       rawSend({ type: "command", id: `abort-${Date.now().toString(36)}`, command: { type: "abort" } });
@@ -428,7 +429,10 @@ const composer = createComposer(
       await refreshSessionState();
     },
     restoreQueue: async () => restoreToEditor(await clearQueue()),
-    queued: (text, kind) => set({ queue: [...state.queue, { text, kind }] }),
+    queued: (text, kind) => {
+      if (state.bound?.kind !== "live") return;
+      set({ queue: [...state.queue, { text, kind }] });
+    },
     takePendingFiles: () => state.pendingFiles.splice(0),
     toast: (message, opts) => toast(message, opts),
   },

@@ -239,6 +239,13 @@ async function coreGroup({ check, log }) {
     await page.waitForFunction(() => document.querySelector("#command-menu").classList.contains("hidden"), null, { timeout: 5000 });
     const picked3 = await page.inputValue("#input");
     check("E3c picking a skill prefills the invocation", picked3 === "/skill:hub-probe-skill ", JSON.stringify(picked3));
+    // ── E3c2 typing arguments keeps the slash palette closed ─────────────
+    // Regression: once the command token is followed by a space, further
+    // typing (incl. more spaces) must not resurrect the palette.
+    await page.type("#input", "some args  here");
+    await page.waitForTimeout(300);
+    check("E3c2 typing args keeps the slash palette closed",
+      await page.evaluate(() => document.querySelector("#slash").classList.contains("hidden")));
     await page.fill("#input", "");
 
     // ── E3d composer rests two lines tall, controls at the bottom ───────

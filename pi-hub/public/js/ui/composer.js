@@ -202,6 +202,10 @@ export function createComposer(refs, actions) {
   };
   function updateSlash() {
     if (!refs.input.value.startsWith("/") || refs.input.value.includes("\n")) return hideSlash();
+    // A completed command token followed by whitespace means the command was
+    // accepted and the user is typing arguments — keep the palette closed so
+    // Space/typing never resurrects it. Deleting back into the token reopens.
+    if (/^\/\S+\s/.test(refs.input.value)) return hideSlash();
     if (!commands.length) {
       loadCommands().then(() => {
         if (refs.input.value.startsWith("/")) updateSlash();

@@ -1,9 +1,10 @@
-// run.mjs — pi-hub test runner. `node tests/run.mjs [--unit|--integration|--e2e|--all] [--strict]`
+// run.mjs — pi-hub test runner. `node tests/run.mjs [--unit|--integration|--e2e|--all] [--strict]
+//   [--test-pi <path>]  binary under test for the hub role (default: PI_HUB_TEST_BIN, else pi)
 import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { findPi, realStoreDiff, realStoreSnapshot } from "./helpers.mjs";
+import { findPi, findTestPi, realStoreDiff, realStoreSnapshot } from "./helpers.mjs";
 import { startFakeLLM } from "./fixtures/fake-llm.mjs";
 import { runIntegration } from "./integration.mjs";
 
@@ -20,6 +21,14 @@ const wantE2E = args.includes("--e2e") || args.includes("--all");
 const wantFirefox = args.includes("--firefox") || args.includes("--all");
 const wantTermux = args.includes("--termux");
 const strict = args.includes("--strict");
+
+// Select the hub binary before any startHub() call. Children still use PI_BIN.
+{
+  const eq = args.find((a) => a.startsWith("--test-pi="));
+  const i = args.indexOf("--test-pi");
+  const value = eq ? eq.slice("--test-pi=".length) : i >= 0 ? args[i + 1] : undefined;
+  if (value) process.env.PI_HUB_TEST_BIN = value;
+}
 
 const log = (line) => process.stdout.write(`${line}\n`);
 
@@ -60,6 +69,8 @@ const storeBefore = realStoreSnapshot();
 // and wall time is what matters. Log lines are tagged so the interleaving
 // stays readable.
 const pi = findPi();
+const testPi = findTestPi();
+log(`hub under test: ${testPi ?? "(none)"} · child pi: ${pi ?? "(none)"}`);
 const jobs = [];
 const suiteStart = Date.now();
 const suiteWalls = [];
@@ -74,9 +85,12 @@ const suite = (tag, fn) => jobs.push(
   })(),
 );
 if (wantUnit) suite("unit", runUnit);
-if (!pi) {
-  if (wantIntegration || wantE2E) log("pi binary not found — skipping integration/e2e (set PI_BIN or install pi)");
-  jobs.push(Promise.resolve([{ name: "hub suites", ok: true, skip: true, detail: "pi binary not found" }]));
+if (!pi || !testPi) {
+  if (wantIntegration || wantE2E) {
+    log(`missing binary — skipping integration/e2e (hub under test: ${testPi ?? "none"}; child pi: ${pi ?? "none"})`);
+  }
+  const detail = !testPi ? "hub-under-test binary not found" : "child pi binary not found";
+  jobs.push(Promise.resolve([{ name: "hub suites", ok: true, skip: true, detail }]));
 } else {
   if (wantIntegration) suite("int", runIntegration);
   if (wantE2E) {

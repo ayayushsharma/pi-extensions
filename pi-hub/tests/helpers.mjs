@@ -62,6 +62,31 @@ function piLauncher(candidate) {
   return wrapper;
 }
 
+let cachedTestPi;
+/**
+ * The binary under test for the hub role.
+ *
+ * `PI_HUB_TEST_BIN` is the Rust host during the port. Children spawned by the
+ * hub still use `findPi()` (the reference Node pi), because Phase 2 keeps the
+ * existing pi children unchanged. When the variable is unset this falls back
+ * to the reference pi so the suite still runs before the port lands.
+ */
+export function findTestPi() {
+  if (cachedTestPi !== undefined) return cachedTestPi;
+  const explicit = process.env.PI_HUB_TEST_BIN;
+  if (explicit) {
+    try {
+      if (!fs.statSync(explicit).isFile()) throw new Error("not a file");
+    } catch (e) {
+      throw new Error(`PI_HUB_TEST_BIN is not an executable file: ${explicit} (${e.message})`);
+    }
+    cachedTestPi = explicit;
+    return explicit;
+  }
+  cachedTestPi = findPi();
+  return cachedTestPi;
+}
+
 export function tmpDir(prefix = "pihub-test-") {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
 }
@@ -221,7 +246,9 @@ export function realStoreDiff(before) {
 export async function startHub({ port, env = {}, sessionDir, llmUrl } = {}) {
   fs.mkdirSync(FIXTURE_CWD, { recursive: true }); // fixture session cwd
   const piBin = findPi();
-  if (!piBin) throw Object.assign(new Error("pi binary not found (set PI_BIN or TAU_NO_PI=1)"), { skip: true });
+  const testBin = findTestPi();
+  if (!testBin) throw Object.assign(new Error("test pi binary not found (set PI_HUB_TEST_BIN or PI_BIN; TAU_NO_PI=1 skips)"), { skip: true });
+  if (!piBin) throw Object.assign(new Error("child pi binary not found (set PI_BIN or TAU_NO_PI=1)"), { skip: true });
   const dir = tmpDir();
   const fullEnv = cleanEnv({ llmUrl: llmUrl ?? process.env.PI_HUB_TEST_LLM_URL });
   Object.assign(fullEnv, {
@@ -235,7 +262,10 @@ export async function startHub({ port, env = {}, sessionDir, llmUrl } = {}) {
   });
   fullEnv.PI_CODING_AGENT_SESSION_DIR = sessionDir || fullEnv.PI_CODING_AGENT_SESSION_DIR;
   Object.assign(fullEnv, env);
-  const proc = spawn(piBin, ["-e", PKG_ROOT, "--mode", "rpc"], {
+  // The hub under test receives the same argv the extension host normally gets.
+  // A Rust host accepts `-e <pkg> --mode rpc` and ignores `-e`; children still
+  // come from PI_HUB_PI_BIN above.
+  const proc = spawn(testBin, ["-e", PKG_ROOT, "--mode", "rpc"], {
     cwd: PKG_ROOT,
     env: fullEnv,
     stdio: ["pipe", "pipe", "pipe"],

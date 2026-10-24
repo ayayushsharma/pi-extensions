@@ -33,7 +33,10 @@ export interface RunnerInfo {
 
 export type RunnerFrame = { runnerId: string; seq: number; event: any };
 
-const REPLAY_RING = 200;
+// Trimmed 200 -> 20 for the 4 GB phone: the ring holds full event payloads
+// per runner and was the hub's peak-RSS driver (HWM 196 MB). Reconnect
+// replays only the recent gap; older frames re-sync via get_state.
+const REPLAY_RING = 20;
 
 export abstract class Runner {
   readonly id: string;

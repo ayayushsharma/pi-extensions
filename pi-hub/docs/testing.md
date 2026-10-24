@@ -116,6 +116,13 @@ npm run test:termux                # Selenium CP3/CP4 smoke (Termux)
 npm run test:parity                # optional A/B screenshots
 ```
 
+Hub-under-test vs children: `PI_HUB_TEST_BIN=/path/to/rusty-pi` (or
+`--test-pi /path/to/rusty-pi`) selects the binary booted in the **hub** role.
+`PI_BIN` keeps selecting the reference `pi` used for **children**, so resume,
+new-session, headless and mirror tests still exercise unchanged Node children.
+When `PI_HUB_TEST_BIN` is unset, the hub role falls back to `pi`, preserving the
+pre-port baseline.
+
 `npm run test` is **unit-only**, not L0+L1+L2. L1 fakes live inside unit and
 integration (`fake-llm`, recording child); the L2 stub-hub suite does not exist
 — E2E runs the shipped client against a real hub. L3/L4 are partly covered by

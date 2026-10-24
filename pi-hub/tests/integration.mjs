@@ -8,7 +8,7 @@ import http from "node:http";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { runGroups } from "./groups.mjs";
-import { PKG_ROOT, cleanEnv, connectWs, findPi, FIXTURE_CWD, fixtureSessionDir, freePort, jsonFetch, killTree, startHub, startMirror, tmpDir, waitFor } from "./helpers.mjs";
+import { PKG_ROOT, cleanEnv, connectWs, findPi, findTestPi, FIXTURE_CWD, fixtureSessionDir, freePort, jsonFetch, killTree, startHub, startMirror, tmpDir, waitFor } from "./helpers.mjs";
 
 export async function runIntegration({ log }) {
   return runGroups(
@@ -506,6 +506,7 @@ async function authGroup({ check }) {
     // anything or serving anything) — the tunnel must never meet an open hub.
     {
       const piBin = findPi();
+      const testBin = findTestPi();
       const dir = tmpDir();
       const port = await freePort();
       const env = cleanEnv({});
@@ -518,7 +519,7 @@ async function authGroup({ check }) {
         PI_HUB_STATIC_DIR: path.join(PKG_ROOT, "public"),
         PI_HUB_PI_BIN: piBin,
       });
-      const proc = spawn(piBin, ["-e", PKG_ROOT, "--mode", "rpc"], { cwd: PKG_ROOT, env, stdio: ["pipe", "pipe", "pipe"] });
+      const proc = spawn(testBin, ["-e", PKG_ROOT, "--mode", "rpc"], { cwd: PKG_ROOT, env, stdio: ["pipe", "pipe", "pipe"] });
       proc.stdin.on("error", () => {});
       proc.stdin.write("\n");
       try {

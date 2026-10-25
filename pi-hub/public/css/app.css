@@ -579,6 +579,11 @@ html[data-wrap-tools="1"] .tool-body pre {
   white-space: nowrap; font-family: var(--font-mono); font-size: var(--fs-xs);
 }
 .tool .tool-status { margin-left: auto; color: var(--text-3); font-size: var(--fs-xs); }
+.tool .tool-time {
+  color: var(--text-3); font-size: var(--fs-xs); font-family: var(--font-mono);
+  white-space: nowrap; flex: none; margin-left: auto;
+}
+.tool .tool-time + .tool-status { margin-left: 8px; }
 .tool[data-status="running"] .tool-status { color: var(--accent); animation: pulse 1.2s var(--ease) infinite; }
 .tool[data-status="error"] .tool-status { color: var(--danger); }
 .tool[data-status="error"] .tool-name { color: var(--danger); }

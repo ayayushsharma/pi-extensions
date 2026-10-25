@@ -44,6 +44,29 @@ export function show(node, visible) {
   return node;
 }
 
+/** Clock time for tool cards: HH:MM:SS local. Accepts epoch ms or ISO.
+ *  Empty string when unparseable — the card simply shows no time. */
+export function formatClock(ts) {
+  if (ts === undefined || ts === null || ts === "") return "";
+  const d = new Date(typeof ts === "number" ? ts : String(ts));
+  if (Number.isNaN(d.getTime())) return "";
+  try {
+    return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
+  } catch {
+    const p = (n) => String(n).padStart(2, "0");
+    return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+  }
+}
+
+/** Compact duration for a finished tool: 240ms, 3.2s, 2m 5s. */
+export function formatDuration(ms) {
+  const n = Number(ms);
+  if (!Number.isFinite(n) || n < 0) return "";
+  if (n < 1000) return `${Math.round(n)}ms`;
+  if (n < 60000) return `${(n / 1000).toFixed(1).replace(/\.0$/, "")}s`;
+  return `${Math.floor(n / 60000)}m ${Math.round((n % 60000) / 1000)}s`;
+}
+
 export function timeAgo(ts) {
   if (!ts) return "";
   const diff = Date.now() - Number(ts);

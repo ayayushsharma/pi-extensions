@@ -154,7 +154,7 @@ export function createTranscript(container, opts = {}) {
         // the live card instead of painting a running duplicate next to it.
         let card = toolCards.get(block.id);
         if (!card) {
-          card = createToolCard(block.id, block.name, block.arguments || {}, { expanded: settings.expandTools, cwd: sessionCwd });
+          card = createToolCard(block.id, block.name, block.arguments || {}, { expanded: settings.expandTools, cwd: sessionCwd, timestamp: message?.timestamp });
           toolCards.set(block.id, card);
         } else {
           // The end message is authoritative: refresh the stash so the
@@ -174,7 +174,7 @@ export function createTranscript(container, opts = {}) {
 
   function toolResultNode(message) {
     const card = toolCards.get(message.toolCallId);
-    if (card) finishToolCard(card, message.content, message.isError, { expand: settings.expandTools, outputMode: settings.toolOutput });
+    if (card) finishToolCard(card, message.content, message.isError, { expand: settings.expandTools, outputMode: settings.toolOutput, timestamp: message?.timestamp });
   }
 
   function systemNode(text, kind = "") {
@@ -455,7 +455,7 @@ export function createTranscript(container, opts = {}) {
         // The end-of-message render may already own this id (adopted above)
         // or the same start may redeliver: never paint a second card.
         if (toolCards.has(event.toolCallId)) break;
-        const card = createToolCard(event.toolCallId, event.toolName, event.args || {}, { expanded: settings.expandTools, cwd: sessionCwd });
+        const card = createToolCard(event.toolCallId, event.toolName, event.args || {}, { expanded: settings.expandTools, cwd: sessionCwd, timestamp: event.timestamp ?? Date.now() });
         toolCards.set(event.toolCallId, card);
         const host = pending?.node || container;
         host.append(card);
@@ -463,7 +463,7 @@ export function createTranscript(container, opts = {}) {
       }
       case "tool_execution_end": {
         const card = toolCards.get(event.toolCallId);
-        finishToolCard(card, event.result, event.isError, { expand: settings.expandTools, outputMode: settings.toolOutput });
+        finishToolCard(card, event.result, event.isError, { expand: settings.expandTools, outputMode: settings.toolOutput, timestamp: event.timestamp });
         break;
       }
       case "compaction_start":

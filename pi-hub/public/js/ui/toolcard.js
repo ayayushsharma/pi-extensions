@@ -3,7 +3,7 @@
  * output, copy. Running cards stay open; finished cards collapse unless the
  * user pinned them open or "Expand tool calls" is enabled in settings.
  */
-import { el, copyText, shortenPath } from "../core/dom.js";
+import { el, copyText, formatClock, formatDuration, shortenPath } from "../core/dom.js";
 import { icon } from "../core/icons.js";
 
 const TOOL_ICON = {
@@ -48,6 +48,25 @@ function argText(args) {
   }
 }
 
+/** Epoch ms for a message/event timestamp (number or ISO); NaN when absent. */
+function toMs(ts) {
+  if (ts === undefined || ts === null || ts === "") return NaN;
+  const ms = typeof ts === "number" ? ts : Date.parse(String(ts));
+  return Number.isFinite(ms) ? ms : NaN;
+}
+
+/** Full date-time for the time tooltip. Falls back to the raw value. */
+function timestampTitle(ts) {
+  if (ts === undefined || ts === null || ts === "") return "";
+  const ms = toMs(ts);
+  if (!Number.isFinite(ms)) return String(ts);
+  try {
+    return new Date(ms).toLocaleString();
+  } catch {
+    return String(ts);
+  }
+}
+
 function diffBlock(oldText, newText) {
   const wrap = el("div", { class: "diff" });
   for (const l of String(oldText ?? "").split("\n")) if (l) wrap.append(el("div", { class: "del", text: `- ${l}` }));
@@ -55,11 +74,13 @@ function diffBlock(oldText, newText) {
   return wrap;
 }
 
-export function createToolCard(toolCallId, name, args, { expanded = false, cwd = "" } = {}) {
+export function createToolCard(toolCallId, name, args, { expanded = false, cwd = "", timestamp } = {}) {
   const hint = hintOf(name, args || {}, cwd);
   const full = hintOf(name, args || {});
   const body = el("div", { class: "tool-body" });
   const status = el("span", { class: "tool-status", text: "running" });
+  const clock = formatClock(timestamp);
+  const time = clock ? el("span", { class: "tool-time", text: clock, title: timestampTitle(timestamp) }) : null;
   const card = el(
     "details",
     { class: "tool", dataset: { toolId: toolCallId || "", toolName: name || "tool", status: "running" }, open: expanded ? "" : undefined },
@@ -69,10 +90,12 @@ export function createToolCard(toolCallId, name, args, { expanded = false, cwd =
       icon(TOOL_ICON[name] || "chip", 13),
       el("span", { class: "tool-name", text: name || "tool" }),
       hint ? el("span", { class: "tool-hint", text: hint.slice(0, 160) }) : null,
+      time,
       status,
     ),
     body,
   );
+  card.toolStartTs = toMs(timestamp);
 
   // User choice sticks: manual toggles disable auto-collapse on finish.
   let userToggled = false;
@@ -143,11 +166,30 @@ function outputNodes(result, outputMode) {
   return { nodes, copyable: text || "", empty: !text };
 }
 
-export function finishToolCard(card, result, isError, { expand = false, outputMode = "text" } = {}) {
+export function finishToolCard(card, result, isError, { expand = false, outputMode = "text", timestamp } = {}) {
   if (!card) return;
   card.dataset.status = isError ? "error" : "done";
   const status = card.querySelector(".tool-status");
   if (status) status.textContent = isError ? "error" : "done";
+  // End time: show it next to the start clock, with duration when both ends
+  // are known (history toolResult / live tool_execution_end carry them).
+  const endMs = toMs(timestamp);
+  if (Number.isFinite(endMs)) {
+    const startMs = Number(card.toolStartTs);
+    const dur = Number.isFinite(startMs) ? formatDuration(endMs - startMs) : "";
+    let time = card.querySelector(":scope > summary > .tool-time");
+    const clock = formatClock(timestamp);
+    if (!time && clock) {
+      time = el("span", { class: "tool-time" });
+      card.querySelector("summary")?.insertBefore(time, status);
+    }
+    if (time) {
+      time.textContent = dur && time.textContent ? `${time.textContent} · ${dur}` : clock || time.textContent;
+      const startTitle = Number.isFinite(startMs) ? timestampTitle(startMs) : "";
+      time.title = startTitle && clock ? `${startTitle} → ${timestampTitle(timestamp)} (${dur})` : timestampTitle(timestamp);
+    }
+    card.toolEndTs = endMs;
+  }
   const body = card.querySelector(".tool-body");
   if (!body) return;
   const previousPres = body.querySelectorAll("pre");
